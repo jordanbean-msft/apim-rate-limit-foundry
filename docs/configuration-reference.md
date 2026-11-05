@@ -82,6 +82,12 @@ admission requires prices sufficient to reserve the worst possible relevant inpu
 The Fluent editor exposes reads and both write TTLs separately. `examples/prices.json` contains
 invented examples for both OpenAI and Anthropic, not contractual provider rates.
 
+Incomplete provider metadata returns an estimated `settlement_pending` reconciliation record
+without finalizing or refunding the reservation. A corrected trusted usage report can settle
+later, including after Redis recovery. Malformed counts/TTL totals reject with `400`/`422`.
+Standard text inference is the priced baseline; unknown billing dimensions, provider-executed
+tools, nonstandard tiers and unconfigured geography pricing do not become zero-cost usage.
+
 Decision responses include matched and blocking policy IDs. Denials calculate `Retry-After`
 from the blocking windows, not an unrelated shorter rule. Counter keys include metric and period,
 so changing either starts a distinct allowance namespace; size-only edits preserve consumption.

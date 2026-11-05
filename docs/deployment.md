@@ -21,6 +21,9 @@ Chat Completions, Responses and Messages are distinct API contracts; a deploymen
 does not automatically expose the others. Enable only routes verified against the actual target
 resource/model/API version. Use the explicit protocol capabilities and backend settings documented
 in `infra/README.md` and `infra/environment.example.json`.
+`ENABLE_RESPONSES` and `ENABLE_ANTHROPIC` are false in the example environment until verified.
+Government Responses additionally requires `RESPONSES_GOVERNMENT_VERIFIED`; Government Anthropic
+enablement is rejected rather than silently using a Commercial backend.
 
 Responses forwards to the configured OpenAI Responses backend with its own API version/audience
 requirements, not a Chat Completions URL with a different JSON body. The sample uses bounded,
@@ -31,6 +34,8 @@ The sample does not silently provision an OpenAI account and call it Claude, acc
 terms for you, or copy a Commercial Claude endpoint into a Government environment. Verify model
 hosting/data-residency terms, regional availability, managed-identity RBAC, version headers,
 and network access. The managed-identity route does not use a client-supplied Anthropic API key.
+`ANTHROPIC_VERSION` pins the provider header; `RESPONSES_API_VERSION` independently pins
+`v1` or `preview`, not Chat's dated version.
 
 For Messages, verify the configured input ceiling covers the actual model context bound and that
 the Function's admission maximum accommodates it. This route reserves the full verified ceiling,

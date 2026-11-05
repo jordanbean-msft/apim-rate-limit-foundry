@@ -2,6 +2,8 @@
 # subscription key supplied only in your personal, untracked REST Client environment.
 # Model and operation names must match the configured APIM API and price cards.
 @gateway = https://your-gateway.azure-api.net
+@responsesModel = {{$processEnv RESPONSES_DEPLOYMENT_NAME}}
+@anthropicModel = {{$processEnv ANTHROPIC_DEPLOYMENT_NAME}}
 
 ### Non-streaming: APIM reserves, backend executes, actual usage settles
 POST {{gateway}}/foundry/chat/completions
@@ -31,7 +33,7 @@ Content-Type: application/json
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
-  "model": "sample-model",
+  "model": "{{responsesModel}}",
   "input": "Explain why token budgets and dollar budgets differ.",
   "max_output_tokens": 64,
   "store": false,
@@ -44,7 +46,7 @@ Content-Type: application/json
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
-  "model": "sample-model",
+  "model": "{{responsesModel}}",
   "input": "Describe cached input token pricing.",
   "max_output_tokens": 64,
   "store": false,
@@ -55,10 +57,10 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 POST {{gateway}}/anthropic/v1/messages
 Content-Type: application/json
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_API_VERSION}}
+anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 
 {
-  "model": "sample-claude",
+  "model": "{{anthropicModel}}",
   "max_tokens": 64,
   "system": [
     {
@@ -75,10 +77,10 @@ anthropic-version: {{$processEnv ANTHROPIC_API_VERSION}}
 POST {{gateway}}/anthropic/v1/messages
 Content-Type: application/json
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_API_VERSION}}
+anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 
 {
-  "model": "sample-claude",
+  "model": "{{anthropicModel}}",
   "max_tokens": 64,
   "system": [
     {

@@ -32,6 +32,9 @@ Supports **Azure Commercial and Azure Government** with explicit cloud configura
 Foundry model availability, API versions, APIM tiers, networking, and Redis availability must be
 validated for the target region/subscription. This is a sample, not a financial billing system
 or a certification of GCCH/FedRAMP compliance.
+Responses and Messages are explicitly opt-in. Responses requires additional Government capability
+verification; Anthropic enablement in Government is currently rejected because sovereign Claude
+availability is not established. Protocol support does not manufacture provider availability.
 
 ## What is different from native APIM limits?
 
