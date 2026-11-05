@@ -31,7 +31,7 @@ Use `httpx.AsyncClient` with the app's test fixtures. Follow the arrange-act-ass
 
 ### Step 2: Pydantic Schemas
 
-Create request/response models in `src/template_repository/schemas/<resource>.py`:
+Create request/response models in `src/apim_rate_limit_foundry/` with the owning domain component:
 - `<Resource>Create` for POST request body
 - `<Resource>Update` for PUT request body
 - `<Resource>Response` for all responses
@@ -39,7 +39,7 @@ Create request/response models in `src/template_repository/schemas/<resource>.py
 
 ### Step 3: Router
 
-Create `src/template_repository/routers/<resource>.py`:
+Create a router under `src/apim_rate_limit_foundry/api/`:
 - One `APIRouter` with a descriptive prefix and tag
 - Async route handlers
 - Proper status codes (201 for create, 204 for delete)
@@ -47,14 +47,14 @@ Create `src/template_repository/routers/<resource>.py`:
 
 ### Step 4: Service Layer
 
-Create `src/template_repository/services/<resource>.py`:
+Create a service under `src/apim_rate_limit_foundry/` in its domain package:
 - Business logic separated from HTTP concerns
 - Async functions with type hints
 - Raise appropriate exceptions for error cases
 
 ### Step 5: Register Router
 
-Add the new router to `src/template_repository/main.py`.
+Register the router with the application factory and confirm the Function entry point exposes it.
 
 ### Step 6: Run Tests
 

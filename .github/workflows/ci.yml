@@ -17,6 +17,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+        ports:
+          - 10000:10000
+          - 10001:10001
+          - 10002:10002
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379/5
+      TEST_AZURITE: "true"
+      TEST_TABLE_CONNECTION_STRING: UseDevelopmentStorage=true
 
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +57,54 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check .
 
+      - name: Formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src/
+
       - name: Run tests
         run: uv run pytest -W error
 
+      - name: Gateway policy contracts
+        run: uv run python -W error -m unittest discover -s apim/tests -v
+
       - name: Coverage report
         run: uv run pytest --cov --cov-report=xml --cov-report=term-missing
+
+  frontend:
+    name: Portal
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run lint
+      - run: npm --prefix web run typecheck
+      - run: npm --prefix web run test -- --run
+      - run: npm --prefix web run build
+      - run: npm --prefix web audit
+
+  infrastructure:
+    name: Infrastructure and gateway policies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=infra fmt -check -recursive
+      - run: terraform -chdir=infra init -backend=false -input=false
+      - name: Validate without warnings
+        shell: bash
+        run: |
+          terraform -chdir=infra validate -json > /tmp/terraform-validation.json
+          python -c 'import json; d=json.load(open("/tmp/terraform-validation.json")); print(json.dumps(d, indent=2)); assert d["error_count"] == 0 and d["warning_count"] == 0'
+      - name: Mocked deployment plans
+        run: terraform -chdir=infra test

@@ -1,6 +1,7 @@
 .git*
 .venv
-.env
+.env*
+local.settings.json
 .azure
 web
 infra
@@ -10,3 +11,11 @@ coverage.xml
 .mypy_cache
 .ruff_cache
 .pytest_cache
+dist
+scripts
+examples
+docs
+.vscode
+.img
+compose.yaml
+*.code-workspace

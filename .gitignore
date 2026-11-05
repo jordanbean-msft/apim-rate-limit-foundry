@@ -36,15 +36,21 @@ coverage.xml
 # Azure Developer CLI
 .azure/
 
-# Node.js (if frontend added later)
+# Node.js
 node_modules/
+web/coverage/
+web/.vite/
+web/dist/
+web/.env.local
+local.settings.json
+.python_packages/
+requirements.txt
 
 # Terraform
 infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.backup
 infra/.terraform.lock.hcl
-infra/provider.conf.json
 infra/terraform.local.tfvars.json
 infra/backend.local.hcl
 

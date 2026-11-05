@@ -1,0 +1,50 @@
+# VS Code REST Client examples. Use an APIM subscription ID configuration and a valid
+# subscription key supplied only in your personal, untracked REST Client environment.
+# Model and operation names must match the configured APIM API and price cards.
+@gateway = https://your-gateway.azure-api.net
+
+### Non-streaming: APIM reserves, backend executes, actual usage settles
+POST {{gateway}}/foundry/chat/completions
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "messages": [{"role": "user", "content": "Explain why budget caps differ from TPM limits."}],
+  "max_tokens": 64,
+  "stream": false
+}
+
+### Streaming: conservative reservation, no client-supplied cache discount
+POST {{gateway}}/foundry/chat/completions
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "messages": [{"role": "user", "content": "Describe cached input token pricing."}],
+  "max_tokens": 64,
+  "stream": true
+}
+
+### Language sentiment: record count rounds per document
+POST {{gateway}}/language/sentiment
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "documents": [
+    {"id": "1", "language": "en", "text": "The example is easy to understand."},
+    {"id": "2", "language": "en", "text": "The rate-limit decision is visible."}
+  ]
+}
+
+### Document Intelligence: selected pages are enforced on the backend, not just claimed
+POST {{gateway}}/document-intelligence/analyze?pages=1-2
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "base64Source": "{{$processEnv SAMPLE_PDF_BASE64}}"
+}
+
+# Follow the returned gateway Operation-Location with the same identity.
+# Do not call a raw backend URL or reuse another principal's operation ID.

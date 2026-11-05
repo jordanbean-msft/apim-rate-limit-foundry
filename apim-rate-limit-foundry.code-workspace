@@ -1,0 +1,18 @@
+{
+  "folders": [{"path": "."}],
+  "settings": {
+    "editor.rulers": [100],
+    "editor.formatOnSave": true,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["-W", "error"],
+    "python.envFile": "${workspaceFolder}/.env",
+    "[python]": {
+      "editor.defaultFormatter": "charliermarsh.ruff",
+      "editor.codeActionsOnSave": {
+        "source.fixAll.ruff": "explicit",
+        "source.organizeImports.ruff": "explicit"
+      }
+    }
+  }
+}

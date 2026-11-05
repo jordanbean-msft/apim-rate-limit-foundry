@@ -4,12 +4,14 @@ description: Repository-wide guidance for implementing and validating this Pytho
 
 ## Purpose
 
-This repository is a Python project using FastAPI, uv for package management, and Terraform for Azure infrastructure. Keep implementation simple, explicit, and testable.
+This repository is an APIM AI gateway sample using Python Azure Functions/FastAPI, a Fluent UI React portal, uv, and Terraform. Keep implementation simple, explicit, and testable.
 
 ## Project layout
 
 ```
-src/template_repository/   # Application source code
+src/apim_rate_limit_foundry/ # Application source code
+web/                        # Fluent UI React portal
+apim/                       # Gateway policy artifacts
 tests/                     # Test suite
 infra/                     # Terraform infrastructure-as-code
 ```
@@ -35,7 +37,7 @@ infra/                     # Terraform infrastructure-as-code
 - Run all tests: `uv run pytest`
 - Enforce warning-free tests: `uv run pytest -W error`
 - Run with coverage: `uv run pytest --cov --cov-report=xml --cov-report=term-missing`
-- Run API: `uv run template-repository`
+- Run API: `uv run apim-rate-limit-foundry`
 
 ## Testing patterns
 

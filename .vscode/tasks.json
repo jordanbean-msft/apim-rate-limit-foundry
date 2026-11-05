@@ -1,0 +1,205 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "sync-venv",
+      "type": "process",
+      "command": "uv",
+      "args": ["sync", "--extra", "dev"],
+      "problemMatcher": []
+    },
+    {
+      "label": "web:install",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "ci"],
+      "problemMatcher": []
+    },
+    {
+      "label": "setup",
+      "dependsOn": ["sync-venv", "web:install"],
+      "problemMatcher": []
+    },
+    {
+      "label": "build",
+      "dependsOn": ["package-python", "web:build"],
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": []
+    },
+    {
+      "label": "package-python",
+      "type": "process",
+      "command": "uv",
+      "args": ["build"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "run-api",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "apim-rate-limit-foundry"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {"regexp": "^$"},
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Uvicorn running on"
+        }
+      }
+    },
+    {
+      "label": "run-functions",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "func", "start"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {"regexp": "^$"},
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(Job host started|Functions:)"
+        }
+      }
+    },
+    {
+      "label": "web:dev",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "run", "dev"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {"regexp": "^$"},
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Local:"
+        }
+      }
+    },
+    {
+      "label": "test",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "pytest"],
+      "group": {"kind": "test", "isDefault": true},
+      "problemMatcher": []
+    },
+    {
+      "label": "test-strict",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "pytest", "-W", "error"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "coverage",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "pytest", "--cov", "--cov-report=xml", "--cov-report=term-missing"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "lint",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "ruff", "check", "."],
+      "problemMatcher": []
+    },
+    {
+      "label": "format",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "ruff", "format", "."],
+      "problemMatcher": []
+    },
+    {
+      "label": "type-check",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "mypy", "src/"],
+      "problemMatcher": []
+    },
+    {
+      "label": "web:build",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "run", "build"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "web:test",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "run", "test", "--", "--run"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "web:lint",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "run", "lint"],
+      "problemMatcher": []
+    },
+    {
+      "label": "web:type-check",
+      "type": "process",
+      "command": "npm",
+      "args": ["--prefix", "web", "run", "typecheck"],
+      "problemMatcher": []
+    },
+    {
+      "label": "infra:init",
+      "type": "process",
+      "command": "terraform",
+      "args": ["-chdir=infra", "init", "-backend=false"],
+      "problemMatcher": []
+    },
+    {
+      "label": "infra:fmt",
+      "type": "process",
+      "command": "terraform",
+      "args": ["-chdir=infra", "fmt", "-check", "-recursive"],
+      "problemMatcher": []
+    },
+    {
+      "label": "infra:test",
+      "type": "process",
+      "command": "terraform",
+      "args": ["-chdir=infra", "test"],
+      "dependsOn": "infra:init",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "gateway:test",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "python", "-W", "error", "-m", "unittest", "discover", "-s", "apim/tests", "-v"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "infra:validate",
+      "type": "process",
+      "command": "terraform",
+      "args": ["-chdir=infra", "validate"],
+      "dependsOn": "infra:init",
+      "problemMatcher": []
+    },
+    {
+      "label": "validate",
+      "dependsOn": [
+        "lint", "type-check", "test-strict", "web:lint", "web:type-check",
+        "web:test", "web:build", "infra:fmt", "infra:validate", "infra:test", "gateway:test"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

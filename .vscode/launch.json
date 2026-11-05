@@ -1,0 +1,52 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API: local limiter",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "apim_rate_limit_foundry.main",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "sync-venv",
+      "justMyCode": true
+    },
+    {
+      "name": "Functions: attach Python worker",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {"host": "localhost", "port": 9091},
+      "justMyCode": true
+    },
+    {
+      "name": "Portal: browser",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "web:dev"
+    },
+    {
+      "name": "Portal: production Node server",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "cwd": "${workspaceFolder}/web",
+      "preLaunchTask": "web:build",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Tests: all (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-W", "error"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "sync-venv",
+      "justMyCode": false
+    }
+  ]
+}

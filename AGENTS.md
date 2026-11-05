@@ -28,7 +28,9 @@ Use this guide to choose the right Copilot agent type for common development tas
 
 | Area | Path |
 |------|------|
-| Application source | `src/template_repository/` |
+| Application source | `src/apim_rate_limit_foundry/` |
+| Portal source | `web/` |
+| APIM policies | `apim/` |
 | Tests | `tests/` |
 | Infrastructure | `infra/` |
 | Copilot instructions | `.github/instructions/` |

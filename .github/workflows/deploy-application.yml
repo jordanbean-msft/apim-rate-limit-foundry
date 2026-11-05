@@ -4,63 +4,53 @@ on:
   workflow_dispatch:
     inputs:
       azd_env_name:
-        description: "azd environment name"
+        description: Configured deployment environment
+        type: environment
         required: true
-        default: "prod"
+      azure_cloud:
+        description: Target Azure cloud
+        type: choice
+        options: [AzureCloud, AzureUSGovernment]
+        required: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
+    environment: ${{ inputs.azd_env_name }}
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLOUD: ${{ inputs.azure_cloud }}
+      AZURE_ENV_NAME: ${{ inputs.azd_env_name }}
+      AZD_ENV_JSON: ${{ vars.AZD_ENV_JSON }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate secrets
-        run: |
-          for secret in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID; do
-            if [ -z "${!secret}" ]; then
-              echo "::error::Required secret $secret is not set"
-              exit 1
-            fi
-          done
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.0.0
+      - uses: astral-sh/setup-uv@v8.0.0
+      - uses: actions/setup-node@v4
         with:
-          enable-cache: true
-
-      - name: Install azd
-        uses: Azure/setup-azd@v2
-
-      - name: Login to Azure
+          node-version: "22"
+      - uses: Azure/setup-azd@v2
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          environment: ${{ inputs.azure_cloud }}
+      - name: Configure cloud and authenticate with OIDC
+        shell: bash
         run: |
-          azd auth login \
-            --client-id "$AZURE_CLIENT_ID" \
-            --client-secret "$AZURE_CLIENT_SECRET" \
-            --tenant-id "$AZURE_TENANT_ID"
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-
-      - name: Deploy application
-        run: azd deploy --environment ${{ inputs.azd_env_name }} --no-prompt
-        env:
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          az cloud set --name "$AZURE_CLOUD"
+          azd config set cloud.name "$AZURE_CLOUD"
+          azd auth login --client-id "$AZURE_CLIENT_ID" --tenant-id "$AZURE_TENANT_ID" --federated-credential-provider github
+      - name: Restore explicit azd configuration
+        run: uv run python scripts/configure_ci.py
+      - name: Deploy configured services
+        run: azd deploy --environment "$AZURE_ENV_NAME" --no-prompt

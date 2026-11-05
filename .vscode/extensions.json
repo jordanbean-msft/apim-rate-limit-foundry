@@ -9,6 +9,8 @@
     "github.copilot-chat",
     "hashicorp.terraform",
     "ms-azuretools.azure-dev",
+    "ms-azuretools.vscode-azurefunctions",
+    "dbaeumer.vscode-eslint",
     "humao.rest-client",
     "ms-toolsai.jupyter",
     "ryanluker.vscode-coverage-gutters",
