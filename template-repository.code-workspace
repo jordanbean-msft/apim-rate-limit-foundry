@@ -1,0 +1,226 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "editor.rulers": [100],
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["-v"],
+    "python.testing.cwd": "${workspaceFolder}",
+    "[python]": {
+      "editor.defaultFormatter": "charliermarsh.ruff",
+      "editor.codeActionsOnSave": {
+        "source.fixAll.ruff": "explicit",
+        "source.organizeImports.ruff": "explicit"
+      }
+    },
+    "editor.formatOnSave": true,
+    "python.envFile": "${workspaceFolder}/.env",
+    "coverage-gutters.coverageFileNames": ["coverage.xml"],
+    "coverage-gutters.showLineCoverage": true,
+    "coverage-gutters.showRulerCoverage": true,
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.egg-info": true,
+      "**/.mypy_cache": true,
+      ".venv": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.debugpy",
+      "ms-python.vscode-pylance",
+      "ms-python.mypy-type-checker",
+      "charliermarsh.ruff",
+      "github.copilot",
+      "github.copilot-chat",
+      "hashicorp.terraform",
+      "ms-azuretools.azure-dev",
+      "humao.rest-client",
+      "ms-toolsai.jupyter",
+      "ryanluker.vscode-coverage-gutters",
+      "hediet.vscode-drawio"
+    ]
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "API: FastAPI (uvicorn)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "template_repository.main",
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env",
+        "python": "${workspaceFolder}/.venv/bin/python",
+        "justMyCode": true
+      },
+      {
+        "name": "Tests: all (pytest)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "pytest",
+        "args": ["-v"],
+        "cwd": "${workspaceFolder}",
+        "python": "${workspaceFolder}/.venv/bin/python",
+        "justMyCode": false
+      }
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "sync-venv",
+        "type": "shell",
+        "command": "uv sync --extra dev",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "lint",
+        "type": "shell",
+        "command": "uv run ruff check .",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "lint-fix",
+        "type": "shell",
+        "command": "uv run ruff check . --fix && uv run ruff format .",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "test",
+        "type": "shell",
+        "command": "uv run pytest -v",
+        "group": "test",
+        "problemMatcher": []
+      },
+      {
+        "label": "test-strict",
+        "type": "shell",
+        "command": "uv run pytest -v -W error",
+        "group": "test",
+        "problemMatcher": []
+      },
+      {
+        "label": "coverage",
+        "type": "shell",
+        "command": "uv run pytest --cov --cov-report=xml --cov-report=term-missing",
+        "group": "test",
+        "problemMatcher": []
+      },
+      {
+        "label": "run-api",
+        "type": "shell",
+        "command": "uv run template-repository",
+        "group": "none",
+        "isBackground": true,
+        "problemMatcher": {
+          "pattern": { "regexp": "." },
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": ".",
+            "endsPattern": "Uvicorn running on"
+          }
+        }
+      },
+      {
+        "label": "validate",
+        "dependsOn": ["lint", "test-strict"],
+        "dependsOrder": "sequence",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "az-login",
+        "type": "shell",
+        "command": "az login",
+        "problemMatcher": []
+      },
+      {
+        "label": "azd-up",
+        "type": "shell",
+        "command": "azd up",
+        "problemMatcher": []
+      },
+      {
+        "label": "azd-deploy",
+        "type": "shell",
+        "command": "azd deploy",
+        "problemMatcher": []
+      },
+      {
+        "label": "pre-commit-install",
+        "type": "shell",
+        "command": "uv run pre-commit install && uv run pre-commit install --hook-type pre-push",
+        "problemMatcher": []
+      },
+      {
+        "label": "type-check",
+        "type": "shell",
+        "command": "uv run mypy src/",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "pentest:bandit",
+        "type": "shell",
+        "command": "uv run bandit -r src/",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "pentest:pip-audit",
+        "type": "shell",
+        "command": "uv run pip-audit",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "pentest",
+        "dependsOn": ["pentest:bandit", "pentest:pip-audit"],
+        "dependsOrder": "sequence",
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "infra:fmt",
+        "type": "shell",
+        "command": "terraform fmt -check -recursive .",
+        "options": { "cwd": "${workspaceFolder}/infra" },
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "infra:validate",
+        "type": "shell",
+        "command": "terraform validate",
+        "options": { "cwd": "${workspaceFolder}/infra" },
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "infra:tflint",
+        "type": "shell",
+        "command": "tflint --recursive",
+        "options": { "cwd": "${workspaceFolder}/infra" },
+        "group": "build",
+        "problemMatcher": []
+      },
+      {
+        "label": "infra:lint",
+        "dependsOn": ["infra:fmt", "infra:validate", "infra:tflint"],
+        "dependsOrder": "sequence",
+        "group": "build",
+        "problemMatcher": []
+      }
+    ]
+  }
+}

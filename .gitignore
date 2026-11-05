@@ -1,0 +1,57 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# uv / pip
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment files (never commit real secrets)
+.env
+!.env.example
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Linting caches
+.ruff_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Runtime logs
+*.log
+
+# Azure Developer CLI
+.azure/
+
+# Node.js (if frontend added later)
+node_modules/
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
+infra/provider.conf.json
+infra/terraform.local.tfvars.json
+infra/backend.local.hcl
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Python version override (already tracked via .python-version)
+.python-version.local

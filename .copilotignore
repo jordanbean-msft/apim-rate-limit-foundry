@@ -1,0 +1,67 @@
+# Build and compiled outputs
+**/bin/
+**/obj/
+**/dist/
+**/*.dll
+**/*.exe
+**/*.pdb
+
+# Dependencies
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/*.egg-info/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.idea/
+**/*.swp
+.DS_Store
+Thumbs.db
+
+# Version control
+.git/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+**/appsettings.Development.json
+.azure/
+
+# Terraform
+.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+infra/.terraform.lock.hcl
+
+# Logs
+**/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+**/coverage/
+**/.nyc_output/
+
+# Temp files
+**/tmp/
+**/temp/
+
+# Large binaries
+**/*.zip
+**/*.tar.gz
+**/*.bin
+**/*.iso
+
+# Lock files (large, not useful for suggestions)
+uv.lock
+package-lock.json

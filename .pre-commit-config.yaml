@@ -1,0 +1,53 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: terraform-fmt
+        name: terraform fmt (infrastructure)
+        entry: bash -c 'cd infra && terraform fmt -check -recursive .'
+        language: system
+        pass_filenames: false
+        files: ^infra/.*\.tf$
+
+      - id: terraform-validate
+        name: terraform validate (infrastructure)
+        entry: bash -c 'cd infra && terraform validate'
+        language: system
+        pass_filenames: false
+        files: ^infra/.*\.tf$
+
+      - id: tflint
+        name: tflint (infrastructure)
+        entry: bash -c 'cd infra && tflint --recursive'
+        language: system
+        pass_filenames: false
+        files: ^infra/.*\.tf$
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -W error
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

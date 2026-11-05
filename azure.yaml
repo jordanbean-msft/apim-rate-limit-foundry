@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: template-repository
+metadata:
+  template: template-repository@0.0.1
+
+infra:
+  provider: terraform
+  path: infra
+  # Backend config is supplied via infra/provider.conf.json (azd native remote state).
+  # azd substitutes ${RS_*} placeholders automatically at provision time.
+  # Run: azd env set RS_RESOURCE_GROUP <rg>
+  #      azd env set RS_STORAGE_ACCOUNT <sa>
+  #      azd env set RS_CONTAINER_NAME  <container>
+  # before azd provision.
+
+services:
