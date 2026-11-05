@@ -52,19 +52,37 @@ Streaming remains conservative; do not parse/buffer SSE in APIM.
   Add all three bounded wire formats, raw-usage settlement, explicit operations/backend routing,
   cloud capability configuration, Anthropic version/auth headers and protocol contract/mock tests.
   Validate XML contracts, Terraform formatting/validation with zero diagnostics, mock plans/TFLint.
-  Completed: 18 warning-free policy/preflight tests, 11 mocked plans, Terraform validation with
+  Completed: 20 warning-free policy/preflight tests, 11 mocked plans, Terraform validation with
   zero errors/warnings, recursive formatting/TFLint, Ruff and shell syntax checks. No live Azure
   deployment or APIM server-side compiler/availability certification.
 - [x] Portal owner: `web/` only.
   Add cache-write catalog editing/display, protocol-aware event inspection and cache unit visibility,
   representative demos and focused compatibility tests. Existing prices must not be forced to
   invent cache-write rates. Validate Node LTS lint/types/tests/build/audit.
-- [ ] Parent integration: `examples/`, `scripts/`, docs, automation and this checklist.
+  Complete: 36 tests, lint/types/build on Node 22 LTS, zero npm advisories.
+- [x] Parent integration: `examples/`, `scripts/`, docs, automation and this checklist.
   Update fixtures/seeding/client requests, all protocol documentation, VS Code/CI where needed;
   integrate isolated worktree commits and verify actual Functions HTTP settlement.
-- [ ] Combined validation and persistence: all applicable checks, real Redis/Azurite tests,
+  Complete: four sample prices/six policies seed through HTTP; all three usage formats settle
+  through the actual Functions host with Redis/Azurite at 190/190/600 micro-USD.
+- [x] Combined validation and persistence: all applicable checks, real Redis/Azurite tests,
   package/frontend builds, clean worktree excluding pre-existing `.github/skills/`.
   No live Azure deployment or availability certification is implied.
+  Complete: 97 warning-free Python tests with 94.38% coverage, mypy, wheel/sdist, 36 portal
+  tests/build/lint/types/audit, 20 gateway/preflight tests, 11 mocked Terraform plans,
+  zero Terraform diagnostics, all pre-commit hooks and recursive TFLint.
+  Actual HTTP smoke also verified reordered usage retries, mixed-TTL writes, incomplete-to-actual
+  correction, malformed usage rejection, conservative streaming, scoped summaries and durable
+  replay after Redis loss. Final policy fixes preserve nullable usage objects and native inline
+  Responses output metadata without enabling opaque state/history references.
+
+## Deployment boundaries
+
+Responses and Messages are opt-in behind explicit capability verification. Government Responses
+requires separate availability verification; Government Claude enablement is rejected. No live
+Azure provisioning, private-network validation, Entra acceptance or APIM service-side compiler
+validation was performed. Supported text/client-tool inputs are bounded; media, built-in billed
+tools, stateful/background Responses and Anthropic thinking remain explicitly unsupported.
 
 ## References
 
