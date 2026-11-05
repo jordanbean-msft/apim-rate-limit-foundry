@@ -18,16 +18,42 @@ class RedisCounters:
 
     key = "{limiter}:ledger"
 
-    def __init__(self, settings: Settings, credential: DefaultAzureCredential) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        credential: DefaultAzureCredential | None,
+        client: Redis | None = None,
+    ) -> None:
         self.settings = settings
         self.credential = credential
-        self.client: Redis | None = None
+        self.client = client
+        self.static_client = client is not None
         self.expires = 0
         self.lock = asyncio.Lock()
 
+    @classmethod
+    def from_url(cls, settings: Settings, url: str) -> "RedisCounters":
+        if not settings.local_store_enabled or settings.in_azure:
+            raise ValueError("Redis URLs are only permitted in explicit local store mode")
+        return cls(
+            settings,
+            None,
+            Redis.from_url(
+                url,
+                decode_responses=True,
+                socket_timeout=10,
+                socket_connect_timeout=10,
+            ),
+        )
+
     async def connection(self) -> Redis:
         async with self.lock:
+            if self.static_client:
+                assert self.client is not None
+                return self.client
             if self.client is None or time.time() >= self.expires - 300:
+                if self.credential is None:
+                    raise ValueError("An Azure credential is required for cloud Redis")
                 token = await self.credential.get_token(self.settings.redis_scope)
                 if self.client:
                     await self.client.aclose()

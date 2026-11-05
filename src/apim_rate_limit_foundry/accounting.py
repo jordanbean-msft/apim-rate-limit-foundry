@@ -126,7 +126,12 @@ def debits(
         result.append(
             {
                 "key": digest(
-                    policy.id, request.tenant_id, request.principal_id, start.isoformat()
+                    policy.id,
+                    policy.metric,
+                    policy.period,
+                    request.tenant_id,
+                    request.principal_id,
+                    start.isoformat(),
                 ),
                 "policy_id": policy.id,
                 "metric": policy.metric,
@@ -139,10 +144,13 @@ def debits(
 
 
 def actual_debits(
-    original: list[dict[str, Any]], price: Price, usage: Usage
+    original: list[dict[str, Any]],
+    price: Price,
+    usage: Usage,
+    conservative_input: bool = False,
 ) -> list[dict[str, Any]]:
     amounts = {
-        "cost": cost(price, usage, False),
+        "cost": cost(price, usage, conservative_input),
         "tokens": usage.input_tokens + usage.output_tokens,
         "requests": usage.requests,
         "pages": usage.pages,

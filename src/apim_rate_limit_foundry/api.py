@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from azure.core.exceptions import AzureError
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -15,7 +15,8 @@ from apim_rate_limit_foundry.models import (
     Assignment,
     Contract,
     Decision,
-    Identifier,
+    OperationBind,
+    OperationCheck,
     Policy,
     Price,
     Release,
@@ -26,17 +27,6 @@ from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
 
 logger = logging.getLogger(__name__)
-
-
-class OperationCheck(Contract):
-    operation_id: UUID
-    principal_id: Identifier
-    tenant_id: Identifier
-    model: Identifier
-
-
-class OperationBind(OperationCheck):
-    reservation_id: Identifier
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:

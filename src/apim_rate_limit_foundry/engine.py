@@ -71,7 +71,8 @@ class Engine:
                 reason="reserved",
                 reset_at=reset,
                 retry_after=retry_after,
-            ).model_dump()
+                matched_policy_ids=[d["policy_id"] for d in charges],
+            ).model_dump(exclude={"denied_policy_ids"})
             candidate = event(
                 "intent",
                 reservation_id,
@@ -105,6 +106,7 @@ class Engine:
             "X-RateLimit-Remaining": str(decision["remaining"]),
             "X-RateLimit-Reset": decision["reset_at"],
             "X-RateLimit-Estimated": "true",
+            "X-RateLimit-Policies": ",".join(decision.get("matched_policy_ids", [])),
         }
         if not decision["allowed"]:
             decision["retry_after"] = max(
@@ -117,6 +119,9 @@ class Engine:
                 + 1,
             )
             decision["headers"]["Retry-After"] = str(decision["retry_after"])
+            decision["headers"]["X-RateLimit-Denied-Policies"] = ",".join(
+                decision.get("denied_policy_ids", [])
+            )
         else:
             decision["retry_after"] = 0
         # An allow is not returned until its immutable durable usage event exists.
@@ -152,6 +157,9 @@ class Engine:
             raise Conflict("Unknown reservation")
         data = intent["data"]
         original = Reserve.model_validate(data["request"])
+        cached_reported = request.status == "actual" and (
+            "cached_input_tokens" in request.usage.model_fields_set
+        )
         if request.status == "actual":
             required = {
                 "foundry": {"input_tokens", "output_tokens"},
@@ -164,11 +172,17 @@ class Engine:
                 if getattr(request.usage, name) > getattr(original.usage, name):
                     raise ValueError("Actual usage exceeds admitted hard bound; retain reservation")
             charges = actual_debits(
-                data["debits"], Price.model_validate(data["price"]), request.usage
+                data["debits"],
+                Price.model_validate(data["price"]),
+                request.usage,
+                conservative_input=not cached_reported,
             )
         else:
             charges = data["debits"]
-        fingerprint = digest(request.model_dump_json())
+        estimated = request.status != "actual" or (
+            original.service == "foundry" and request.usage.input_tokens > 0 and not cached_reported
+        )
+        fingerprint = digest(request.model_dump_json(), str(cached_reported))
         counter = await self.counters.finalize(request.reservation_id, charges, fingerprint)
         result = event(
             "settlement",
@@ -177,7 +191,8 @@ class Engine:
             intent["principal_id"],
             {
                 "status": request.status,
-                "estimated": request.status != "actual",
+                "estimated": estimated,
+                "cached_input_reported": cached_reported if original.service == "foundry" else None,
                 "reservation_id": request.reservation_id,
                 "usage": request.usage.model_dump(),
                 "debits": charges,
@@ -287,7 +302,8 @@ class Engine:
                         {
                             k: v
                             for k, v in settled["data"].items()
-                            if k in ("debits", "status", "estimated", "usage")
+                            if k
+                            in ("debits", "status", "estimated", "usage", "cached_input_reported")
                         }
                     )
         else:

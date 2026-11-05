@@ -12,7 +12,18 @@ class Runtime:
     def __init__(self, settings: Settings) -> None:
         self.credential: DefaultAzureCredential | None = None
         if settings.local_store_enabled:
-            self.engine = Engine(MemoryRepository(), MemoryCounters(), settings)
+            if settings.local_redis_url and settings.local_table_connection_string:
+                table = TableClient.from_connection_string(
+                    conn_str=settings.local_table_connection_string.get_secret_value(),
+                    table_name=settings.table_name,
+                )
+                self.engine = Engine(
+                    TableRepository(table),
+                    RedisCounters.from_url(settings, settings.local_redis_url),
+                    settings,
+                )
+            else:
+                self.engine = Engine(MemoryRepository(), MemoryCounters(), settings)
         else:
             if (
                 not settings.table_endpoint

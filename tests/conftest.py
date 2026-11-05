@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+from unittest.mock import patch
+
 import pytest
 
 from apim_rate_limit_foundry.config import Settings
@@ -51,3 +54,11 @@ async def engine(settings: Settings, price: Price, policy: Policy) -> Engine:
     await repository.create("prices", price.id, price.model_dump(mode="json"))
     await repository.create("policies", policy.id, policy.model_dump(mode="json"))
     return Engine(repository, MemoryCounters(), settings)
+
+
+@pytest.fixture
+def frozen_accounting_time():
+    now = datetime(2030, 11, 5, 12, 30, tzinfo=UTC)
+    with patch("apim_rate_limit_foundry.engine.datetime", wraps=datetime) as clock:
+        clock.now.return_value = now
+        yield now

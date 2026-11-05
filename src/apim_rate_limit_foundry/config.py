@@ -1,7 +1,7 @@
 import os
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     redis_token_scope: str | None = None
     local_auth_enabled: bool = False
     local_store_enabled: bool = False
+    local_redis_url: str | None = None
+    local_table_connection_string: SecretStr | None = None
+    port: int = Field(default=8000, ge=1, le=65535)
     website_site_name: str = ""
     website_hostname: str = ""
     website_instance_id: str = ""
@@ -30,10 +33,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":
-        if self.in_azure and (self.local_auth_enabled or self.local_store_enabled):
+        has_local_redis = bool(self.local_redis_url)
+        has_local_table = bool(
+            self.local_table_connection_string
+            and self.local_table_connection_string.get_secret_value()
+        )
+        if self.in_azure and (
+            self.local_auth_enabled
+            or self.local_store_enabled
+            or has_local_redis
+            or has_local_table
+        ):
             raise ValueError("Local bypass is prohibited in Azure")
         if self.in_azure and not self.website_auth_enabled:
             raise ValueError("Platform Easy Auth must be required")
+        if has_local_redis != has_local_table:
+            raise ValueError(
+                "LOCAL_REDIS_URL and LOCAL_TABLE_CONNECTION_STRING are required together"
+            )
+        if (has_local_redis or has_local_table) and not self.local_store_enabled:
+            raise ValueError("Local persistent endpoints require LOCAL_STORE_ENABLED=true")
         return self
 
     @property

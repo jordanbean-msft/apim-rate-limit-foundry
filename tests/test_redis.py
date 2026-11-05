@@ -1,16 +1,14 @@
 import asyncio
 import os
-import time
-from unittest.mock import AsyncMock
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from redis.asyncio import Redis
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
-from apim_rate_limit_foundry.models import Reserve, Settle, Usage
+from apim_rate_limit_foundry.models import Policy, Reserve, Settle, Usage
 from apim_rate_limit_foundry.stores.contracts import Conflict, RecoveryRequired
 from apim_rate_limit_foundry.stores.redis import RedisCounters
 
@@ -21,10 +19,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest_asyncio.fixture
 async def redis_counters(settings: Settings):
-    counters = RedisCounters(settings, AsyncMock())
+    counters = RedisCounters.from_url(settings, os.environ["TEST_REDIS_URL"])
     counters.key = f"{{limiter-test-{uuid4().hex}}}:ledger"
-    counters.client = Redis.from_url(os.environ["TEST_REDIS_URL"], decode_responses=True)
-    counters.expires = time.time() + 3600
     try:
         yield counters
     finally:
@@ -156,3 +152,40 @@ async def test_real_lua_concurrent_exhaustion_counts_each_policy_once(
     assert sum(d.allowed for d in decisions) == 3
     saved = await redis_counters.client.hgetall(redis_counters.key)
     assert sorted(int(v) for k, v in saved.items() if k.startswith("c:")) == [3, 300]
+
+
+@pytest.mark.parametrize("minute_limit", [1, 100])
+async def test_real_lua_denial_reset_tracks_all_blocking_policies(
+    redis_counters: RedisCounters,
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+    frozen_accounting_time: datetime,
+    minute_limit: int,
+) -> None:
+    engine.counters = redis_counters
+    await engine.recover()
+    monthly = policy.model_copy(update={"period": "month", "limit": 100})
+    await engine.repository.mutate(
+        "policies", monthly.id, monthly.model_dump(mode="json"), {"id": "month-change"}
+    )
+    await engine.repository.create(
+        "policies",
+        "minute",
+        {
+            "id": "minute",
+            "name": "Requests",
+            "service": "foundry",
+            "limit": minute_limit,
+            "period": "minute",
+            "metric": "requests",
+        },
+    )
+    assert (await engine.reserve(request_body)).allowed
+    denied = await engine.reserve(request_body.model_copy(update={"request_id": "denied"}))
+    assert denied.reset_at == "2030-12-01T00:00:00+00:00"
+    assert denied.retry_after > 60
+    assert denied.remaining_by_policy == {"policy-1": 0, "minute": minute_limit - 1}
+    assert set(denied.denied_policy_ids) == (
+        {"policy-1", "minute"} if minute_limit == 1 else {"policy-1"}
+    )

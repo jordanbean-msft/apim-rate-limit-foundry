@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from apim_rate_limit_foundry.engine import Engine
-from apim_rate_limit_foundry.models import Price, Reserve, Settle, Usage
+from apim_rate_limit_foundry.models import Policy, Price, Reserve, Settle, Usage
 from apim_rate_limit_foundry.stores.contracts import Conflict, RecoveryRequired
 from apim_rate_limit_foundry.stores.memory import MemoryCounters
 
@@ -80,6 +80,64 @@ async def test_missing_usage_is_not_zero(engine: Engine, request_body: Reserve) 
         )
     )
     assert list(engine.counters.counts.values()) == [0]
+
+
+async def test_missing_cached_usage_keeps_conservative_pricing_visibly_estimated(
+    engine: Engine,
+    request_body: Reserve,
+) -> None:
+    missing = await engine.reserve(request_body)
+    settlement = await engine.settle(
+        Settle(
+            reservation_id=missing.reservation_id,
+            status="actual",
+            usage=Usage(input_tokens=8, output_tokens=2),
+        )
+    )
+    assert settlement["data"]["estimated"]
+    assert settlement["data"]["cached_input_reported"] is False
+    with pytest.raises(Conflict):
+        await engine.settle(
+            Settle(
+                reservation_id=missing.reservation_id,
+                status="actual",
+                usage=Usage(input_tokens=8, output_tokens=2, cached_input_tokens=0),
+            )
+        )
+    explicit = await engine.reserve(request_body.model_copy(update={"request_id": "explicit-zero"}))
+    settlement = await engine.settle(
+        Settle(
+            reservation_id=explicit.reservation_id,
+            status="actual",
+            usage=Usage(input_tokens=8, output_tokens=2, cached_input_tokens=0),
+        )
+    )
+    assert not settlement["data"]["estimated"]
+    assert settlement["data"]["cached_input_reported"] is True
+    assert sorted(engine.counters.counts.values()) == [48]
+
+
+async def test_unknown_cached_usage_never_refunds_the_higher_possible_input_rate(
+    engine: Engine,
+    request_body: Reserve,
+    price: Price,
+) -> None:
+    expensive_cached = price.model_copy(
+        update={"cached_input_per_million": price.output_per_million}
+    )
+    await engine.repository.mutate(
+        "prices", price.id, expensive_cached.model_dump(mode="json"), {"id": "price-change"}
+    )
+    decision = await engine.reserve(request_body)
+    settlement = await engine.settle(
+        Settle(
+            reservation_id=decision.reservation_id,
+            status="actual",
+            usage=Usage(input_tokens=8, output_tokens=2),
+        )
+    )
+    assert settlement["data"]["estimated"]
+    assert list(engine.counters.counts.values()) == [40]
 
 
 async def test_streams_and_release_retain_conservative_debit(
@@ -242,3 +300,68 @@ async def test_expired_intent_cannot_admit_against_an_old_window(
     intent = engine.repository.records["intents", decision.reservation_id]
     intent["data"]["debits"][0]["reset_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     assert not (await engine.reserve(request_body)).allowed
+
+
+async def test_metric_edit_does_not_mix_liabilities_or_settlement_deltas(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+) -> None:
+    original = await engine.reserve(request_body)
+    changed = policy.model_copy(update={"metric": "requests", "limit": 2})
+    await engine.repository.mutate(
+        "policies", policy.id, changed.model_dump(mode="json"), {"id": "metric-change"}
+    )
+    for request_id in ("new-metric-1", "new-metric-2"):
+        assert (
+            await engine.reserve(request_body.model_copy(update={"request_id": request_id}))
+        ).allowed
+    await engine.settle(
+        Settle(
+            reservation_id=original.reservation_id,
+            status="actual",
+            usage=Usage(input_tokens=2, output_tokens=1),
+        )
+    )
+    assert sorted(engine.counters.counts.values()) == [2, 8]
+    assert not (
+        await engine.reserve(request_body.model_copy(update={"request_id": "denied"}))
+    ).allowed
+
+
+@pytest.mark.parametrize("minute_limit", [1, 100])
+async def test_denial_reports_blocking_policy_reset_not_shorter_unblocked_window(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+    frozen_accounting_time: datetime,
+    minute_limit: int,
+) -> None:
+    monthly = policy.model_copy(update={"period": "month", "limit": 100})
+    await engine.repository.mutate(
+        "policies", monthly.id, monthly.model_dump(mode="json"), {"id": "month-change"}
+    )
+    await engine.repository.create(
+        "policies",
+        "minute",
+        {
+            "id": "minute",
+            "name": "Requests",
+            "service": "foundry",
+            "limit": minute_limit,
+            "period": "minute",
+            "metric": "requests",
+        },
+    )
+    first = await engine.reserve(request_body)
+    assert first.allowed
+    assert first.remaining_by_policy == {"policy-1": 0, "minute": minute_limit - 1}
+    denied = await engine.reserve(request_body.model_copy(update={"request_id": "month-denied"}))
+    assert not denied.allowed
+    assert denied.reset_at == "2030-12-01T00:00:00+00:00"
+    assert denied.retry_after > 60
+    assert set(denied.matched_policy_ids) == {"policy-1", "minute"}
+    assert set(denied.denied_policy_ids) == (
+        {"policy-1", "minute"} if minute_limit == 1 else {"policy-1"}
+    )
+    assert "policy-1" in denied.headers["X-RateLimit-Denied-Policies"]

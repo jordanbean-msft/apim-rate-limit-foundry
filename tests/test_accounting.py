@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from apim_rate_limit_foundry.accounting import cost, matching, validate_estimate, window
+from apim_rate_limit_foundry.accounting import cost, debits, matching, validate_estimate, window
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.models import Assignment, Policy, Price, Reserve, Usage
 
@@ -35,6 +35,27 @@ def test_conservative_price_covers_more_expensive_cached_tokens(price: Price) ->
 def test_price_catalog_rejects_binary_floating_point(price: Price) -> None:
     with pytest.raises(ValueError, match="decimal USD strings"):
         Price.model_validate({**price.model_dump(), "input_per_million": 0.1})
+
+
+def test_policy_counter_namespaces_include_metric_and_period(
+    request_body: Reserve,
+    policy: Policy,
+    price: Price,
+) -> None:
+    coincident_start = datetime(2026, 11, 1, tzinfo=UTC)
+    original = debits(request_body, [policy], price, coincident_start)[0]
+    changed_metric = policy.model_copy(update={"metric": "requests"})
+    changed_period = policy.model_copy(update={"period": "hour"})
+    changed_limit = policy.model_copy(update={"limit": 999})
+    assert (
+        original["key"] != debits(request_body, [changed_metric], price, coincident_start)[0]["key"]
+    )
+    assert (
+        original["key"] != debits(request_body, [changed_period], price, coincident_start)[0]["key"]
+    )
+    assert (
+        original["key"] == debits(request_body, [changed_limit], price, coincident_start)[0]["key"]
+    )
 
 
 @pytest.mark.parametrize(

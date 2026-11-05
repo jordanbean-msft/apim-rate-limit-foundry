@@ -74,7 +74,19 @@ async def test_redis_renews_entra_token_and_recycles_connections(settings: Setti
         await counters.close()
 
 
-async def test_cloud_runtime_constructs_real_clients_and_closes(settings: Settings) -> None:
+@pytest.mark.parametrize(
+    ("cloud", "audience", "authority"),
+    [
+        ("commercial", "https://storage.azure.com", "https://login.microsoftonline.com"),
+        ("government", "https://storage.azure.us", "https://login.microsoftonline.us"),
+    ],
+)
+async def test_cloud_runtime_constructs_real_clients_and_closes(
+    settings: Settings,
+    cloud: str,
+    audience: str,
+    authority: str,
+) -> None:
     production = settings.model_copy(
         update={
             "local_store_enabled": False,
@@ -82,6 +94,8 @@ async def test_cloud_runtime_constructs_real_clients_and_closes(settings: Settin
             "redis_host": "redis.example",
             "redis_username": "object-id",
             "azure_client_id": "client-id",
+            "azure_cloud": cloud,
+            "redis_token_scope": "https://explicitly-verified.example/.default",
         }
     )
     with (
@@ -94,11 +108,74 @@ async def test_cloud_runtime_constructs_real_clients_and_closes(settings: Settin
         assert isinstance(runtime.engine.repository, TableRepository)
         assert isinstance(runtime.engine.counters, RedisCounters)
         assert credential_class.call_args.kwargs["managed_identity_client_id"] == "client-id"
-        assert table_class.call_args.kwargs["audience"] == "https://storage.azure.com"
+        assert credential_class.call_args.kwargs["authority"] == authority
+        assert table_class.call_args.kwargs["audience"] == audience
         await runtime.close()
         credential_class.return_value.close.assert_awaited_once()
     with pytest.raises(ValueError, match="required"):
         Runtime(Settings(_env_file=None))
+
+
+async def test_local_persistent_runtime_uses_explicit_emulators_without_entra() -> None:
+    settings = Settings(
+        _env_file=None,
+        local_store_enabled=True,
+        local_redis_url="redis://127.0.0.1:6379/5",
+        local_table_connection_string="UseDevelopmentStorage=true",
+        table_name="LocalLedger",
+    )
+    table, redis = AsyncMock(), AsyncMock()
+    with (
+        patch(
+            "apim_rate_limit_foundry.runtime.TableClient.from_connection_string", return_value=table
+        ) as table_factory,
+        patch(
+            "apim_rate_limit_foundry.stores.redis.Redis.from_url",
+            return_value=redis,
+        ) as redis_factory,
+        patch("apim_rate_limit_foundry.runtime.DefaultAzureCredential") as credential_factory,
+    ):
+        runtime = Runtime(settings)
+        assert isinstance(runtime.engine.repository, TableRepository)
+        assert isinstance(runtime.engine.counters, RedisCounters)
+        table_factory.assert_called_once_with(
+            conn_str="UseDevelopmentStorage=true",
+            table_name="LocalLedger",
+        )
+        redis_factory.assert_called_once()
+        assert redis_factory.call_args.args == ("redis://127.0.0.1:6379/5",)
+        assert await runtime.engine.counters.connection() is redis
+        runtime.engine.counters.expires = 0
+        assert await runtime.engine.counters.connection() is redis
+        credential_factory.assert_not_called()
+        table.create_table.assert_not_awaited()
+        await runtime.close()
+        redis.aclose.assert_awaited_once()
+
+
+def test_local_persistent_configuration_requires_both_endpoints_and_opt_in() -> None:
+    with pytest.raises(ValueError, match="required together"):
+        Settings(_env_file=None, local_store_enabled=True, local_redis_url="redis://localhost")
+    with pytest.raises(ValueError, match="required together"):
+        Settings(
+            _env_file=None,
+            local_store_enabled=True,
+            local_table_connection_string="UseDevelopmentStorage=true",
+        )
+    with pytest.raises(ValueError, match="LOCAL_STORE_ENABLED"):
+        Settings(
+            _env_file=None,
+            local_redis_url="redis://localhost",
+            local_table_connection_string="UseDevelopmentStorage=true",
+        )
+    with pytest.raises(ValueError, match="prohibited"):
+        Settings(
+            _env_file=None,
+            website_site_name="app",
+            website_auth_enabled=True,
+            local_redis_url="redis://localhost",
+            local_table_connection_string="UseDevelopmentStorage=true",
+        )
 
 
 def test_structured_logs_only_emit_allowlisted_context() -> None:

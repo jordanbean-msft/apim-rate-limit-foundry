@@ -10,9 +10,18 @@ local debits = cjson.decode(ARGV[3])
 local decision = cjson.decode(ARGV[4])
 local allowed = true
 local remaining = 9000000000000
+local denied = {}
+local matched = {}
+local by_policy = {}
+local blocked_reset = ''
 for _, d in ipairs(debits) do
   local count = tonumber(redis.call('HGET', KEYS[1], 'c:' .. d.key) or '0')
-  if count + d.amount > d.limit then allowed = false end
+  table.insert(matched, d.policy_id)
+  if count + d.amount > d.limit then
+    allowed = false
+    table.insert(denied, d.policy_id)
+    if d.reset_at > blocked_reset then blocked_reset = d.reset_at end
+  end
 end
 for _, d in ipairs(debits) do
   local count = tonumber(redis.call('HGET', KEYS[1], 'c:' .. d.key) or '0')
@@ -21,10 +30,19 @@ for _, d in ipairs(debits) do
     redis.call('HSET', KEYS[1], 'c:' .. d.key, tostring(count))
   end
   remaining = math.min(remaining, d.limit - count)
+  by_policy[d.policy_id] = math.max(0, d.limit - count)
 end
 decision.allowed = allowed
 decision.remaining = math.max(0, remaining)
 decision.reason = allowed and 'reserved' or 'budget_exhausted'
+decision.matched_policy_ids = matched
+decision.remaining_by_policy = by_policy
+if allowed then
+  decision.denied_policy_ids = nil
+else
+  decision.denied_policy_ids = denied
+  decision.reset_at = blocked_reset
+end
 local saved = {fingerprint=ARGV[2], decision=decision, debits=allowed and debits or {}, final=''}
 redis.call('HSET', KEYS[1], 'r:' .. ARGV[1], cjson.encode(saved))
 return cjson.encode(decision)

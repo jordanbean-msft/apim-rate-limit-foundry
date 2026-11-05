@@ -64,6 +64,7 @@ class MemoryCounters:
                     raise Conflict("Request ID reused with different request")
                 return deepcopy(old["decision"])
             allowed = all(self.counts.get(d["key"], 0) + d["amount"] <= d["limit"] for d in debits)
+            blocked = [d for d in debits if self.counts.get(d["key"], 0) + d["amount"] > d["limit"]]
             remaining = min(
                 d["limit"] - self.counts.get(d["key"], 0) - (d["amount"] if allowed else 0)
                 for d in debits
@@ -73,6 +74,18 @@ class MemoryCounters:
                 "allowed": allowed,
                 "remaining": max(0, remaining),
                 "reason": "reserved" if allowed else "budget_exhausted",
+                "reset_at": max(d["reset_at"] for d in blocked)
+                if blocked
+                else decision["reset_at"],
+                "matched_policy_ids": [d["policy_id"] for d in debits],
+                "denied_policy_ids": [d["policy_id"] for d in blocked],
+                "remaining_by_policy": {
+                    d["policy_id"]: max(
+                        0,
+                        d["limit"] - self.counts.get(d["key"], 0) - (d["amount"] if allowed else 0),
+                    )
+                    for d in debits
+                },
             }
             self.reservations[reservation_id] = {
                 "fingerprint": fingerprint,
