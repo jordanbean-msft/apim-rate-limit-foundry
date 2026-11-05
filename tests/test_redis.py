@@ -40,6 +40,10 @@ async def test_real_lua_concurrent_atomic_and_idempotent(
     # Cold request did not receive admission. Its unknown liability remains conservative.
     retry = await engine.reserve(request_body)
     assert not retry.allowed
+    await engine.recover()
+    snapshot = await redis_counters.client.hgetall(redis_counters.key)
+    assert [int(value) for key, value in snapshot.items() if key.startswith("c:")] == [100]
+    assert not (await engine.reserve(request_body)).allowed
     await engine.repository.create(
         "policies",
         "request-cap",
@@ -152,6 +156,9 @@ async def test_real_lua_concurrent_exhaustion_counts_each_policy_once(
     assert sum(d.allowed for d in decisions) == 3
     saved = await redis_counters.client.hgetall(redis_counters.key)
     assert sorted(int(v) for k, v in saved.items() if k.startswith("c:")) == [3, 300]
+    await engine.recover()
+    rebuilt = await redis_counters.client.hgetall(redis_counters.key)
+    assert sorted(int(v) for k, v in rebuilt.items() if k.startswith("c:")) == [3, 300]
 
 
 @pytest.mark.parametrize("minute_limit", [1, 100])
@@ -189,3 +196,7 @@ async def test_real_lua_denial_reset_tracks_all_blocking_policies(
     assert set(denied.denied_policy_ids) == (
         {"policy-1", "minute"} if minute_limit == 1 else {"policy-1"}
     )
+    await engine.recover()
+    replay = await engine.reserve(request_body.model_copy(update={"request_id": "denied"}))
+    assert replay.reset_at == denied.reset_at
+    assert replay.denied_policy_ids == denied.denied_policy_ids

@@ -208,6 +208,42 @@ async def test_cache_loss_recovery_replays_settled_and_unresolved(
     assert (await engine.reserve(request_body)).allowed
 
 
+async def test_repeated_recovery_keeps_uncertain_liabilities_but_not_proven_denials(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+) -> None:
+    bounded = policy.model_copy(update={"limit": 200})
+    await engine.repository.mutate(
+        "policies",
+        policy.id,
+        bounded.model_dump(mode="json"),
+        {"id": "bounded"},
+    )
+    engine.counters = MemoryCounters(ready=False)
+    with pytest.raises(RecoveryRequired):
+        await engine.reserve(request_body)
+    await engine.recover()
+    uncertain = await engine.reserve(request_body)
+    assert not uncertain.allowed and uncertain.reason == "recovered_conservatively"
+    engine.counters = MemoryCounters(ready=False)
+    await engine.recover()
+    assert list(engine.counters.counts.values()) == [100]
+    assert not (await engine.reserve(request_body)).allowed
+    new_request = await engine.reserve(request_body.model_copy(update={"request_id": "new"}))
+    assert new_request.allowed
+    denied_request = request_body.model_copy(update={"request_id": "proven-denied"})
+    denied = await engine.reserve(denied_request)
+    assert not denied.allowed and denied.reason == "budget_exhausted"
+    for _ in range(2):
+        engine.counters = MemoryCounters(ready=False)
+        await engine.recover()
+        assert list(engine.counters.counts.values()) == [200]
+        assert not (await engine.reserve(request_body)).allowed
+        replay = await engine.reserve(denied_request)
+        assert not replay.allowed and replay.reason == "budget_exhausted"
+
+
 async def test_unknown_price_and_request_id_reuse_fail_closed(
     engine: Engine, request_body: Reserve
 ) -> None:
@@ -365,3 +401,7 @@ async def test_denial_reports_blocking_policy_reset_not_shorter_unblocked_window
         {"policy-1", "minute"} if minute_limit == 1 else {"policy-1"}
     )
     assert "policy-1" in denied.headers["X-RateLimit-Denied-Policies"]
+    await engine.recover()
+    replay = await engine.reserve(request_body.model_copy(update={"request_id": "month-denied"}))
+    assert replay.reset_at == denied.reset_at
+    assert replay.denied_policy_ids == denied.denied_policy_ids

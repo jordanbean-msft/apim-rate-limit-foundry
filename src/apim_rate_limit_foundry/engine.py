@@ -245,17 +245,30 @@ class Engine:
             if settlement:
                 counter = settlement["data"]["counter"]
             else:
-                allowed = usage_event is not None and usage_event["data"]["allowed"]
+                usage_data = usage_event["data"] if usage_event else {}
+                allowed = usage_data.get("allowed") is True
+                proven_denial = (
+                    usage_data.get("allowed") is False
+                    and usage_data.get("reason") == "budget_exhausted"
+                )
+                recorded_decision = {
+                    name: usage_data[name] for name in Decision.model_fields if name in usage_data
+                }
                 counter = {
                     "fingerprint": data["fingerprint"],
                     "final": "",
                     "decision": {
                         **data["decision"],
+                        **recorded_decision,
                         "allowed": allowed,
                         "remaining": 0,
-                        "reason": "recovered_conservatively",
+                        "reason": "budget_exhausted"
+                        if proven_denial
+                        else "recovered_conservatively",
                     },
-                    "debits": data["debits"] if allowed or usage_event is None else [],
+                    # A retry denied by recovery is not proof that the original
+                    # ambiguous attempt incurred no liability.
+                    "debits": [] if proven_denial else data["debits"],
                 }
             records.append({"id": intent["id"], "counter": counter})
         # Durable recovery audit must succeed before reopening the admission gate.
