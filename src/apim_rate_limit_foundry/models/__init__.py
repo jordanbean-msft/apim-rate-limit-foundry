@@ -12,6 +12,7 @@ from apim_rate_limit_foundry.models.reserve import Reserve
 from apim_rate_limit_foundry.models.settle import Settle
 from apim_rate_limit_foundry.models.types import Amount, Identifier, Money, Service
 from apim_rate_limit_foundry.models.usage import Usage
+from apim_rate_limit_foundry.models.usage_summary import UsageSummary
 
 __all__ = [
     "Amount",
@@ -29,4 +30,5 @@ __all__ = [
     "Service",
     "Settle",
     "Usage",
+    "UsageSummary",
 ]

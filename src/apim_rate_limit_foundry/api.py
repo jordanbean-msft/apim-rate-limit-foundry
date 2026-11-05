@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from azure.core.exceptions import AzureError
@@ -22,7 +22,9 @@ from apim_rate_limit_foundry.models import (
     Release,
     Reserve,
     Settle,
+    UsageSummary,
 )
+from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
 
@@ -108,6 +110,25 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     async def recover(actor: Auth) -> Record:
         actor.require("RateLimit.Admin")
         return await get_engine().recover()
+
+    @app.get("/api/usage/summary")
+    async def usage_summary(
+        actor: Auth,
+        period: Literal["hour", "day"] = "day",
+    ) -> list[UsageSummary]:
+        """Derive UTC admission-time ledger totals, applying available settlements.
+
+        Unresolved admitted requests contribute conservative reserved maxima.
+        These are not live Redis balances; unconfirmed intents without an
+        admission event are excluded.
+        """
+        actor.require("RateLimit.Admin", "RateLimit.Reader")
+        return await UsageSummaryService(get_engine().repository).summarize(
+            period,
+            actor.tenant_id,
+            actor.principal_id,
+            "RateLimit.Admin" in actor.roles,
+        )
 
     @app.get("/api/{collection}")
     async def listing(collection: str, actor: Auth) -> list[Record]:
