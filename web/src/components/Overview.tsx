@@ -156,8 +156,9 @@ export function Overview({
           </div>
           <h3>Streaming stays uninterrupted.</h3>
           <p className="muted">
-            We reserve uncached input plus maximum output before admission. Trusted actual usage can
-            release unused budget. Without it, the conservative debit stays final.
+            We reserve the highest applicable known input/cache rate plus maximum output before
+            admission. Anthropic uses an operator-verified input ceiling. Trusted actual usage can
+            release unused budget; otherwise the conservative debit stays final.
           </p>
           <div className="legend">
             <span className="legend-dot estimated" /> Estimated / conservative{' '}

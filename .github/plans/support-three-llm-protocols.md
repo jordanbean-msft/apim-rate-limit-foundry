@@ -49,7 +49,7 @@ Streaming remains conservative; do not parse/buffer SSE in APIM.
   Add all three bounded wire formats, raw-usage settlement, explicit operations/backend routing,
   cloud capability configuration, Anthropic version/auth headers and protocol contract/mock tests.
   Validate XML contracts, Terraform formatting/validation with zero diagnostics, mock plans/TFLint.
-- [ ] Portal owner: `web/` only.
+- [x] Portal owner: `web/` only.
   Add cache-write catalog editing/display, protocol-aware event inspection and cache unit visibility,
   representative demos and focused compatibility tests. Existing prices must not be forced to
   invent cache-write rates. Validate Node LTS lint/types/tests/build/audit.

@@ -29,6 +29,10 @@ const priceFields = [
   ['per_text_record', 'Text records · USD per text record'],
   ['per_request', 'Requests · USD per request'],
 ] as const;
+const cacheWritePriceFields = [
+  ['cache_write_5m_per_million', 'Cache write · 5 minutes (surcharge rate) · USD per million'],
+  ['cache_write_1h_per_million', 'Cache write · 1 hour (surcharge rate) · USD per million'],
+] as const;
 const decimal = /^(0|[1-9]\d*)(\.\d{1,12})?$/;
 const titles = {
   policies: 'policy',
@@ -62,6 +66,7 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
     model: '',
     version: '',
     ...Object.fromEntries(priceFields.map(([key]) => [key, '0'])),
+    ...Object.fromEntries(cacheWritePriceFields.map(([key]) => [key, ''])),
   };
 }
 
@@ -92,15 +97,22 @@ function parseDraft(collection: EditableCollection, draft: Draft): EditableRecor
   const service = str('service') as Service;
   const model = required('model', 'Model');
   if (collection === 'prices') {
+    const validatePrice = (key: string, label: string) => {
+      const value = str(key);
+      if (!decimal.test(value))
+        throw new Error(
+          `${label} must be a non-negative decimal USD amount (up to 12 decimal places).`,
+        );
+      return value;
+    };
     const prices = Object.fromEntries(
-      priceFields.map(([key, label]) => {
-        const value = str(key);
-        if (!decimal.test(value))
-          throw new Error(
-            `${label} must be a non-negative decimal USD amount (up to 12 decimal places).`,
-          );
-        return [key, value];
-      }),
+      priceFields.map(([key, label]) => [key, validatePrice(key, label)]),
+    );
+    const cacheWritePrices = Object.fromEntries(
+      cacheWritePriceFields.map(([key, label]) => [
+        key,
+        str(key) === '' ? null : validatePrice(key, label),
+      ]),
     );
     return {
       id,
@@ -108,6 +120,7 @@ function parseDraft(collection: EditableCollection, draft: Draft): EditableRecor
       model,
       version: required('version', 'Version'),
       ...prices,
+      ...cacheWritePrices,
     } as EditableRecord;
   }
   const integer = (key: string, label: string, minimum: number) => {
@@ -154,8 +167,8 @@ export function RecordEditor({
   const update = (key: string, value: string | boolean) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
   const service = draft.service as Service;
-  const input = (key: string, label: string, hint?: string, disabled = false) => (
-    <Field key={key} label={label} hint={hint} required>
+  const input = (key: string, label: string, hint?: string, disabled = false, required = true) => (
+    <Field key={key} label={label} hint={hint} required={required}>
       <Input
         value={String(draft[key] ?? '')}
         disabled={disabled || saving}
@@ -313,15 +326,28 @@ export function RecordEditor({
                       'Use a new ID/version for new rates; retain versions referenced by history.',
                     )}
                     <div className="form-note">
-                      Input = uncached prompt tokens. Output = generated tokens. Cached input =
-                      reported cache-hit tokens, not a second charge. Token rates are USD per
-                      1,000,000 tokens; all other rates are USD per single unit. Use 0 for unused
-                      dimensions. Sample prices are not live Azure quotes. When more than one
+                      Input price applies to uncached input. Output = generated tokens. Cached input
+                      is the discounted cache-read rate. Cache-write rates include the write
+                      surcharge: each replaces the uncached rate for its input subset, not an
+                      additional charge on total input. Token rates are USD per 1,000,000 tokens;
+                      all other rates are USD per single unit. Use 0 for unused standard dimensions,
+                      but leave optional cache-write rates blank when unknown or not configured.
+                      Unknown is not free: potentially billable cache writes without a known rate
+                      fail closed. Sample prices are not live Azure quotes. When more than one
                       version exists for the same service/model, configure the gateway to send
                       price_version; ambiguous versions fail closed.
                     </div>
                     {priceFields.map(([key, label]) =>
                       input(key, label, 'Exact decimal USD string; never microUSD.'),
+                    )}
+                    {cacheWritePriceFields.map(([key, label]) =>
+                      input(
+                        key,
+                        label,
+                        'Required for Anthropic; optional for legacy OpenAI. Full write rate including surcharge. Blank saves null, never an assumed zero.',
+                        false,
+                        false,
+                      ),
                     )}
                   </>
                 )}
@@ -346,8 +372,9 @@ export function RecordEditor({
               {collection === 'policies' && (
                 <p className="fine-print">
                   Periods use UTC calendar boundaries, not rolling windows. Cost reservations
-                  conservatively assume uncached input and maximum output; actual settlement can
-                  release the difference.
+                  conservatively use the highest applicable known input/cache rate and maximum
+                  output; actual settlement can release the difference. Anthropic uses an
+                  operator-verified input ceiling, not a universal byte-to-token bound.
                 </p>
               )}
             </DialogContent>

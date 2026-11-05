@@ -1,4 +1,5 @@
 export type Service = 'foundry' | 'document-intelligence' | 'language';
+export type ApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 export type Metric = 'cost' | 'tokens' | 'requests' | 'pages' | 'text_records';
 export type Period = 'minute' | 'hour' | 'day' | 'month';
 export type Role = 'RateLimit.Admin' | 'RateLimit.Reader' | 'RateLimit.Gateway';
@@ -25,6 +26,8 @@ export interface Price {
   input_per_million: string;
   output_per_million: string;
   cached_input_per_million: string;
+  cache_write_5m_per_million?: string | null;
+  cache_write_1h_per_million?: string | null;
   per_page: string;
   per_text_record: string;
   per_request: string;

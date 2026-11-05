@@ -4,15 +4,23 @@ import { services } from '../format';
 import { PolicyLimit } from './PolicyLimit';
 
 function PriceDetails({ price }: { price: Price }) {
+  const writeRate = (rate: string | null | undefined) =>
+    rate == null ? 'Not configured' : `$${rate}`;
   const summary =
     price.service === 'foundry'
-      ? `Input $${price.input_per_million} · Output $${price.output_per_million} · Cached $${price.cached_input_per_million} / million tokens`
+      ? `Uncached input $${price.input_per_million} · Output $${price.output_per_million} · Cache read discount $${price.cached_input_per_million} / million tokens`
       : price.service === 'document-intelligence'
         ? `$${price.per_page} / page · $${price.per_request} / request`
         : `$${price.per_text_record} / text record · $${price.per_request} / request`;
   return (
     <>
       <div className="price-summary">{summary}</div>
+      {price.service === 'foundry' && (
+        <div className="fine-print">
+          Cache write (includes surcharge) · 5 minutes {writeRate(price.cache_write_5m_per_million)}
+          {' · '}1 hour {writeRate(price.cache_write_1h_per_million)} / million tokens
+        </div>
+      )}
       <details>
         <summary>All accounting dimensions</summary>
         <dl className="price-dimensions">
@@ -20,8 +28,12 @@ function PriceDetails({ price }: { price: Price }) {
           <dd>${price.input_per_million}</dd>
           <dt>Output / million tokens</dt>
           <dd>${price.output_per_million}</dd>
-          <dt>Cached input / million tokens</dt>
+          <dt>Cached input / million tokens (read discount)</dt>
           <dd>${price.cached_input_per_million}</dd>
+          <dt>Cache write · 5 minutes / million tokens (includes surcharge)</dt>
+          <dd>{writeRate(price.cache_write_5m_per_million)}</dd>
+          <dt>Cache write · 1 hour / million tokens (includes surcharge)</dt>
+          <dd>{writeRate(price.cache_write_1h_per_million)}</dd>
           <dt>Per page</dt>
           <dd>${price.per_page}</dd>
           <dt>Per text record</dt>
@@ -167,9 +179,10 @@ export function ConfigurationTable({
       {collection === 'prices' && (
         <p className="fine-print panel-footnote">
           Exact decimal USD strings, not microUSD. Cached input replaces uncached pricing for
-          reported cache-hit tokens. The catalog is administrator-managed, not a live retail feed.
-          When multiple versions exist for a service/model, the gateway must pin an explicit
-          price_version or requests fail closed.
+          reported cache-hit tokens. Cache writes use their full surcharge-inclusive rate instead of
+          the uncached rate for that subset. Blank cache-write rates are unknown, not zero. The
+          catalog is administrator-managed, not a live retail feed. When multiple versions exist for
+          a service/model, the gateway must pin an explicit price_version or requests fail closed.
         </p>
       )}
     </>
