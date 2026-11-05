@@ -186,6 +186,90 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn('"tool_result"', validation)
         self.assertIn("only inline client tool definitions", validation)
 
+    def test_usage_null_guard_only_allows_known_optional_objects(self) -> None:
+        policy = ET.fromstring(render("policies/foundry-settlement.xml.tftpl"))
+        expression = policy.find("./when/set-variable").get("value")
+        nullable = re.search(r"var nullableObjects = new \[\] \{([^}]+)};", expression)
+        allowed = set(re.findall(r'"([^"]+)"', nullable[1]))
+        anthropic_usage = {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": None,
+            "server_tool_use": None,
+        }
+        openai_usage = {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": None,
+            "completion_tokens_details": None,
+            "input_tokens_details": None,
+            "output_tokens_details": None,
+        }
+        for usage in [anthropic_usage, openai_usage]:
+            with self.subTest(usage=usage):
+                null_fields = {key for key, value in usage.items() if value is None}
+                self.assertLessEqual(null_fields, allowed)
+        self.assertFalse({"input_tokens", "output_tokens", "unknown_detail"} & allowed)
+        self.assertRegex(
+            expression,
+            r"if \(field.Value.Type == JTokenType.Null\) \{\s+"
+            r'if \(!nullableObjects.Contains\(field.Name\)\) \{ return ""; }',
+        )
+        self.assertLess(
+            expression.index("!permitted.Contains(field.Name)"),
+            expression.index("field.Value.Type == JTokenType.Null"),
+        )
+        self.assertIn("result[field.Name] = field.Value", expression)
+        self.assertNotIn("JTokenType.Null ? 0", expression)
+
+    def test_responses_native_output_roundtrip_metadata_stays_inline(self) -> None:
+        policy = ET.fromstring(
+            "<fragment>" + render("policies/responses-admission.xml.tftpl") + "</fragment>"
+        )
+        expression = policy.find("./set-variable[@name='admission-error']").get("value")
+        message = {
+            "type": "message",
+            "id": "msg_example",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Done", "annotations": [], "logprobs": []}],
+        }
+        call = {
+            "type": "function_call",
+            "id": "fc_example",
+            "status": "completed",
+            "name": "lookup",
+            "call_id": "call_example",
+            "arguments": '{"key":"value"}',
+        }
+        for branch, fixture in [
+            ('if (type == "message")', message),
+            ('else if (type == "function_call")', call),
+        ]:
+            with self.subTest(item=fixture["type"]):
+                branch_expression = expression.split(branch, 1)[1]
+                fields = re.search(
+                    r"new \[\] \{([^}]+)}\.Contains\(field.Name\)", branch_expression
+                )
+                self.assertLessEqual(fixture.keys(), set(re.findall(r'"([^"]+)"', fields[1])))
+        self.assertIn('((string)item["id"]).Length > 200', expression)
+        self.assertIn('String.IsNullOrEmpty((string)item["id"])', expression)
+        self.assertIn('(string)item["status"] != "completed"', expression)
+        self.assertIn('if (content == null) { return "message content is required"; }', expression)
+        self.assertIn('item["arguments"] == null', expression)
+        self.assertIn('"type","text","annotations","logprobs"', expression)
+        self.assertIn('((JArray)block["logprobs"]).Count != 0', expression)
+        self.assertIn('(string)block["type"] != "output_text"', expression)
+        self.assertNotIn('"item_reference"', expression)
+        self.assertNotIn('"previous_response_id"', expression)
+        self.assertNotIn('"encrypted_content"', expression)
+        self.assertIn(
+            'return "opaque history and provider-managed items are unsupported"', expression
+        )
+        self.assertIn("body.ToString()", policy.find("./set-body").text)
+
     def test_openai_protocols_validate_bounds_and_preserve_supported_fields(self) -> None:
         chat = render("policies/foundry-admission.xml.tftpl")
         self.assertIn("supply exactly one output-token cap", chat)

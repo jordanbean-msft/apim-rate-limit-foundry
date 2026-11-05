@@ -14,13 +14,19 @@
           "cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation",
           "server_tool_use", "service_tier", "inference_geo"
         };
+        var nullableObjects = new [] {
+          "prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details",
+          "cache_creation", "server_tool_use"
+        };
         var result = new JObject();
         foreach (var field in usage.Properties()) {
           if (!permitted.Contains(field.Name)) { return ""; }
           result[field.Name] = field.Value;
         }
         foreach (var field in result.Properties()) {
-          if (field.Name == "service_tier" || field.Name == "inference_geo") {
+          if (field.Value.Type == JTokenType.Null) {
+            if (!nullableObjects.Contains(field.Name)) { return ""; }
+          } else if (field.Name == "service_tier" || field.Name == "inference_geo") {
             if (field.Value.Type != JTokenType.String ||
                 !System.Text.RegularExpressions.Regex.IsMatch((string)field.Value, "^[A-Za-z0-9._-]{1,64}$")) { return ""; }
           } else if (field.Value.Type == JTokenType.Object) {

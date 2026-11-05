@@ -68,11 +68,17 @@ references are unsupported.
 
 **Responses:** `input` is text or 1–128 inline messages/function-call/function-call-output
 items; message content is text or up to 128 `input_text`/assistant `output_text` blocks.
-Only empty output annotations are accepted. Optional text `instructions`, inline function
+Self-contained message/function-call items may preserve optional nonempty IDs (up to 200
+characters) and `status="completed"` from native SDK `response.output`; IDs never replace
+required inline content/arguments. Only empty output annotations and output-text `logprobs`
+arrays are accepted. Optional text `instructions`, inline function
 definitions, `tool_choice`, `parallel_tool_calls`, temperature/top-p and enumerated reasoning
 effort are preserved. Sends `store=false` and `background=false`; supplied true values reject.
 History IDs, `previous_response_id`, item references, encrypted reasoning, automatic
 truncation, media/files and provider-built-in tools are rejected.
+This bounded inline subset follows the [Responses REST input schemas](https://learn.microsoft.com/rest/api/microsoft-foundry/azureopenai/responses)
+and [SDK input union](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_input_param.py);
+preserving an item ID does not enable server-side history lookup.
 
 **Messages:** 1–128 user/assistant messages; text system prompt or up to 128 text system
 blocks; string content or up to 128 text/tool-use/tool-result blocks.
@@ -108,6 +114,8 @@ Only the small backend `usage` object (at most 8192 UTF-8 bytes), never prompt/r
 content, is forwarded as `provider_usage`; DI/Language continue sending normalized `usage`.
 Known integer counters/details and bounded tier/geography metadata are forwarded; unknown
 dimensions or malformed values skip settlement rather than being silently discarded.
+Known optional token-detail/cache-creation/server-tool objects may be JSON null and are
+forwarded unchanged; null required counters remain conservative, never invented as zero.
 Function normalizes Chat/Responses counts or Anthropic uncached + cache-read + both cache-write
 TTLs from the reserved protocol. Incomplete counters, unsupported billable dimensions and
 ambiguous TTL totals remain conservative; they are never replaced with zero.

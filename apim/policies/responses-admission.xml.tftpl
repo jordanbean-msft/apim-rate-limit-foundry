@@ -32,8 +32,14 @@
       var item = token as JObject;
       if (item == null) { return "input items must be objects"; }
       var type = item["type"] == null ? "message" : (string)item["type"];
+      if (type == "message" || type == "function_call") {
+        if (item["id"] != null &amp;&amp; (item["id"].Type != JTokenType.String ||
+            String.IsNullOrEmpty((string)item["id"]) || ((string)item["id"]).Length &gt; 200)) { return "inline item id must be bounded metadata"; }
+        if (item["status"] != null &amp;&amp; (item["status"].Type != JTokenType.String ||
+            (string)item["status"] != "completed")) { return "only completed inline history is supported"; }
+      }
       if (type == "message") {
-        if (item.Properties().Any(field =&gt; !new [] {"type","role","content"}.Contains(field.Name)) ||
+        if (item.Properties().Any(field =&gt; !new [] {"type","role","content","id","status"}.Contains(field.Name)) ||
             item["role"] == null || item["role"].Type != JTokenType.String ||
             !new [] {"user","assistant","system","developer"}.Contains((string)item["role"])) { return "only inline message roles are supported"; }
         var content = item["content"];
@@ -43,15 +49,17 @@
           if (blocks == null || blocks.Count == 0 || blocks.Count &gt; 128) { return "bounded inline text blocks are required"; }
           foreach (var entry in blocks) {
             var block = entry as JObject;
-            if (block == null || block.Properties().Any(field =&gt; !new [] {"type","text","annotations"}.Contains(field.Name)) ||
+            if (block == null || block.Properties().Any(field =&gt; !new [] {"type","text","annotations","logprobs"}.Contains(field.Name)) ||
                 !new [] {"input_text","output_text"}.Contains((string)block["type"]) ||
                 block["text"] == null || block["text"].Type != JTokenType.String ||
                 (block["annotations"] != null &amp;&amp; (!(block["annotations"] is JArray) || ((JArray)block["annotations"]).Count != 0)) ||
+                (block["logprobs"] != null &amp;&amp; ((string)block["type"] != "output_text" ||
+                  !(block["logprobs"] is JArray) || ((JArray)block["logprobs"]).Count != 0)) ||
                 ((string)block["type"] == "output_text" &amp;&amp; (string)item["role"] != "assistant")) { return "media, annotations and opaque history are unsupported"; }
           }
         }
       } else if (type == "function_call") {
-        if (item.Properties().Any(field =&gt; !new [] {"type","name","call_id","arguments"}.Contains(field.Name)) ||
+        if (item.Properties().Any(field =&gt; !new [] {"type","name","call_id","arguments","id","status"}.Contains(field.Name)) ||
             item["name"] == null || item["name"].Type != JTokenType.String || item["call_id"] == null || item["call_id"].Type != JTokenType.String ||
             item["arguments"] == null || item["arguments"].Type != JTokenType.String) { return "function calls require inline name, call_id and arguments"; }
       } else if (type == "function_call_output") {
