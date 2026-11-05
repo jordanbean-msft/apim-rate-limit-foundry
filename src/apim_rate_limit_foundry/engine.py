@@ -6,13 +6,17 @@ from uuid import uuid4
 
 from apim_rate_limit_foundry.accounting import (
     actual_debits,
+    cost,
     debits,
     digest,
     matching,
     validate_estimate,
 )
 from apim_rate_limit_foundry.config import Settings
+from apim_rate_limit_foundry.fingerprints import reserve_fingerprint, settlement_fingerprint
 from apim_rate_limit_foundry.models import Assignment, Decision, Policy, Price, Reserve, Settle
+from apim_rate_limit_foundry.normalization.incomplete import IncompleteUsageError
+from apim_rate_limit_foundry.normalization.settlement import normalize_settlement_usage
 from apim_rate_limit_foundry.stores.contracts import Conflict, CounterStore, Record, Repository
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,7 @@ class Engine:
     async def reserve(self, request: Reserve) -> Decision:
         validate_estimate(request, self.settings)
         reservation_id = digest(request.tenant_id, request.principal_id, request.request_id)
-        fingerprint = digest(request.model_dump_json())
+        fingerprint = reserve_fingerprint(request)
         intent = await self.repository.get("intents", reservation_id)
         if intent is None:
             policies = matching(
@@ -138,6 +142,15 @@ class Engine:
                     **decision,
                     "status": "reserved" if decision["allowed"] else "denied",
                     "estimated": True,
+                    "api_protocol": request.effective_protocol,
+                    "cost_micro_usd": cost(
+                        Price.model_validate(data["price"]),
+                        request.usage,
+                        True,
+                        request.effective_protocol,
+                    )
+                    if decision["allowed"]
+                    else 0,
                 },
             ),
         )
@@ -157,32 +170,48 @@ class Engine:
             raise Conflict("Unknown reservation")
         data = intent["data"]
         original = Reserve.model_validate(data["request"])
+        try:
+            usage = normalize_settlement_usage(request, original)
+        except IncompleteUsageError:
+            admitted = await self.repository.get("usage", request.reservation_id)
+            if admitted is None or not admitted["data"]["allowed"]:
+                raise Conflict("Unknown admitted reservation") from None
+            pending_id = digest(request.reservation_id, "incomplete_provider_usage")
+            pending = event(
+                "settlement_pending",
+                pending_id,
+                intent["tenant_id"],
+                intent["principal_id"],
+                {
+                    "status": "conservative",
+                    "estimated": True,
+                    "reason": "incomplete_provider_usage",
+                    "reservation_id": request.reservation_id,
+                    "api_protocol": original.effective_protocol,
+                },
+            )
+            return await self.repository.create("reconciliation", pending_id, pending)
         cached_reported = request.status == "actual" and (
-            "cached_input_tokens" in request.usage.model_fields_set
+            "cached_input_tokens" in usage.model_fields_set
         )
+        writes_reported = request.status == "actual" and {
+            "cache_write_input_tokens_5m",
+            "cache_write_input_tokens_1h",
+        }.issubset(usage.model_fields_set)
         if request.status == "actual":
-            required = {
-                "foundry": {"input_tokens", "output_tokens"},
-                "document-intelligence": {"pages"},
-                "language": {"text_records"},
-            }[original.service]
-            if not required.issubset(request.usage.model_fields_set):
-                raise ValueError("Actual usage is missing required service counters")
-            for name in ("input_tokens", "output_tokens", "pages", "text_records", "requests"):
-                if getattr(request.usage, name) > getattr(original.usage, name):
-                    raise ValueError("Actual usage exceeds admitted hard bound; retain reservation")
             charges = actual_debits(
                 data["debits"],
                 Price.model_validate(data["price"]),
-                request.usage,
+                usage,
                 conservative_input=not cached_reported,
+                api_protocol=original.effective_protocol,
             )
         else:
             charges = data["debits"]
         estimated = request.status != "actual" or (
-            original.service == "foundry" and request.usage.input_tokens > 0 and not cached_reported
+            original.service == "foundry" and usage.input_tokens > 0 and not cached_reported
         )
-        fingerprint = digest(request.model_dump_json(), str(cached_reported))
+        fingerprint = settlement_fingerprint(request, usage, cached_reported)
         counter = await self.counters.finalize(request.reservation_id, charges, fingerprint)
         result = event(
             "settlement",
@@ -193,8 +222,18 @@ class Engine:
                 "status": request.status,
                 "estimated": estimated,
                 "cached_input_reported": cached_reported if original.service == "foundry" else None,
+                "cache_write_input_reported": writes_reported
+                if original.effective_protocol == "anthropic-messages"
+                else None,
+                "api_protocol": original.effective_protocol,
+                "cost_micro_usd": cost(
+                    Price.model_validate(data["price"]),
+                    usage if request.status == "actual" else original.usage,
+                    request.status != "actual" or not cached_reported,
+                    original.effective_protocol,
+                ),
                 "reservation_id": request.reservation_id,
-                "usage": request.usage.model_dump(),
+                "usage": usage.model_dump(),
                 "debits": charges,
                 "counter": counter,
                 "fingerprint": fingerprint,
@@ -316,7 +355,16 @@ class Engine:
                             k: v
                             for k, v in settled["data"].items()
                             if k
-                            in ("debits", "status", "estimated", "usage", "cached_input_reported")
+                            in (
+                                "debits",
+                                "status",
+                                "estimated",
+                                "usage",
+                                "cached_input_reported",
+                                "cache_write_input_reported",
+                                "api_protocol",
+                                "cost_micro_usd",
+                            )
                         }
                     )
         else:

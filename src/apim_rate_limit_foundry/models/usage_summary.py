@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import Field
 
 from apim_rate_limit_foundry.models.contract import Contract
-from apim_rate_limit_foundry.models.types import Service
+from apim_rate_limit_foundry.models.types import ApiProtocol, Service
 
 
 class UsageSummary(Contract):
@@ -32,3 +32,6 @@ class UsageSummary(Contract):
     cached_input_tokens: int = 0
     pages: int = 0
     text_records: int = 0
+    api_protocol: ApiProtocol | None = None
+    cache_write_input_tokens_5m: int = 0
+    cache_write_input_tokens_1h: int = 0

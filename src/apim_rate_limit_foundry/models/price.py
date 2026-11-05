@@ -13,3 +13,5 @@ class Price(Contract):
     per_page: Money | None = None
     per_text_record: Money | None = None
     per_request: Money | None = None
+    cache_write_5m_per_million: Money | None = None
+    cache_write_1h_per_million: Money | None = None

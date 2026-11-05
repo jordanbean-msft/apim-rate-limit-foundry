@@ -5,7 +5,7 @@ from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.models import Assignment, Policy, Price, Reserve, Usage
+from apim_rate_limit_foundry.models import ApiProtocol, Assignment, Policy, Price, Reserve, Usage
 
 
 def digest(*values: str) -> str:
@@ -34,16 +34,28 @@ def window(period: str, now: datetime) -> tuple[datetime, datetime]:
     return start, end
 
 
-def cost(price: Price, usage: Usage, conservative: bool) -> int:
+def cost(
+    price: Price,
+    usage: Usage,
+    conservative: bool,
+    api_protocol: ApiProtocol | None = None,
+) -> int:
     cached = 0 if conservative else usage.cached_input_tokens
+    write_5m = 0 if conservative else usage.cache_write_input_tokens_5m
+    write_1h = 0 if conservative else usage.cache_write_input_tokens_1h
     input_rate = price.input_per_million
     if conservative and usage.input_tokens:
-        if input_rate is None or price.cached_input_per_million is None:
-            raise ValueError("Unknown input or cached-input unit price")
-        input_rate = max(input_rate, price.cached_input_per_million)
+        input_rates = [input_rate, price.cached_input_per_million]
+        if api_protocol == "anthropic-messages":
+            input_rates.extend([price.cache_write_5m_per_million, price.cache_write_1h_per_million])
+        if any(rate is None for rate in input_rates):
+            raise ValueError("Unknown input, cached-input, or cache-write unit price")
+        input_rate = max(rate for rate in input_rates if rate is not None)
     amounts = [
-        (usage.input_tokens - cached, input_rate, 1),
+        (usage.input_tokens - cached - write_5m - write_1h, input_rate, 1),
         (cached, price.cached_input_per_million, 1),
+        (write_5m, price.cache_write_5m_per_million, 1),
+        (write_1h, price.cache_write_1h_per_million, 1),
         (usage.output_tokens, price.output_per_million, 1),
         (usage.pages, price.per_page, 1_000_000),
         (usage.text_records, price.per_text_record, 1_000_000),
@@ -62,7 +74,12 @@ def cost(price: Price, usage: Usage, conservative: bool) -> int:
 
 def validate_estimate(request: Reserve, settings: Settings) -> None:
     usage = request.usage
-    if usage.requests != 1 or usage.cached_input_tokens:
+    if (
+        usage.requests != 1
+        or usage.cached_input_tokens
+        or usage.cache_write_input_tokens_5m
+        or usage.cache_write_input_tokens_1h
+    ):
         raise ValueError("Reserve one request without predicted cached hits")
     if (
         usage.input_tokens > settings.max_input_tokens
@@ -117,7 +134,7 @@ def debits(
         start, end = window(policy.period, now)
         usage = request.usage
         amount = {
-            "cost": cost(price, usage, True),
+            "cost": cost(price, usage, True, request.effective_protocol),
             "tokens": usage.input_tokens + usage.output_tokens,
             "requests": usage.requests,
             "pages": usage.pages,
@@ -148,9 +165,10 @@ def actual_debits(
     price: Price,
     usage: Usage,
     conservative_input: bool = False,
+    api_protocol: ApiProtocol | None = None,
 ) -> list[dict[str, Any]]:
     amounts = {
-        "cost": cost(price, usage, conservative_input),
+        "cost": cost(price, usage, conservative_input, api_protocol),
         "tokens": usage.input_tokens + usage.output_tokens,
         "requests": usage.requests,
         "pages": usage.pages,

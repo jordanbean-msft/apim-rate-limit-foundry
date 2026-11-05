@@ -41,10 +41,13 @@ Streaming remains conservative; do not parse/buffer SSE in APIM.
 
 ## Execution checklist
 
-- [ ] Backend owner: `src/`, `tests/`, root Function/package files only.
+- [x] Backend owner: `src/`, `tests/`, root Function/package files only.
   Add protocols/usage normalization/cache writes, accurate cost/summary/recovery persistence,
   focused backwards-compatibility and malformed/incomplete-usage tests.
   Validate Ruff, formatting, mypy, warning-free tests and coverage.
+  Complete: canonical legacy-compatible fingerprints, strict provider metadata, cache-write pricing,
+  scoped protocol/cache-write reporting, conservative incomplete/streaming accounting.
+  Validation: Ruff/format/mypy clean; 97 warning-free tests passed with real Redis/Azurite.
 - [ ] Gateway/infrastructure owner: `apim/`, `infra/`, `azure.yaml` only.
   Add all three bounded wire formats, raw-usage settlement, explicit operations/backend routing,
   cloud capability configuration, Anthropic version/auth headers and protocol contract/mock tests.
