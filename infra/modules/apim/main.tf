@@ -46,6 +46,7 @@ locals {
     max_output_tokens       = var.config.max_output_tokens
     max_document_pages      = var.config.max_document_pages
     max_language_characters = var.config.max_language_characters
+    llm_tokens_per_minute   = var.config.llm_tokens_per_minute
   }
   fragments = toset(["identity", "reserve", "settle"])
   ai_paths = {
@@ -127,7 +128,7 @@ resource "azurerm_api_management_api_operation_policy" "submit" {
     backend_query = each.key == "document-intelligence" ? "<set-query-parameter name=\"pages\" exists-action=\"override\"><value>@((string)context.Variables[\"document-pages\"])</value></set-query-parameter>" : (each.key == "language" ? "<set-query-parameter name=\"showStats\" exists-action=\"override\"><value>true</value></set-query-parameter>" : "")
     admission     = local.admission[each.key]
     settlement    = local.settlement[each.key]
-    llm_policy    = each.key == "foundry" && var.config.enable_optional_llm_policy ? "<llm-token-limit counter-key='@((string)context.Variables[\"principal-id\"])' tokens-per-minute=\"${var.config.llm_tokens_per_minute}\" estimate-prompt-tokens=\"true\" />" : ""
+    llm_policy    = each.key == "foundry" && var.config.enable_optional_llm_policy ? templatefile("${local.policy_root}/policies/llm-limit.xml.tftpl", local.shared) : ""
   }))
   depends_on = [azurerm_api_management_policy_fragment.this]
 }

@@ -12,6 +12,12 @@
     <authentication-managed-identity resource="${api_audience}" client-id="${gateway_client_id}" />
   </send-request>
   <set-header name="X-RateLimit-Estimated" exists-action="override">
-    <value>@(!context.Variables.ContainsKey("settlement-response") || context.Variables["settlement-response"] == null || ((IResponse)context.Variables["settlement-response"]).StatusCode != 200 ? "true" : "false")</value>
+    <value>@{
+      if (!context.Variables.ContainsKey("settlement-response") || context.Variables["settlement-response"] == null ||
+          ((IResponse)context.Variables["settlement-response"]).StatusCode != 200) { return "true"; }
+      var result = ((IResponse)context.Variables["settlement-response"]).Body.As&lt;JObject&gt;();
+      var data = result["data"] as JObject;
+      return data == null || (bool?)data["estimated"] != false ? "true" : "false";
+    }</value>
   </set-header>
 </fragment>

@@ -24,6 +24,7 @@ PARAMETERS = {
     "max_output_tokens": "4096",
     "max_document_pages": "20",
     "max_language_characters": "5120",
+    "llm_tokens_per_minute": "100000",
     "model": "sample-model",
     "endpoint": "https://backend.cognitiveservices.azure.us",
     "ai_audience": "https://cognitiveservices.azure.us",
@@ -43,6 +44,33 @@ def render(path: str, **values: str) -> str:
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_native_llm_denial_precedes_budget_reservation_with_tenant_key(self) -> None:
+        native = render("policies/llm-limit.xml.tftpl")
+        policy = ET.fromstring(
+            render(
+                "policies/ai.xml.tftpl",
+                service="foundry",
+                admission=render("policies/foundry-admission.xml.tftpl"),
+                settlement=render("policies/foundry-settlement.xml.tftpl"),
+                llm_policy=native,
+            )
+        )
+        statements = list(policy.find("inbound"))
+        limiter = policy.find("./inbound/llm-token-limit")
+        reservation = policy.find("./inbound/include-fragment[@fragment-id='limiter-reserve']")
+        self.assertLess(statements.index(limiter), statements.index(reservation))
+        self.assertIn('context.Variables["tenant-id"]', limiter.get("counter-key"))
+        self.assertIn('context.Variables["principal-id"]', limiter.get("counter-key"))
+
+    def test_unreported_cached_usage_is_not_fabricated_as_zero(self) -> None:
+        policy = render("policies/foundry-settlement.xml.tftpl")
+        self.assertIn('details["cached_tokens"] != null', policy)
+        self.assertIn('actual["cached_input_tokens"] = (int)details["cached_tokens"]', policy)
+        self.assertNotIn('new JProperty("cached_input_tokens",', policy)
+        settlement = render("fragments/settle.xml.tftpl")
+        self.assertIn('result["data"] as JObject', settlement)
+        self.assertIn('(bool?)data["estimated"] != false', settlement)
+
     def test_operator_environment_covers_all_deployment_placeholders(self) -> None:
         infra = ROOT.parent / "infra"
         configuration = (infra / "main.tfvars.json").read_text() + (

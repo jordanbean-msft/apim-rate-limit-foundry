@@ -32,7 +32,8 @@ are ignored. Publish and validate a catalog version before deploying a route pin
 Policy fragments contain only statements, not sections or `<base>`. Native
 `rate-limit-by-key` burst protection executes before the external reservation.
 Optional `llm-token-limit` is disabled unless Commercial capability has been explicitly
-verified; it is not the budget ledger. Unknown prices are rejected by the limiter.
+verified; it executes before reservation with a tenant-qualified principal key, so native
+denials cannot debit the budget ledger. Unknown prices are rejected by the limiter.
 
 Limiter backend URLs are exactly `/api/decisions/reserve`, `/settle`, `/release` under
 `/api/decisions` (release is intentionally **not** invoked by these policies).
@@ -42,7 +43,9 @@ tenant, canonical principal, model and reservation. Bind failures are fail-close
 do not leak the backend `Operation-Location`.
 
 Nonstreaming response usage is read with `preserveContent: true` and settles actual
-prompt/output/cached tokens. Streaming responses are forwarded with
+prompt/output/cached tokens. An absent cached-token count is never fabricated as zero:
+the limiter retains estimated cost and the gateway preserves its `data.estimated` flag,
+even when settlement returns HTTP 200. Streaming responses are forwarded with
 `buffer-response=false` and **never read by outbound policies**; their worst-case
 reservation remains until trusted telemetry reconciliation or conservative timer
 finalization. Transport errors and ambiguous backend errors never auto-refund.

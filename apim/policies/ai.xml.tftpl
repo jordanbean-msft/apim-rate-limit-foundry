@@ -27,8 +27,8 @@
       </when>
     </choose>
     ${admission}
-    <include-fragment fragment-id="limiter-reserve" />
     ${llm_policy}
+    <include-fragment fragment-id="limiter-reserve" />
     <set-backend-service base-url="${endpoint}" />
     <rewrite-uri template="${backend_path}" copy-unmatched-params="false" />
     <set-query-parameter name="api-version" exists-action="override"><value>${api_version}</value></set-query-parameter>

@@ -5,10 +5,13 @@
       var usage = body["usage"] as JObject;
       if (usage == null || usage["prompt_tokens"] == null || usage["completion_tokens"] == null) { return ""; }
       var details = usage["prompt_tokens_details"] as JObject;
-      return new JObject(new JProperty("input_tokens", (int)usage["prompt_tokens"]),
+      var actual = new JObject(new JProperty("input_tokens", (int)usage["prompt_tokens"]),
         new JProperty("output_tokens", (int)usage["completion_tokens"]),
-        new JProperty("cached_input_tokens", details == null ? 0 : (int?)details["cached_tokens"] ?? 0),
-        new JProperty("requests", 1)).ToString();
+        new JProperty("requests", 1));
+      if (details != null &amp;&amp; details["cached_tokens"] != null) {
+        actual["cached_input_tokens"] = (int)details["cached_tokens"];
+      }
+      return actual.ToString();
     }' />
     <choose>
       <when condition='@(!String.IsNullOrEmpty((string)context.Variables["actual-usage"]))'>
