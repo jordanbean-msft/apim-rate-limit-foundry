@@ -26,6 +26,10 @@ locals {
   names        = { for key, name in azurecaf_name.resource : key => name.result }
   function_url = "https://${local.names.function}.${local.web_suffix}"
   web_url      = "https://${local.names.web}.${local.web_suffix}"
+  ai_reference_groups = {
+    for key, backend in var.ai : backend.resource_id => key... if backend.enabled && !backend.create
+  }
+  ai_reference_diagnostic_keys = toset([for keys in values(local.ai_reference_groups) : sort(keys)[0]])
 }
 resource "azurecaf_name" "resource" {
   for_each      = local.resource_types
@@ -86,6 +90,7 @@ module "ai" {
   public_network_access_enabled = var.public_network_access_enabled
   config                        = var.ai
   gateway_principal_id          = module.identity.gateway.principal_id
+  protocols                     = var.llm_protocols
   depends_on                    = [module.identity]
 }
 module "hosting" {
@@ -120,6 +125,8 @@ module "hosting" {
     REDIS_TOKEN_SCOPE                    = var.redis.token_scope
     LOCAL_AUTH_ENABLED                   = "false"
     LOCAL_STORE_ENABLED                  = "false"
+    MAX_INPUT_TOKENS                     = tostring(var.hosting.max_input_tokens)
+    MAX_OUTPUT_TOKENS                    = tostring(var.gateway.max_output_tokens)
     SCM_DO_BUILD_DURING_DEPLOYMENT       = "true"
     ENABLE_ORYX_BUILD                    = "true"
   }
@@ -154,6 +161,7 @@ module "apim" {
   ai                            = module.ai.backends
   application_insights_id       = module.monitoring.app_insights_id
   instrumentation_key           = module.monitoring.app_insights_instrumentation_key
+  max_input_tokens              = var.hosting.max_input_tokens
   depends_on                    = [module.identity]
 }
 module "private_endpoints" {
@@ -191,6 +199,10 @@ module "diagnostics" {
       storage-file  = "${module.storage.id}/fileServices/default"
       redis         = module.redis.id
     },
-    { for key, backend in module.ai.backends : "ai-${key}" => backend.id }
+    { for key, backend in module.ai.backends : "ai-${key}" => backend.id if(
+      (!contains(["responses", "anthropic"], key) && (try(var.ai[key].create, false) || contains(local.ai_reference_diagnostic_keys, key))) ||
+      (!contains([for item in values(var.ai) : item.resource_id if item.enabled && !item.create], backend.id) &&
+      (key != "anthropic" || !var.llm_protocols.responses.enabled || var.llm_protocols.anthropic.resource_id != var.llm_protocols.responses.resource_id))
+    ) }
   )
 }

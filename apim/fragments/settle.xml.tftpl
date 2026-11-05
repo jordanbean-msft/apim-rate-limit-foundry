@@ -4,10 +4,15 @@
     <set-method>POST</set-method>
     <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
     <set-body>@{
-      return new JObject(
+      var request = new JObject(
         new JProperty("reservation_id", (string)context.Variables["reservation-id"]),
-        new JProperty("usage", JObject.Parse((string)context.Variables["actual-usage"])),
-        new JProperty("status", "actual")).ToString();
+        new JProperty("status", "actual"));
+      if (context.Variables.ContainsKey("provider-usage")) {
+        request["provider_usage"] = JObject.Parse((string)context.Variables["provider-usage"]);
+      } else {
+        request["usage"] = JObject.Parse((string)context.Variables["actual-usage"]);
+      }
+      return request.ToString();
     }</set-body>
     <authentication-managed-identity resource="${api_audience}" client-id="${gateway_client_id}" />
   </send-request>

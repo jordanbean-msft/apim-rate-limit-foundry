@@ -48,10 +48,13 @@ Streaming remains conservative; do not parse/buffer SSE in APIM.
   Complete: canonical legacy-compatible fingerprints, strict provider metadata, cache-write pricing,
   scoped protocol/cache-write reporting, conservative incomplete/streaming accounting.
   Validation: Ruff/format/mypy clean; 97 warning-free tests passed with real Redis/Azurite.
-- [ ] Gateway/infrastructure owner: `apim/`, `infra/`, `azure.yaml` only.
+- [x] Gateway/infrastructure owner: `apim/`, `infra/`, `azure.yaml` only.
   Add all three bounded wire formats, raw-usage settlement, explicit operations/backend routing,
   cloud capability configuration, Anthropic version/auth headers and protocol contract/mock tests.
   Validate XML contracts, Terraform formatting/validation with zero diagnostics, mock plans/TFLint.
+  Completed: 18 warning-free policy/preflight tests, 11 mocked plans, Terraform validation with
+  zero errors/warnings, recursive formatting/TFLint, Ruff and shell syntax checks. No live Azure
+  deployment or APIM server-side compiler/availability certification.
 - [x] Portal owner: `web/` only.
   Add cache-write catalog editing/display, protocol-aware event inspection and cache unit visibility,
   representative demos and focused compatibility tests. Existing prices must not be forced to

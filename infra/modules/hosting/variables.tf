@@ -36,6 +36,7 @@ variable "config" {
     web_workers         = number
     minimum_tls_version = string
     cors_origins        = list(string)
+    max_input_tokens    = number
   })
 }
 variable "function_identity" {

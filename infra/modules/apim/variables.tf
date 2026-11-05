@@ -25,21 +25,22 @@ variable "subnet_id" {
 variable "config" {
   description = "Gateway capability, identity and conservative admission settings."
   type = object({
-    sku_name                    = string
-    publisher_name              = string
-    publisher_email             = string
-    client_audiences            = list(string)
-    subscription_tenant_mapping = map(string)
-    burst_calls                 = number
-    burst_seconds               = number
-    max_body_bytes              = number
-    max_output_tokens           = number
-    max_document_pages          = number
-    max_language_characters     = number
-    send_request_timeout        = number
-    enable_optional_llm_policy  = bool
-    llm_policy_verified         = bool
-    llm_tokens_per_minute       = number
+    sku_name                       = string
+    publisher_name                 = string
+    publisher_email                = string
+    client_audiences               = list(string)
+    subscription_tenant_mapping    = map(string)
+    burst_calls                    = number
+    burst_seconds                  = number
+    max_body_bytes                 = number
+    max_output_tokens              = number
+    max_document_pages             = number
+    max_language_characters        = number
+    send_request_timeout           = number
+    enable_optional_llm_policy     = bool
+    llm_policy_verified            = bool
+    llm_tokens_per_minute          = number
+    openai_byte_tokenizer_verified = bool
   })
 }
 variable "identity" {
@@ -69,14 +70,21 @@ variable "web_url" {
 variable "ai" {
   description = "Enabled exact AI backend references."
   type = map(object({
-    id            = string
-    endpoint      = string
-    audience      = string
-    model         = string
-    api_version   = string
-    price_version = string
-    created       = bool
+    id                   = string
+    endpoint             = string
+    audience             = string
+    model                = string
+    api_version          = string
+    price_version        = string
+    created              = bool
+    api_protocol         = string
+    context_input_tokens = number
+    anthropic_version    = string
   }))
+}
+variable "max_input_tokens" {
+  description = "Shared Function input admission bound, not a universal tokenizer assumption."
+  type        = number
 }
 variable "application_insights_id" {
   description = "Native APIM telemetry resource."

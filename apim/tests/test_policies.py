@@ -22,6 +22,8 @@ PARAMETERS = {
     "send_request_timeout": "10",
     "max_body_bytes": "1048576",
     "max_output_tokens": "4096",
+    "max_input_tokens": "200000",
+    "context_input_tokens": "200000",
     "max_document_pages": "20",
     "max_language_characters": "5120",
     "llm_tokens_per_minute": "100000",
@@ -29,10 +31,13 @@ PARAMETERS = {
     "endpoint": "https://backend.cognitiveservices.azure.us",
     "ai_audience": "https://cognitiveservices.azure.us",
     "api_version": "2024-11-30",
+    "api_protocol": "openai-chat",
     "price_version": "sample-v1",
     "backend_path": "/model",
     "backend_query": "",
     "llm_policy": "",
+    "version_policy": "",
+    "provider_headers": "",
 }
 
 
@@ -64,12 +69,16 @@ class GatewayPolicyTests(unittest.TestCase):
 
     def test_unreported_cached_usage_is_not_fabricated_as_zero(self) -> None:
         policy = render("policies/foundry-settlement.xml.tftpl")
-        self.assertIn('details["cached_tokens"] != null', policy)
-        self.assertIn('actual["cached_input_tokens"] = (int)details["cached_tokens"]', policy)
         self.assertNotIn('new JProperty("cached_input_tokens",', policy)
+        self.assertIn("result[field.Name] = field.Value", policy)
+        self.assertIn('"cache_creation"', policy)
+        self.assertIn("8192", policy)
         settlement = render("fragments/settle.xml.tftpl")
         self.assertIn('result["data"] as JObject', settlement)
         self.assertIn('(bool?)data["estimated"] != false', settlement)
+        self.assertIn('request["provider_usage"]', settlement)
+        self.assertIn("} else {", settlement)
+        self.assertIn('request["usage"]', settlement)
 
     def test_operator_environment_covers_all_deployment_placeholders(self) -> None:
         infra = ROOT.parent / "infra"
@@ -83,6 +92,8 @@ class GatewayPolicyTests(unittest.TestCase):
     def test_complete_rendered_policy_xml(self) -> None:
         for service, prefix in [
             ("foundry", "foundry"),
+            ("foundry", "responses"),
+            ("foundry", "anthropic"),
             ("document-intelligence", "document"),
             ("language", "language"),
         ]:
@@ -91,7 +102,11 @@ class GatewayPolicyTests(unittest.TestCase):
                 settlement = render(
                     "policies/document-submit.xml.tftpl"
                     if prefix == "document"
-                    else f"policies/{prefix}-settlement.xml.tftpl"
+                    else (
+                        "policies/foundry-settlement.xml.tftpl"
+                        if prefix in {"foundry", "responses", "anthropic"}
+                        else f"policies/{prefix}-settlement.xml.tftpl"
+                    )
                 )
                 xml = render(
                     "policies/ai.xml.tftpl",
@@ -131,8 +146,97 @@ class GatewayPolicyTests(unittest.TestCase):
         xml = render("policies/foundry-settlement.xml.tftpl")
         condition = ET.fromstring(xml).find("when").get("condition")
         self.assertIn('!context.Variables.GetValueOrDefault<bool>("streaming"', condition)
+        self.assertIn('StartsWith("application/json")', condition)
         self.assertIn("preserveContent: true", xml)
-        self.assertIn("cached_tokens", xml)
+        self.assertIn("prompt_tokens_details", xml)
+        self.assertIn("input_tokens_details", xml)
+
+    def test_raw_provider_usage_only_is_forwarded_without_response_contents(self) -> None:
+        policy = ET.fromstring(render("policies/foundry-settlement.xml.tftpl"))
+        expression = policy.find("./when/set-variable").get("value")
+        self.assertIn('var usage = body["usage"] as JObject', expression)
+        self.assertIn("var result = new JObject()", expression)
+        self.assertNotIn("return body.ToString()", expression)
+        self.assertIn("field.Value.Type != JTokenType.Integer", expression)
+        self.assertNotIn('new JProperty("input_tokens",', expression)
+        fragment = render("fragments/settle.xml.tftpl")
+        self.assertNotIn('request["api_protocol"]', fragment)
+        reserve = render("fragments/reserve.xml.tftpl")
+        self.assertIn('request["api_protocol"]', reserve)
+        self.assertIn('if (!permitted.Contains(field.Name)) { return ""; }', expression)
+        for field in ["service_tier", "inference_geo", "server_tool_use"]:
+            self.assertIn(f'"{field}"', expression)
+        for protocol in ["foundry", "responses", "anthropic"]:
+            admission = render(f"policies/{protocol}-admission.xml.tftpl")
+            fields = admission.split("foreach (var field in body.Properties())", 1)[0]
+            for override in ["service_tier", "inference_geo", "speed", "batch"]:
+                self.assertNotIn(f'"{override}"', fields)
+
+    def test_anthropic_uses_verified_full_context_not_openai_byte_estimation(self) -> None:
+        policy = ET.fromstring(
+            "<fragment>" + render("policies/anthropic-admission.xml.tftpl") + "</fragment>"
+        )
+        usage = policy.find("./set-variable[@name='usage']").get("value")
+        self.assertIn('new JProperty("input_tokens", 200000)', usage)
+        self.assertNotIn("UTF8", usage)
+        validation = policy.find("./set-variable[@name='admission-error']").get("value")
+        self.assertIn('"cache_control"', validation)
+        self.assertIn('"5m","1h"', validation)
+        self.assertIn('"tool_use"', validation)
+        self.assertIn('"tool_result"', validation)
+        self.assertIn("only inline client tool definitions", validation)
+
+    def test_openai_protocols_validate_bounds_and_preserve_supported_fields(self) -> None:
+        chat = render("policies/foundry-admission.xml.tftpl")
+        self.assertIn("supply exactly one output-token cap", chat)
+        self.assertIn('body["max_tokens"] ?? body["max_completion_tokens"]', chat)
+        self.assertIn("n must be 1", chat)
+        self.assertIn('"tool_calls"', chat)
+        self.assertIn('"tool_call_id"', chat)
+        self.assertIn("UTF8.GetByteCount(body.ToString())", chat)
+        responses = render("policies/responses-admission.xml.tftpl")
+        self.assertIn('"function_call_output"', responses)
+        self.assertIn('"max_output_tokens"', responses)
+        self.assertIn('body["store"] = false', responses)
+        self.assertIn('body["background"] = false', responses)
+        self.assertNotIn('"previous_response_id"', responses)
+        self.assertIn("unsupported Responses field:", responses)
+        for protocol in ["foundry", "responses", "anthropic"]:
+            admission = ET.fromstring(
+                "<fragment>" + render(f"policies/{protocol}-admission.xml.tftpl") + "</fragment>"
+            )
+            for body in admission.findall("set-body"):
+                self.assertIn("body.ToString()", body.text)
+                self.assertNotIn("new JObject(", body.text)
+
+    def test_provider_credentials_are_stripped_and_anthropic_version_is_pinned(self) -> None:
+        policy = ET.fromstring(
+            render(
+                "policies/ai.xml.tftpl",
+                service="foundry",
+                api_protocol="anthropic-messages",
+                admission=render("policies/anthropic-admission.xml.tftpl"),
+                settlement=render("policies/foundry-settlement.xml.tftpl"),
+                provider_headers='<set-header name="anthropic-version" exists-action="override"><value>2023-06-01</value></set-header>',
+            )
+        )
+        for name in [
+            "api-key",
+            "x-api-key",
+            "api-version",
+            "anthropic-beta",
+            "OpenAI-Beta",
+            "OpenAI-Organization",
+            "OpenAI-Project",
+        ]:
+            self.assertEqual(
+                policy.find(f"./inbound/set-header[@name='{name}']").get("exists-action"), "delete"
+            )
+        self.assertEqual(
+            policy.find("./inbound/set-header[@name='anthropic-version']/value").text, "2023-06-01"
+        )
+        self.assertEqual(policy.find("./inbound/rewrite-uri").get("copy-unmatched-params"), "false")
+        self.assertIsNone(policy.find("./inbound/set-query-parameter[@name='api-version']"))
 
     def test_document_poll_checks_owner_before_backend_and_settles_without_reserving(self) -> None:
         xml = render("policies/document-poll.xml.tftpl")

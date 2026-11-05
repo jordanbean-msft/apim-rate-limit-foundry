@@ -66,10 +66,15 @@ variable "hosting" {
     web_workers         = number
     minimum_tls_version = string
     cors_origins        = list(string)
+    max_input_tokens    = number
   })
   validation {
     condition     = can(regex("^(EP[123]|[PS][0-9].*)$", var.hosting.functions_sku)) && var.hosting.python_version == "3.12"
     error_message = "Use Linux Python 3.12 on Elastic Premium or Dedicated (not Flex/Consumption)."
+  }
+  validation {
+    condition     = var.hosting.max_input_tokens >= 1 && var.hosting.max_input_tokens <= 2147483647 && floor(var.hosting.max_input_tokens) == var.hosting.max_input_tokens
+    error_message = "Function MAX_INPUT_TOKENS must be a positive 32-bit integer admission bound."
   }
 }
 variable "storage" {
@@ -105,22 +110,27 @@ variable "identity" {
 variable "gateway" {
   description = "Portable classic APIM tier, validated token audience, routing, and admission caps."
   type = object({
-    sku_name                    = string
-    publisher_name              = string
-    publisher_email             = string
-    client_audiences            = list(string)
-    subscription_tenant_mapping = map(string)
-    burst_calls                 = number
-    burst_seconds               = number
-    max_body_bytes              = number
-    max_output_tokens           = number
-    max_document_pages          = number
-    max_language_characters     = number
-    send_request_timeout        = number
-    enable_optional_llm_policy  = bool
-    llm_policy_verified         = bool
-    llm_tokens_per_minute       = number
+    sku_name                       = string
+    publisher_name                 = string
+    publisher_email                = string
+    client_audiences               = list(string)
+    subscription_tenant_mapping    = map(string)
+    burst_calls                    = number
+    burst_seconds                  = number
+    max_body_bytes                 = number
+    max_output_tokens              = number
+    max_document_pages             = number
+    max_language_characters        = number
+    send_request_timeout           = number
+    enable_optional_llm_policy     = bool
+    llm_policy_verified            = bool
+    llm_tokens_per_minute          = number
+    openai_byte_tokenizer_verified = bool
   })
+  validation {
+    condition     = !var.ai["foundry"].enabled || var.gateway.openai_byte_tokenizer_verified
+    error_message = "Chat admission requires explicit verification of the deployed OpenAI byte-tokenizer bound."
+  }
   validation {
     condition     = can(regex("^(Developer|Premium)_", var.gateway.sku_name))
     error_message = "The shared internal-VNet baseline supports classic Developer/Premium only."
@@ -192,4 +202,77 @@ variable "tags" {
   description = "Additional resource tags."
   type        = map(string)
   default     = {}
+}
+variable "llm_protocols" {
+  description = "Explicitly referenced optional LLM backends; enabling a protocol is not a cloud availability claim."
+  type = object({
+    responses = object({
+      enabled                   = bool
+      capability_verified       = bool
+      government_verified       = bool
+      byte_tokenizer_verified   = bool
+      private_endpoint_verified = bool
+      resource_id               = string
+      endpoint                  = string
+      audience                  = string
+      location                  = string
+      deployment_name           = string
+      price_version             = string
+      role_definition_name      = string
+      api_version               = string
+    })
+    anthropic = object({
+      enabled                   = bool
+      capability_verified       = bool
+      private_endpoint_verified = bool
+      hard_input_cap_verified   = bool
+      input_cap_evidence        = string
+      context_input_tokens      = number
+      resource_id               = string
+      endpoint                  = string
+      audience                  = string
+      location                  = string
+      deployment_name           = string
+      price_version             = string
+      anthropic_version         = string
+      role_definition_name      = string
+    })
+  })
+  validation {
+    condition = !var.llm_protocols.responses.enabled || (
+      var.llm_protocols.responses.capability_verified && var.llm_protocols.responses.byte_tokenizer_verified &&
+      contains(["v1", "preview"], var.llm_protocols.responses.api_version) &&
+      (var.azure_cloud != "AzureUSGovernment" || var.llm_protocols.responses.government_verified) &&
+      can(regex(var.azure_cloud == "AzureUSGovernment" ? "^https://[a-z0-9-]+\\.openai\\.azure\\.us/?$" : "^https://[a-z0-9-]+\\.openai\\.azure\\.com/?$", var.llm_protocols.responses.endpoint))
+    )
+    error_message = "Responses requires a verified regional v1 endpoint/tokenizer; Government additionally requires explicit sovereign availability verification and a sovereign endpoint."
+  }
+  validation {
+    condition = !var.llm_protocols.anthropic.enabled || (
+      var.azure_cloud == "AzureCloud" && var.llm_protocols.anthropic.capability_verified &&
+      var.llm_protocols.anthropic.hard_input_cap_verified && length(trimspace(var.llm_protocols.anthropic.input_cap_evidence)) > 0 &&
+      var.llm_protocols.anthropic.context_input_tokens >= 1 &&
+      floor(var.llm_protocols.anthropic.context_input_tokens) == var.llm_protocols.anthropic.context_input_tokens &&
+      var.llm_protocols.anthropic.context_input_tokens <= var.hosting.max_input_tokens &&
+      can(regex("^https://[a-z0-9-]+\\.services\\.ai\\.azure\\.com/?$", var.llm_protocols.anthropic.endpoint)) &&
+      can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.llm_protocols.anthropic.anthropic_version))
+    )
+    error_message = "Claude requires a separately referenced Commercial Foundry endpoint, verified hard input ceiling/evidence <= Function MAX_INPUT_TOKENS, and a pinned anthropic-version; Government Claude is not enabled by this sample."
+  }
+  validation {
+    condition = alltrue([for protocol in [var.llm_protocols.responses, var.llm_protocols.anthropic] : !protocol.enabled || (
+      startswith(protocol.resource_id, "/subscriptions/") &&
+      can(regex("^https://[a-z0-9.-]+$", protocol.audience)) &&
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", protocol.deployment_name)) &&
+      can(regex("^[A-Za-z0-9._-]{1,200}$", protocol.price_version)) &&
+      contains(["Cognitive Services User", "Cognitive Services OpenAI User", "Azure AI User", "Foundry User"], protocol.role_definition_name) &&
+      (var.public_network_access_enabled || protocol.private_endpoint_verified) &&
+      (var.azure_cloud == "AzureUSGovernment" ? contains(["usgovvirginia", "usgovarizona", "usgovtexas"], lower(protocol.location)) : !startswith(lower(protocol.location), "usgov"))
+    )])
+    error_message = "Enabled protocol references require verified same-cloud resource/endpoint/audience, private connectivity, role, model and price pins."
+  }
+  validation {
+    condition     = !var.llm_protocols.anthropic.enabled || contains(["Cognitive Services User", "Azure AI User", "Foundry User"], var.llm_protocols.anthropic.role_definition_name)
+    error_message = "Claude requires a Foundry/AI User or Cognitive Services User role, not an OpenAI-only role."
+  }
 }

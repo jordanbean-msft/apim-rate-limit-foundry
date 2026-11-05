@@ -3,6 +3,7 @@
     <base />
     <include-fragment fragment-id="limiter-identity" />
     <set-variable name="service" value="${service}" />
+    <set-variable name="api-protocol" value="${api_protocol}" />
     <set-variable name="model" value="${model}" />
     <set-variable name="price-version" value="${price_version}" />
     <set-variable name="streaming" value="@(false)" />
@@ -27,13 +28,41 @@
       </when>
     </choose>
     ${admission}
+    <choose>
+      <when condition='@(!String.IsNullOrEmpty((string)context.Variables["api-protocol"]))'>
+        <set-variable name="pinned-model-valid" value='@{
+          var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+          return body["model"] == null || (body["model"].Type == JTokenType.String &amp;&amp; (string)body["model"] == (string)context.Variables["model"]);
+        }' />
+        <choose>
+          <when condition='@(!context.Variables.GetValueOrDefault&lt;bool&gt;("pinned-model-valid", false))'>
+            <return-response><set-status code="400" reason="Model must match the pinned deployment" /></return-response>
+          </when>
+        </choose>
+        <set-body>@{
+          var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+          body["model"] = (string)context.Variables["model"];
+          return body.ToString();
+        }</set-body>
+      </when>
+    </choose>
     ${llm_policy}
     <include-fragment fragment-id="limiter-reserve" />
     <set-backend-service base-url="${endpoint}" />
     <rewrite-uri template="${backend_path}" copy-unmatched-params="false" />
-    <set-query-parameter name="api-version" exists-action="override"><value>${api_version}</value></set-query-parameter>
+    ${version_policy}
     ${backend_query}
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="api-key" exists-action="delete" />
+    <set-header name="x-api-key" exists-action="delete" />
+    <set-header name="api-version" exists-action="delete" />
+    <set-header name="OpenAI-Beta" exists-action="delete" />
+    <set-header name="OpenAI-Organization" exists-action="delete" />
+    <set-header name="OpenAI-Project" exists-action="delete" />
+    <set-header name="anthropic-beta" exists-action="delete" />
+    <set-header name="anthropic-organization" exists-action="delete" />
+    <set-header name="anthropic-dangerous-direct-browser-access" exists-action="delete" />
+    ${provider_headers}
     <authentication-managed-identity resource="${ai_audience}" client-id="${gateway_client_id}" />
   </inbound>
   <backend><forward-request buffer-response="false" /></backend>

@@ -32,6 +32,12 @@ Commercial token audience examples to Government without service-specific verifi
 | `ENABLE_DOCUMENT_INTELLIGENCE`, `CREATE_DOCUMENT_INTELLIGENCE`, `DOCUMENT_INTELLIGENCE_RESOURCE_ID`, `DOCUMENT_INTELLIGENCE_ENDPOINT`, `DOCUMENT_INTELLIGENCE_LOCATION`, `DOCUMENT_INTELLIGENCE_TOKEN_AUDIENCE` | Optional Document Intelligence backend |
 | `ENABLE_LANGUAGE`, `CREATE_LANGUAGE`, `LANGUAGE_RESOURCE_ID`, `LANGUAGE_ENDPOINT`, `LANGUAGE_LOCATION`, `LANGUAGE_TOKEN_AUDIENCE` | Optional Language sentiment backend |
 | `FOUNDRY_PRICE_VERSION`, `DOCUMENT_INTELLIGENCE_PRICE_VERSION`, `LANGUAGE_PRICE_VERSION` | Explicit operator-pinned catalog versions; creating a new price version does not silently change admission pricing |
+| `MAX_INPUT_TOKENS`, `OPENAI_BYTE_TOKENIZER_VERIFIED` | Function input admission bound (positive integer) and explicit Chat byte-tokenizer/framing verification |
+| `ENABLE_RESPONSES`, `RESPONSES_CAPABILITY_VERIFIED`, `RESPONSES_GOVERNMENT_VERIFIED`, `RESPONSES_BYTE_TOKENIZER_VERIFIED`, `RESPONSES_PRIVATE_ENDPOINT_VERIFIED` | Explicit Responses enablement and target-cloud/model/API/tokenizer/private-connectivity acceptance flags |
+| `RESPONSES_RESOURCE_ID`, `RESPONSES_ENDPOINT`, `RESPONSES_TOKEN_AUDIENCE`, `RESPONSES_LOCATION`, `RESPONSES_DEPLOYMENT_NAME`, `RESPONSES_PRICE_VERSION`, `RESPONSES_ROLE_NAME`, `RESPONSES_API_VERSION` | Referenced Responses account, exact endpoint/resource audience/region/model/catalog, RBAC role and independent `v1` or `preview` version |
+| `ENABLE_ANTHROPIC`, `ANTHROPIC_CAPABILITY_VERIFIED`, `ANTHROPIC_PRIVATE_ENDPOINT_VERIFIED`, `ANTHROPIC_HARD_INPUT_CAP_VERIFIED` | Explicit Messages enablement, Commercial capability, private-connectivity and hard-input-cap verification |
+| `ANTHROPIC_INPUT_CAP_EVIDENCE`, `ANTHROPIC_CONTEXT_INPUT_TOKENS` | Recorded verification evidence and full backend-enforced maximum accepted input, not a desired per-request cap |
+| `ANTHROPIC_RESOURCE_ID`, `ANTHROPIC_ENDPOINT`, `ANTHROPIC_TOKEN_AUDIENCE`, `ANTHROPIC_LOCATION`, `ANTHROPIC_DEPLOYMENT_NAME`, `ANTHROPIC_PRICE_VERSION`, `ANTHROPIC_VERSION`, `ANTHROPIC_ROLE_NAME` | Referenced Foundry AI Services account, exact endpoint/resource audience/region/model/catalog, pinned date header and non-OpenAI-only role |
 
 Review fixed specifications in `main.tfvars.json` before provision: classic `Developer_1`
 APIM (no SLA; change to `Premium_1` for production evaluation), Linux Dedicated `P1v3`
@@ -45,6 +51,66 @@ The Entra deployer needs application/service-principal creation, application rol
 and tenant-wide delegated consent rights, plus Azure role-assignment write rights.
 Remote state needs Blob Data Contributor access. Pre-created resource groups and subnets
 must be in the intended region; no shared networking or resource groups are created.
+
+## Protocol enablement and hard-input-cap verification
+
+Optional protocols default **disabled**. Even disabled fields must be present in the azd
+environment; use the explicit empty strings/false flags in `environment.example.json`.
+No new protocol creates an AI account/deployment. Responses can reuse Chat's resource;
+Anthropic references an existing **AI Services** account with an already deployed Claude
+model. RBAC is deduplicated by principal/scope/role, preserving existing bindings, and
+diagnostic settings are deduplicated by resource ID.
+
+Responses uses `https://<account>.openai.azure.com/openai/v1/responses`, with its own
+`api-version=v1|preview`, and the deployment alias in the JSON model. It does **not**
+inherit Chat's dated version or `/deployments/...` path. Its audience is explicit;
+current [Responses documentation](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
+examples use `https://ai.azure.com/.default` (set resource audience `https://ai.azure.com`).
+Government requires a `.openai.azure.us` account and independently recorded model, API,
+regional availability and audience verification via `RESPONSES_GOVERNMENT_VERIFIED=true`.
+Protocol portability is not an availability claim; keep disabled without this verification.
+
+Messages uses the exact referenced
+`https://<account>.services.ai.azure.com/anthropic/v1/messages`, with a pinned
+`anthropic-version` header (example `2023-06-01`) and **no** Chat API-version query.
+[Claude on Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
+documents Entra resource audience `https://ai.azure.com` and Cognitive Services User /
+Foundry User roles. Set a real role available in the target tenant (`Azure AI User` is
+also accepted as a named configuration), not Cognitive Services OpenAI User.
+Government Anthropic enablement is rejected: this sample has no verified sovereign Claude
+availability and never falls back to Commercial.
+
+Before enabling Messages, the operator must:
+
+1. Verify the referenced deployment, model/version, region, pinned API header, Entra
+   audience and **standard-tier text** capability against current provider documentation
+   and a controlled endpoint test. Verify local-key authentication is disabled.
+2. Establish the backend's hard maximum accepted input, including system/tools/history
+   and platform-added tokens. Use the full maximum possible accepted input for this
+   deployment/configuration, not an arbitrary smaller application preference. If only a
+   total context-window bound is established, reserving that entire window is conservative.
+   Record the model/version, documented limit, controlled acceptance/rejection evidence and
+   approval reference in `ANTHROPIC_INPUT_CAP_EVIDENCE`; set
+   `ANTHROPIC_HARD_INPUT_CAP_VERIFIED=true` only when established.
+3. Set `ANTHROPIC_CONTEXT_INPUT_TOKENS` to at least that verified maximum and
+   `MAX_INPUT_TOKENS` to at least the same number (example 200000, **not** a universal
+   Claude maximum). Terraform and preflight fail closed if the shared Function bound is
+   smaller. Every Messages request reserves this full input ceiling plus its output cap.
+   No UTF-8-byte assumption is made for Anthropic tokenizers.
+4. Seed the pinned `ANTHROPIC_PRICE_VERSION` for `service=foundry` and its deployment
+   alias, including explicit uncached/read/write-5m/write-1h decimal rates. Confirm the
+   gateway identity can invoke the backend and the limiter can admit/conservatively settle it.
+5. In private mode, verify existing backend private endpoints, DNS and APIM connectivity;
+   set `*_PRIVATE_ENDPOINT_VERIFIED=true` only after that check. Terraform does not take
+   ownership of referenced account networking.
+
+If a model upgrade, endpoint/API/header change or platform feature can increase the input
+ceiling or change prices, disable the route and reverify before enabling it again.
+Caller beta/tier/geography overrides, built-in tools, opaque history and media are rejected
+or removed at the gateway; supported request formats are listed in [the gateway notes](../apim/README.md).
+The verification flags are deliberate operator attestations, not automated proof of a model
+hard limit. Preflight checks selected cloud/resource properties and disabled public/local-key
+access where required; no offline test certifies model availability or provider behavior.
 
 ## Private networking
 
@@ -110,13 +176,17 @@ ID), `REDIS_TOKEN_SCOPE`, `LOCAL_AUTH_ENABLED=false`, `LOCAL_STORE_ENABLED=false
 `WEBSITE_AUTH_ENABLED=true`, identity-based `AzureWebJobsStorage__credential/clientId`
 and exact ARM-returned `AzureWebJobsStorage__blobServiceUri/queueServiceUri/tableServiceUri`
 (avoiding reliance on Global-cloud account-name shorthand),
-and `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+and `APPLICATIONINSIGHTS_CONNECTION_STRING`. `MAX_INPUT_TOKENS` comes from
+`hosting.max_input_tokens`; `MAX_OUTPUT_TOKENS` comes from `gateway.max_output_tokens`.
+These settings align backend validation with gateway admission; the portal does not need
+provider credentials or protocol configuration.
 
 Portal settings: `AZURE_CLOUD`, `AZURE_TENANT_ID`, `WEB_CLIENT_ID`, `API_AUDIENCE`,
 `API_SCOPE=api://<limiter-app-id>/access_as_user`, `API_BASE_URL=https://<gateway>/portal`.
 Root outputs export service names for azd, API identifiers, portal/gateway URLs, and
 telemetry/data endpoints. Application Insights connection information and private
-data-plane endpoint outputs are sensitive.
+data-plane endpoint outputs are sensitive. `LLM_GATEWAY_ROUTES` publishes enabled client
+paths, protocol names, pinned models, backend paths and protocol-specific versions.
 
 ## Observability and validation
 
@@ -134,7 +204,8 @@ terraform -chdir=infra fmt -check -recursive
 terraform -chdir=infra init -backend=false
 terraform -chdir=infra validate -json
 terraform -chdir=infra test
-uv run python -W error -m unittest discover -s apim/tests -v
+tflint --chdir=infra --recursive
+uv run --frozen python -W error -m unittest discover -s apim/tests -v
 ```
 
 These are offline structural/schema checks, not proof of regional quota, successful

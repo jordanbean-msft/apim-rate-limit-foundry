@@ -49,3 +49,7 @@ output "REDIS_HOST" {
   value       = module.redis.hostname
   sensitive   = true
 }
+output "LLM_GATEWAY_ROUTES" {
+  description = "Enabled public LLM paths and operator-pinned protocol/model aliases."
+  value       = module.apim.llm_routes
+}

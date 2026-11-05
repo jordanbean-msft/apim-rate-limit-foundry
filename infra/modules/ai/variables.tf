@@ -37,3 +37,39 @@ variable "gateway_principal_id" {
   description = "APIM identity object ID."
   type        = string
 }
+variable "protocols" {
+  description = "Explicit optional protocol references; these resources are never auto-created."
+  type = object({
+    responses = object({
+      enabled                   = bool
+      capability_verified       = bool
+      government_verified       = bool
+      byte_tokenizer_verified   = bool
+      private_endpoint_verified = bool
+      resource_id               = string
+      endpoint                  = string
+      audience                  = string
+      location                  = string
+      deployment_name           = string
+      price_version             = string
+      role_definition_name      = string
+      api_version               = string
+    })
+    anthropic = object({
+      enabled                   = bool
+      capability_verified       = bool
+      private_endpoint_verified = bool
+      hard_input_cap_verified   = bool
+      input_cap_evidence        = string
+      context_input_tokens      = number
+      resource_id               = string
+      endpoint                  = string
+      audience                  = string
+      location                  = string
+      deployment_name           = string
+      price_version             = string
+      anthropic_version         = string
+      role_definition_name      = string
+    })
+  })
+}

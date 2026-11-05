@@ -1,0 +1,115 @@
+<set-variable name="admission-error" value='@{
+  try {
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  var fields = new [] {"model","messages","max_tokens","system","tools","tool_choice","stream","temperature","top_p",
+    "top_k","stop_sequences","metadata","cache_control"};
+  foreach (var field in body.Properties()) {
+    if (!fields.Contains(field.Name)) { return "unsupported Messages field: " + field.Name; }
+  }
+  var max = body["max_tokens"];
+  if (max == null || max.Type != JTokenType.Integer || !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
+      (int)max &gt; ${max_output_tokens}) { return "bounded max_tokens is required"; }
+  if (body["stream"] != null &amp;&amp; body["stream"].Type != JTokenType.Boolean) { return "stream must be boolean"; }
+  foreach (var name in new [] {"temperature","top_p"}) {
+    if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Integer &amp;&amp; body[name].Type != JTokenType.Float) { return name + " must be numeric"; }
+  }
+  if (body["top_k"] != null &amp;&amp; body["top_k"].Type != JTokenType.Integer) { return "top_k must be integer"; }
+  if (body["stop_sequences"] != null) {
+    var stops = body["stop_sequences"] as JArray;
+    if (stops == null || stops.Count &gt; 16 || stops.Any(value =&gt; value.Type != JTokenType.String)) { return "stop_sequences must be bounded text"; }
+  }
+  if (body["metadata"] != null) {
+    var metadata = body["metadata"] as JObject;
+    if (metadata == null || metadata.Properties().Any(field =&gt; field.Name != "user_id") ||
+        (metadata["user_id"] != null &amp;&amp; metadata["user_id"].Type != JTokenType.String)) { return "only textual metadata.user_id is supported"; }
+  }
+  var cacheLocations = new List&lt;JObject&gt;();
+  cacheLocations.Add(body);
+  if (body["system"] != null &amp;&amp; body["system"].Type != JTokenType.String) {
+    var system = body["system"] as JArray;
+    if (system == null || system.Count == 0 || system.Count &gt; 128) { return "system must be inline text or bounded text blocks"; }
+    foreach (var token in system) {
+      var block = token as JObject;
+      if (block == null || block.Properties().Any(field =&gt; !new [] {"type","text","cache_control"}.Contains(field.Name)) ||
+          (string)block["type"] != "text" || block["text"] == null || block["text"].Type != JTokenType.String) { return "only text system blocks are supported"; }
+      cacheLocations.Add(block);
+    }
+  }
+  var messages = body["messages"] as JArray;
+  if (messages == null || messages.Count == 0 || messages.Count &gt; 128) { return "send 1-128 inline messages"; }
+  foreach (var token in messages) {
+    var message = token as JObject;
+    if (message == null || message.Properties().Any(field =&gt; !new [] {"role","content"}.Contains(field.Name)) ||
+        !new [] {"user","assistant"}.Contains((string)message["role"]) || message["content"] == null) { return "only user/assistant messages with content are supported"; }
+    if (message["content"].Type == JTokenType.String) { continue; }
+    var blocks = message["content"] as JArray;
+    if (blocks == null || blocks.Count == 0 || blocks.Count &gt; 128) { return "content must be bounded inline text/tool blocks"; }
+    foreach (var entry in blocks) {
+      var block = entry as JObject;
+      if (block == null) { return "content blocks must be objects"; }
+      var type = (string)block["type"];
+      if (type == "text") {
+        if (block.Properties().Any(field =&gt; !new [] {"type","text","cache_control"}.Contains(field.Name)) ||
+            block["text"] == null || block["text"].Type != JTokenType.String) { return "invalid text block"; }
+      } else if (type == "tool_use") {
+        if ((string)message["role"] != "assistant" || block.Properties().Any(field =&gt; !new [] {"type","id","name","input","cache_control"}.Contains(field.Name)) ||
+            block["id"] == null || block["id"].Type != JTokenType.String || block["name"] == null || block["name"].Type != JTokenType.String ||
+            !(block["input"] is JObject)) { return "tool_use requires assistant, id, name and inline input object"; }
+      } else if (type == "tool_result") {
+        if ((string)message["role"] != "user" || block.Properties().Any(field =&gt; !new [] {"type","tool_use_id","content","is_error","cache_control"}.Contains(field.Name)) ||
+            block["tool_use_id"] == null || block["tool_use_id"].Type != JTokenType.String || block["content"] == null ||
+            (block["is_error"] != null &amp;&amp; block["is_error"].Type != JTokenType.Boolean)) { return "tool_result requires user, tool_use_id and inline content"; }
+        if (block["content"].Type != JTokenType.String) {
+          var results = block["content"] as JArray;
+          if (results == null || results.Count &gt; 128) { return "tool results must be inline text"; }
+          foreach (var result in results) {
+            var text = result as JObject;
+            if (text == null || text.Properties().Any(field =&gt; !new [] {"type","text","cache_control"}.Contains(field.Name)) ||
+                (string)text["type"] != "text" || text["text"] == null || text["text"].Type != JTokenType.String) { return "only text tool-result blocks are supported"; }
+            cacheLocations.Add(text);
+          }
+        }
+      } else { return "media, thinking, citations and provider-executed tools are unsupported"; }
+      cacheLocations.Add(block);
+    }
+  }
+  if (body["tools"] != null) {
+    var tools = body["tools"] as JArray;
+    if (tools == null || tools.Count &gt; 128) { return "tools must be a bounded array"; }
+    foreach (var token in tools) {
+      var tool = token as JObject;
+      if (tool == null || tool.Properties().Any(field =&gt; !new [] {"type","name","description","input_schema","cache_control"}.Contains(field.Name)) ||
+          (tool["type"] != null &amp;&amp; (string)tool["type"] != "custom") ||
+          tool["name"] == null || tool["name"].Type != JTokenType.String || !(tool["input_schema"] is JObject) ||
+          (tool["description"] != null &amp;&amp; tool["description"].Type != JTokenType.String)) { return "only inline client tool definitions are supported"; }
+      cacheLocations.Add(tool);
+    }
+  }
+  if (body["tool_choice"] != null) {
+    var choice = body["tool_choice"] as JObject;
+    if (choice == null || choice.Properties().Any(field =&gt; !new [] {"type","name","disable_parallel_tool_use"}.Contains(field.Name)) ||
+        !new [] {"auto","any","none","tool"}.Contains((string)choice["type"]) ||
+        ((string)choice["type"] == "tool" &amp;&amp; (choice["name"] == null || choice["name"].Type != JTokenType.String)) ||
+        (choice["disable_parallel_tool_use"] != null &amp;&amp; choice["disable_parallel_tool_use"].Type != JTokenType.Boolean)) { return "tool_choice must select supported client tools"; }
+  }
+  foreach (var location in cacheLocations) {
+    if (location["cache_control"] == null) { continue; }
+    var cache = location["cache_control"] as JObject;
+    if (cache == null || cache.Properties().Any(field =&gt; !new [] {"type","ttl"}.Contains(field.Name)) ||
+        (string)cache["type"] != "ephemeral" ||
+        (cache["ttl"] != null &amp;&amp; !new [] {"5m","1h"}.Contains((string)cache["ttl"]))) { return "cache_control supports only ephemeral 5m/1h"; }
+  }
+  return "";
+  } catch { return "malformed Messages request fields"; }
+}' />
+<choose>
+  <when condition='@(!String.IsNullOrEmpty((string)context.Variables["admission-error"]))'>
+    <return-response><set-status code="400" reason="Unsupported request" /><set-body>@((string)context.Variables["admission-error"])</set-body></return-response>
+  </when>
+</choose>
+<set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />
+<set-variable name="usage" value='@{
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  return new JObject(new JProperty("input_tokens", ${context_input_tokens}),
+    new JProperty("output_tokens", (int)body["max_tokens"]), new JProperty("cached_input_tokens", 0), new JProperty("requests", 1)).ToString();
+}' />
