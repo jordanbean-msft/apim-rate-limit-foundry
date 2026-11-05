@@ -31,6 +31,20 @@ describe('authenticated API', () => {
     },
   );
 
+  it.each([200, 204])('supports HTTP %i delete acknowledgments', async (status) => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(status === 200 ? '{"deleted":"policy-1"}' : null, { status }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createApi('https://api.example/api', async () => 'token').remove('policies', 'policy-1'),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.example/api/policies/policy-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
   it('rejects an invalid collection contract', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"items":[]}')));
     await expect(

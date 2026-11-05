@@ -67,7 +67,8 @@ deployment.
 GET `/policies`, `/prices`, `/assignments`, `/usage`, `/audit`, and
 `/reconciliation` return JSON **arrays**, not `{items: [...]}` wrappers.
 PUT `/{collection}/{id}` accepts the full typed record; DELETE removes it
-and should return `204`. Writes are admin-only and the API remains authoritative.
+and supports either `200` with `{deleted:id}` JSON or `204` with no body.
+Writes are admin-only and the API remains authoritative.
 
 - Policy: `{id,name,service,model,tenant_id?,principal_id,limit,period,metric,enabled,priority}`.
   `service`: `foundry|document-intelligence|language`; `model` and `principal_id`
