@@ -113,3 +113,8 @@ Microsoft publishes the UI and identity libraries. Vite, React's community test
 tools, ESLint and the TypeScript ESLint integration are development tooling;
 there is no suitable Microsoft-maintained Fluent-compatible test runner or Vite
 replacement required by this project.
+
+Vitest uses the patched stable v4 line; it no longer depends on `tinypool`.
+A narrow `@typescript-eslint/typescript-estree` override selects patched
+`minimatch` v11 until upstream updates its v10 dependency range. Keep this
+override until `npm audit` is clean without it.
