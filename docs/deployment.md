@@ -15,6 +15,29 @@ Verify service/SKU/model/API-version availability and quota in the selected regi
 Government Foundry does not have every Commercial feature. This sample does not depend on
 Foundry Agents or serverless model endpoints.
 
+## LLM protocol capabilities
+
+Chat Completions, Responses and Messages are distinct API contracts; a deployment exposing one
+does not automatically expose the others. Enable only routes verified against the actual target
+resource/model/API version. Use the explicit protocol capabilities and backend settings documented
+in `infra/README.md` and `infra/environment.example.json`.
+
+Responses forwards to the configured OpenAI Responses backend with its own API version/audience
+requirements, not a Chat Completions URL with a different JSON body. The sample uses bounded,
+stateless input and does not expose stored-response retrieval or background work.
+
+Messages references an existing, separately approved Anthropic-compatible Foundry deployment.
+The sample does not silently provision an OpenAI account and call it Claude, accept Marketplace
+terms for you, or copy a Commercial Claude endpoint into a Government environment. Verify model
+hosting/data-residency terms, regional availability, managed-identity RBAC, version headers,
+and network access. The managed-identity route does not use a client-supplied Anthropic API key.
+
+For Messages, verify the configured input ceiling covers the actual model context bound and that
+the Function's admission maximum accommodates it. This route reserves the full verified ceiling,
+not an unproven OpenAI byte-token estimate. Publish read, uncached-input, both cache-write TTL
+prices, output prices and a matching model policy before enabling traffic. Conservative streaming
+charges can therefore be much larger than short prompts' eventual actual charges.
+
 ## Select the cloud before login
 
 For Commercial:
