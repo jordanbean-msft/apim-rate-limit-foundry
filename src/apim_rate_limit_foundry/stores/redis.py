@@ -1,0 +1,88 @@
+import asyncio
+import json
+import time
+from typing import Any
+from uuid import uuid4
+
+from azure.identity.aio import DefaultAzureCredential
+from redis.asyncio import Redis
+from redis.exceptions import ResponseError
+
+from apim_rate_limit_foundry.config import Settings
+from apim_rate_limit_foundry.stores import scripts
+from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
+
+
+class RedisCounters:
+    """One hash tag and one eviction unit prevent cross-slot and partial-key cache loss."""
+
+    key = "{limiter}:ledger"
+
+    def __init__(self, settings: Settings, credential: DefaultAzureCredential) -> None:
+        self.settings = settings
+        self.credential = credential
+        self.client: Redis | None = None
+        self.expires = 0
+        self.lock = asyncio.Lock()
+
+    async def connection(self) -> Redis:
+        async with self.lock:
+            if self.client is None or time.time() >= self.expires - 300:
+                token = await self.credential.get_token(self.settings.redis_scope)
+                if self.client:
+                    await self.client.aclose()
+                self.client = Redis(
+                    host=self.settings.redis_host,
+                    port=self.settings.redis_port,
+                    username=self.settings.redis_username,
+                    password=token.token,
+                    ssl=True,
+                    decode_responses=True,
+                    socket_timeout=10,
+                    socket_connect_timeout=10,
+                )
+                self.expires = token.expires_on
+            return self.client
+
+    async def execute(self, script: str, *args: str) -> Any:
+        client = await self.connection()
+        try:
+            return await client.eval(script, 1, self.key, *args)
+        except ResponseError as error:
+            if "RECOVERY_REQUIRED" in str(error):
+                raise RecoveryRequired(
+                    "Cache cold start; administrator recovery required"
+                ) from error
+            if "CONFLICT" in str(error):
+                raise Conflict("Idempotency or recovery conflict") from error
+            raise
+
+    async def reserve(
+        self, reservation_id: str, fingerprint: str, debits: list[Record], decision: Record
+    ) -> Record:
+        return json.loads(
+            await self.execute(
+                scripts.RESERVE,
+                reservation_id,
+                fingerprint,
+                json.dumps(debits),
+                json.dumps(decision),
+            )
+        )
+
+    async def finalize(self, reservation_id: str, debits: list[Record], fingerprint: str) -> Record:
+        return json.loads(
+            await self.execute(scripts.FINALIZE, reservation_id, json.dumps(debits), fingerprint)
+        )
+
+    async def begin_recovery(self) -> str:
+        token = uuid4().hex
+        await self.execute(scripts.BEGIN_RECOVERY, token)
+        return token
+
+    async def recover(self, token: str, records: list[Record]) -> None:
+        await self.execute(scripts.RECOVER, token, json.dumps(records))
+
+    async def close(self) -> None:
+        if self.client:
+            await self.client.aclose()

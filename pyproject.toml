@@ -1,12 +1,17 @@
 [project]
-name = "template-repository"
+name = "apim-rate-limit-foundry"
 version = "0.1.0"
-description = ""
+description = "Durable cloud-aware AI gateway budget accounting"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi[standard]",
   "pydantic-settings",
+  "azure-functions",
+  "azure-identity",
+  "azure-data-tables",
+  "redis>=6",
+  "aiohttp",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-template-repository = "template_repository.main:main"
+apim-rate-limit-foundry = "apim_rate_limit_foundry.main:main"
 
 [tool.ruff]
 line-length = 100
@@ -34,7 +39,7 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "N", "RUF", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["template_repository"]
+known-first-party = ["apim_rate_limit_foundry"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -44,13 +49,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
 asyncio_mode = "auto"
-testpaths = ["tests"]
-filterwarnings = [
-  "ignore::DeprecationWarning",
-]
+testpaths = ["tests", "scripts/tests"]
 
 [tool.coverage.run]
-source = ["src/template_repository"]
+source = ["src/apim_rate_limit_foundry"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
@@ -69,4 +71,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/template_repository"]
+packages = ["src/apim_rate_limit_foundry"]
