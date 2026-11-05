@@ -16,8 +16,8 @@ resource "azurerm_log_analytics_workspace" "law" {
   name                = azurecaf_name.log_analytics.result
   location            = var.location
   resource_group_name = var.resource_group_name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
+  sku                 = var.config.sku
+  retention_in_days   = var.config.retention_in_days
   tags                = var.tags
 }
 

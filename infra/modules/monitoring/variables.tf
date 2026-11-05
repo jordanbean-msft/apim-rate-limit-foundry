@@ -18,3 +18,10 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+variable "config" {
+  description = "Explicit Log Analytics configuration."
+  type = object({
+    sku               = string
+    retention_in_days = number
+  })
+}

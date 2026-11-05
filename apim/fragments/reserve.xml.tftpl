@@ -1,0 +1,42 @@
+<fragment>
+  <send-request mode="new" response-variable-name="reservation-response" timeout="${send_request_timeout}" ignore-error="true">
+    <set-url>${function_url}/api/decisions/reserve</set-url>
+    <set-method>POST</set-method>
+    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+    <set-body>@{
+      return new JObject(
+        new JProperty("request_id", (string)context.Variables["request-id"]),
+        new JProperty("principal_id", (string)context.Variables["principal-id"]),
+        new JProperty("tenant_id", (string)context.Variables["tenant-id"]),
+        new JProperty("subscription_id", context.Subscription == null ? null : context.Subscription.Id),
+        new JProperty("service", (string)context.Variables["service"]),
+        new JProperty("model", (string)context.Variables["model"]),
+        new JProperty("price_version", (string)context.Variables["price-version"]),
+        new JProperty("operation", context.Operation.Id),
+        new JProperty("usage", JObject.Parse((string)context.Variables["usage"])),
+        new JProperty("streaming", context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false)),
+        new JProperty("document_bound_verified", (string)context.Variables["service"] == "document-intelligence")
+      ).ToString();
+    }</set-body>
+    <authentication-managed-identity resource="${api_audience}" client-id="${gateway_client_id}" />
+  </send-request>
+  <choose>
+    <when condition='@(!context.Variables.ContainsKey("reservation-response") || context.Variables["reservation-response"] == null || ((IResponse)context.Variables["reservation-response"]).StatusCode != 200)'>
+      <return-response><set-status code="503" reason="Limiter unavailable" /><set-body>{"error":"limiter_unavailable"}</set-body></return-response>
+    </when>
+  </choose>
+  <set-variable name="decision" value='@(((IResponse)context.Variables["reservation-response"]).Body.As&lt;string&gt;())' />
+  <choose>
+    <when condition='@(!(bool)JObject.Parse((string)context.Variables["decision"])["allowed"])'>
+      <return-response>
+        <set-status code="429" reason="Budget exceeded" />
+        <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+        <set-header name="Retry-After" exists-action="override"><value>@(((int?)JObject.Parse((string)context.Variables["decision"])["retry_after"] ?? 1).ToString())</value></set-header>
+        <set-header name="RateLimit-Remaining" exists-action="override"><value>@(JObject.Parse((string)context.Variables["decision"])["remaining"].ToString())</value></set-header>
+        <set-header name="RateLimit-Reset" exists-action="override"><value>@(JObject.Parse((string)context.Variables["decision"])["reset_at"].ToString())</value></set-header>
+        <set-body>@((string)context.Variables["decision"])</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <set-variable name="reservation-id" value='@((string)JObject.Parse((string)context.Variables["decision"])["reservation_id"])' />
+</fragment>

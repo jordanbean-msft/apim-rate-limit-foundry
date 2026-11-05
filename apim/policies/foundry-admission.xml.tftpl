@@ -1,0 +1,38 @@
+<set-variable name="admission-error" value='@{
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  var messages = body["messages"] as JArray;
+  if (messages == null || messages.Count == 0) { return "messages must be a non-empty array"; }
+  foreach (var message in messages) {
+    if (message.Type != JTokenType.Object || message["content"] == null || message["content"].Type != JTokenType.String ||
+        message["role"] == null || message["role"].Type != JTokenType.String ||
+        !new [] {"system","user","assistant"}.Contains((string)message["role"])) {
+      return "only text messages with system/user/assistant roles are supported";
+    }
+  }
+  var max = body["max_tokens"];
+  if (max == null || max.Type != JTokenType.Integer ||
+      !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
+      (int)max &gt; ${max_output_tokens}) {
+    return "max_tokens is required and must be within the configured output cap";
+  }
+  if (body["stream"] != null &amp;&amp; body["stream"].Type != JTokenType.Boolean) { return "stream must be boolean"; }
+  return "";
+}' />
+<choose>
+  <when condition='@(!String.IsNullOrEmpty((string)context.Variables["admission-error"]))'>
+    <return-response><set-status code="400" reason="Unsupported request" /><set-body>@((string)context.Variables["admission-error"])</set-body></return-response>
+  </when>
+</choose>
+<set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />
+<set-variable name="usage" value='@{
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  var messages = (JArray)body["messages"];
+  var input = System.Text.Encoding.UTF8.GetByteCount(messages.ToString()) + messages.Count * 32 + 128;
+  return new JObject(new JProperty("input_tokens", input), new JProperty("output_tokens", (int)body["max_tokens"]),
+    new JProperty("cached_input_tokens", 0), new JProperty("requests", 1)).ToString();
+}' />
+<set-body>@{
+  var original = JObject.Parse((string)context.Variables["request-body"]);
+  return new JObject(new JProperty("messages", original["messages"]), new JProperty("max_tokens", original["max_tokens"]),
+    new JProperty("stream", context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false))).ToString();
+}</set-body>

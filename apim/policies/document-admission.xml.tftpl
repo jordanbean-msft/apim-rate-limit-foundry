@@ -1,0 +1,20 @@
+<set-variable name="admission-error" value='@{
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  var pages = context.Request.Url.Query.GetValueOrDefault("pages", "");
+  if (!System.Text.RegularExpressions.Regex.IsMatch(pages, "^1-([1-9][0-9]?)$")) { return "pages=1-N is required"; }
+  var count = Int32.Parse(pages.Substring(2));
+  if (count &gt; ${max_document_pages}) { return "page cap exceeded"; }
+  if (body["base64Source"] == null || body["base64Source"].Type != JTokenType.String ||
+      !((string)body["base64Source"]).StartsWith("JVBERi0") || body["urlSource"] != null) {
+    return "only inline base64 PDF documents are supported; remote URLs are prohibited";
+  }
+  return "";
+}' />
+<choose>
+  <when condition='@(!String.IsNullOrEmpty((string)context.Variables["admission-error"]))'>
+    <return-response><set-status code="400" reason="Unsupported request" /><set-body>@((string)context.Variables["admission-error"])</set-body></return-response>
+  </when>
+</choose>
+<set-variable name="usage" value='@(new JObject(new JProperty("pages", Int32.Parse(context.Request.Url.Query.GetValueOrDefault("pages", "").Substring(2))), new JProperty("requests", 1)).ToString())' />
+<set-variable name="document-pages" value='@(context.Request.Url.Query.GetValueOrDefault("pages", ""))' />
+<set-body>@(new JObject(new JProperty("base64Source", JObject.Parse((string)context.Variables["request-body"])["base64Source"])).ToString())</set-body>

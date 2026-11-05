@@ -1,0 +1,27 @@
+<fragment>
+  <choose>
+    <when condition='@(!String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Authorization", "")))'>
+      <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer" output-token-variable-name="validated-jwt">
+        <openid-config url="${authority}/${tenant_id}/v2.0/.well-known/openid-configuration" />
+        <audiences>${audiences}</audiences>
+        <required-claims><claim name="tid" match="all"><value>${tenant_id}</value></claim></required-claims>
+      </validate-jwt>
+      <set-variable name="tenant-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("tid", ""))' />
+      <set-variable name="principal-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("oid", ((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("azp", "")))' />
+    </when>
+    <otherwise>
+      <set-variable name="tenant-id" value='@{
+        var mapping = JObject.Parse("${subscription_mapping}");
+        return context.Subscription == null ? "" : (string)mapping[context.Subscription.Id] ?? "";
+      }' />
+      <set-variable name="principal-id" value='@(context.Subscription == null ? "" : "subscription:" + context.Subscription.Id)' />
+    </otherwise>
+  </choose>
+  <choose>
+    <when condition='@(String.IsNullOrEmpty((string)context.Variables["principal-id"]) || String.IsNullOrEmpty((string)context.Variables["tenant-id"]))'>
+      <return-response><set-status code="401" reason="Unmapped identity" /></return-response>
+    </when>
+  </choose>
+  <rate-limit-by-key calls="${burst_calls}" renewal-period="${burst_seconds}" counter-key='@((string)context.Variables["tenant-id"] + ":" + (string)context.Variables["principal-id"])' />
+  <set-variable name="request-id" value="@(context.RequestId.ToString())" />
+</fragment>

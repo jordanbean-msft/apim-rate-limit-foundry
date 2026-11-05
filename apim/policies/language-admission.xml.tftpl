@@ -1,0 +1,34 @@
+<set-variable name="admission-error" value='@{
+  var body = JObject.Parse((string)context.Variables["request-body"]);
+  var documents = body["documents"] as JArray;
+  if (documents == null || documents.Count == 0 || documents.Count &gt; 10) { return "send 1-10 text documents"; }
+  foreach (var doc in documents) {
+    if (doc.Type != JTokenType.Object || doc["text"] == null || doc["text"].Type != JTokenType.String ||
+        doc["id"] == null || doc["id"].Type != JTokenType.String ||
+        ((string)doc["text"]).Length == 0 || ((string)doc["text"]).Length &gt; ${max_language_characters}) {
+      return "each document requires string id and bounded non-empty text";
+    }
+  }
+  return "";
+}' />
+<choose>
+  <when condition='@(!String.IsNullOrEmpty((string)context.Variables["admission-error"]))'>
+    <return-response><set-status code="400" reason="Unsupported request" /><set-body>@((string)context.Variables["admission-error"])</set-body></return-response>
+  </when>
+</choose>
+<set-variable name="usage" value='@{
+  var documents = (JArray)JObject.Parse((string)context.Variables["request-body"])["documents"];
+  var records = 0;
+  foreach (var doc in documents) { records += (int)Math.Ceiling(((string)doc["text"]).Length / 1000.0); }
+  return new JObject(new JProperty("text_records", records), new JProperty("requests", 1)).ToString();
+}' />
+<set-body>@{
+  var original = JObject.Parse((string)context.Variables["request-body"]);
+  var documents = new JArray();
+  foreach (var doc in (JArray)original["documents"]) {
+    var value = new JObject(new JProperty("id", (string)doc["id"]), new JProperty("text", (string)doc["text"]));
+    if (doc["language"] != null) { value["language"] = (string)doc["language"]; }
+    documents.Add(value);
+  }
+  return new JObject(new JProperty("documents", documents)).ToString();
+}</set-body>

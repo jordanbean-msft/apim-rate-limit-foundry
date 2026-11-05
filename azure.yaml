@@ -1,17 +1,34 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
-
-name: template-repository
+name: apim-rate-limit-foundry
 metadata:
-  template: template-repository@0.0.1
-
+  template: apim-rate-limit-foundry@1.0.0
 infra:
   provider: terraform
   path: infra
-  # Backend config is supplied via infra/provider.conf.json (azd native remote state).
-  # azd substitutes ${RS_*} placeholders automatically at provision time.
-  # Run: azd env set RS_RESOURCE_GROUP <rg>
-  #      azd env set RS_STORAGE_ACCOUNT <sa>
-  #      azd env set RS_CONTAINER_NAME  <container>
-  # before azd provision.
-
+hooks:
+  preprovision:
+    shell: sh
+    run: ./infra/scripts/preflight.sh
+    interactive: false
 services:
+  api:
+    project: .
+    language: python
+    host: function
+    resourceName: ${AZURE_FUNCTION_NAME}
+    hooks:
+      prepackage:
+        shell: sh
+        run: ./infra/scripts/package-function.sh
+        interactive: false
+  web:
+    project: ./web
+    language: js
+    host: appservice
+    resourceName: ${AZURE_WEB_NAME}
+    dist: ../infra/.artifacts/web
+    hooks:
+      prepackage:
+        shell: sh
+        run: ../infra/scripts/package-web.sh
+        interactive: false
