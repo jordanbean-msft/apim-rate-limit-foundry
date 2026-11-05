@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
-from apim_rate_limit_foundry.models import Reserve
+from apim_rate_limit_foundry.models import Price, Reserve
 
 ADMIN = {
     "X-Local-Tenant-Id": "tenant-1",
@@ -77,7 +77,12 @@ async def test_crud_audit_consumer_scopes_and_gateway_role(
         assert (await client.get("/api/policies", headers=other_tenant)).json() == []
         assert (await client.delete("/api/assignments/a", headers=ADMIN)).status_code == 200
         assert (await client.get("/api/assignments", headers=ADMIN)).json() == []
-        assert len((await client.get("/api/audit", headers=ADMIN)).json()) == 2
+        history = (await client.get("/api/audit", headers=ADMIN)).json()
+        assert len(history) == 2
+        assert (
+            next(row for row in history if row["data"]["action"] == "put")["data"]["record"]
+            == assignment
+        )
         assert (await client.get("/api/audit", headers=READER)).json() == []
         assert (await client.get("/api/not-real", headers=ADMIN)).status_code == 404
         assert (await client.post("/api/reconciliation/recover", headers=ADMIN)).status_code == 200
@@ -185,3 +190,22 @@ async def test_local_runtime_is_explicit(settings: Settings) -> None:
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
     ):
         assert (await client.get("/api/prices", headers=ADMIN)).json() == []
+
+
+async def test_catalog_overwrites_keep_both_typed_versions_in_audit(
+    engine: Engine,
+    settings: Settings,
+    price: Price,
+) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(settings, engine)),
+        base_url="http://test",
+    ) as client:
+        for version in ("v1", "v2"):
+            record = {**price.model_dump(mode="json"), "version": version}
+            response = await client.put(f"/api/prices/{price.id}", json=record, headers=ADMIN)
+            assert response.status_code == 200
+        catalog = (await client.get("/api/prices", headers=ADMIN)).json()
+        history = (await client.get("/api/audit", headers=ADMIN)).json()
+    assert catalog[0]["version"] == "v2"
+    assert {row["data"]["record"]["version"] for row in history} == {"v1", "v2"}

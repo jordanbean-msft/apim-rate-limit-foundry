@@ -173,6 +173,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 "collection": collection,
                 "record_id": record_id,
                 "actor_id": actor.principal_id,
+                "record": record,
             },
         )
         await get_engine().repository.mutate(collection, record_id, record, audit)

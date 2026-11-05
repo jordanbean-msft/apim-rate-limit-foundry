@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
@@ -57,12 +58,17 @@ class Settings(BaseSettings):
 
     @property
     def in_azure(self) -> bool:
-        return bool(
-            self.website_site_name
-            or self.website_hostname
-            or self.website_instance_id
-            or any(key.startswith("WEBSITE_") for key in os.environ)
+        markers = {key for key in os.environ if key.startswith("WEBSITE_")}
+        if self.website_site_name or self.website_instance_id or markers - {"WEBSITE_HOSTNAME"}:
+            return True
+        if not self.website_hostname:
+            return "WEBSITE_HOSTNAME" in markers
+        # Core Tools supplies only this loopback marker; real site/instance markers
+        # above must still prohibit local bypass, regardless of environment labels.
+        local_host = re.fullmatch(
+            r"(?:localhost|127\.0\.0\.1):([0-9]{1,5})", self.website_hostname, re.IGNORECASE
         )
+        return local_host is None or not 1 <= int(local_host.group(1)) <= 65535
 
     @property
     def authority(self) -> str:
