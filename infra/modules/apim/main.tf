@@ -79,7 +79,8 @@ locals {
     }
   ]...)
   portal_operations = merge(local.portal_reads, local.portal_writes, {
-    recover = { method = "POST", path = "/reconciliation/recover", parameter = false }
+    recover       = { method = "POST", path = "/reconciliation/recover", parameter = false }
+    usage-summary = { method = "GET", path = "/usage/summary", parameter = false }
   })
 }
 resource "azurerm_api_management_policy_fragment" "this" {

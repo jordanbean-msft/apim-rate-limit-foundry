@@ -10,6 +10,7 @@ Only enabled AI services are published. The portal API is always published.
 | `GET /document-intelligence/analyzeResults/{operationId}` | Owned analysis polling only; no new reserve/debit; forwarded `Operation-Location` never exposes the raw AI endpoint |
 | `POST /language/sentiment` | JSON `documents`: 1–10 `{id,text,language?}` records, each 1–5120 characters; model `sentiment` |
 | `GET /portal/{collection}` | `health`, `policies`, `prices`, `assignments`, `usage`, `audit`, `reconciliation` |
+| `GET /portal/usage/summary?period=hour\|day` | Derived scoped usage/cost rollups; default period `day` |
 | `PUT`, `DELETE /portal/{collection}/{id}` | `policies`, `prices`, `assignments`; Function independently enforces Admin |
 | `POST /portal/reconciliation/recover` | Explicit Admin cache-recovery operation |
 
