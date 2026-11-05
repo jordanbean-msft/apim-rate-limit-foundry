@@ -32,6 +32,11 @@ Perform in a disposable, configured environment before admitting real traffic. P
 | Different tenants using the same subject ID | Distinct budget/usage scopes |
 | Spoofed `Rate-Key`, principal header, or cached-token count | Ignored or rejected; no caller-selected limit bypass |
 | Real reported cached prompt tokens | Discount applied only to the cached subset, using the reservation's price version |
+| OpenAI Responses usage | Input/output and input-details cached subset normalize without Chat field assumptions |
+| Anthropic cache reads and mixed-TTL writes | Raw uncached input is not reduced twice; cache writes use their own 5-minute/1-hour prices |
+| Anthropic missing/mismatched cache metadata | Conservative accounting, never fabricated zero-cost reads/writes |
+| Unsupported opaque content, background jobs or provider built-in tools | Explicit rejection before reservation/dispatch |
+| All three streaming protocols | No outbound SSE parsing or automatic refund; conservative debit remains visible |
 | Missing usage or interrupted stream | Conservative consumption remains visible; not silently converted to zero |
 | Price-card change during an in-flight call | Existing reservation uses pinned prices; new reservations use the configured version |
 | UTC period rollover with an in-flight call | Settlement adjusts the original period, not the next one |

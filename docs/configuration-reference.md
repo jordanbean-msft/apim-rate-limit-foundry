@@ -60,6 +60,28 @@ Reservations snapshot price data so in-flight settlement does not change after a
 If multiple price versions exist for the same service/model, pass an explicit `price_version`
 in the trusted reserve request; ambiguous pricing fails closed.
 
+### LLM protocol and caching contract
+
+`Reserve.api_protocol` accepts `openai-chat`, `openai-responses`, or `anthropic-messages`.
+An omitted protocol on an existing Foundry reservation retains Chat Completions behavior.
+All three use `service: "foundry"`; policies remain model/service/principal scoped. The gateway
+selects the protocol from its operation, not a client-supplied accounting header.
+
+`Settle` accepts the existing normalized `usage`, or `provider_usage` containing only the backend
+usage object. Do not send both. The Function derives the provider schema from the reservation,
+not the settlement caller. Document Intelligence and Language keep their normalized unit contract.
+
+Normalized `input_tokens` includes uncached input, cached reads and cache writes.
+`cached_input_tokens` is reads; `cache_write_input_tokens_5m` / `cache_write_input_tokens_1h`
+are write subsets. All three subsets together must fit within total input.
+Anthropic's raw `input_tokens` excludes these cache categories, unlike OpenAI's input totals.
+
+Price cards add `cache_write_5m_per_million` and `cache_write_1h_per_million` (decimal USD strings).
+They may be absent/null for legacy OpenAI cards; null means **unknown**, never free. Anthropic
+admission requires prices sufficient to reserve the worst possible relevant input category.
+The Fluent editor exposes reads and both write TTLs separately. `examples/prices.json` contains
+invented examples for both OpenAI and Anthropic, not contractual provider rates.
+
 Decision responses include matched and blocking policy IDs. Denials calculate `Retry-After`
 from the blocking windows, not an unrelated shorter rule. Counter keys include metric and period,
 so changing either starts a distinct allowance namespace; size-only edits preserve consumption.

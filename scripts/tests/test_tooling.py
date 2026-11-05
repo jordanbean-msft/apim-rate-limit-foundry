@@ -1,3 +1,4 @@
+import json
 import sys
 from unittest.mock import MagicMock, Mock
 
@@ -41,7 +42,12 @@ def test_seed_apply_uses_access_token_and_real_collection_routes(monkeypatch) ->
 
     seed.main()
 
-    assert len(requests) == 7
+    anthropic_price = next(
+        request for request in requests if request.url.path == "/api/prices/sample-anthropic-v1"
+    )
+    saved_price = json.loads(anthropic_price.content)
+    assert saved_price["cache_write_5m_per_million"] == "3.75"
+    assert saved_price["cache_write_1h_per_million"] == "6.00"
     assert all(request.headers["Authorization"] == "Bearer test-token" for request in requests)
     assert str(requests[0].url) == "https://gateway.example/api/prices/sample-foundry-v1"
 

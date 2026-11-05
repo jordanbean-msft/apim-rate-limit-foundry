@@ -24,6 +24,30 @@
     "priority": 10
   },
   {
+    "id": "sample-anthropic-monthly",
+    "name": "Sample Anthropic model monthly budget ($10)",
+    "service": "foundry",
+    "model": "sample-claude",
+    "principal_id": "*",
+    "limit": 10000000,
+    "period": "month",
+    "metric": "cost",
+    "enabled": true,
+    "priority": 10
+  },
+  {
+    "id": "sample-anthropic-requests",
+    "name": "Sample Anthropic model requests per minute",
+    "service": "foundry",
+    "model": "sample-claude",
+    "principal_id": "*",
+    "limit": 30,
+    "period": "minute",
+    "metric": "requests",
+    "enabled": true,
+    "priority": 10
+  },
+  {
     "id": "sample-document-pages",
     "name": "Sample document pages per day",
     "service": "document-intelligence",

@@ -8,6 +8,17 @@ APIM authenticates callers, routes to AI backends, and enforces the decision ret
 Function. The Function owns pricing, granular rules, atomic reservations, and accounting.
 A **React + Microsoft Fluent UI** portal provides configuration and usage visibility.
 
+| LLM API | Gateway route | Accounting |
+| --- | --- | --- |
+| OpenAI Chat Completions | `POST /foundry/chat/completions` | Prompt/completion tokens and cached prompt subset |
+| OpenAI Responses | `POST /foundry/responses` | Input/output tokens and cached input subset |
+| Anthropic Messages | `POST /anthropic/v1/messages` | Uncached input, cache reads, 5-minute/1-hour cache writes, output |
+
+These are native wire formats, not a conversion of Messages or Responses into Chat Completions.
+Supported inline text and client-executed tool flows are bounded before dispatch; opaque media,
+server-managed history and separately billed built-in tools are rejected. See
+[gateway contracts](apim/README.md) for precise supported fields and deployment capability gates.
+
 | Component | Responsibility |
 | --- | --- |
 | APIM | Identity, subscription governance, coarse native throttling, backend authentication, Function callouts |
@@ -25,13 +36,15 @@ or a certification of GCCH/FedRAMP compliance.
 ## What is different from native APIM limits?
 
 APIM's native `llm-token-limit` counts prompt and completion tokens. It does not express a
-versioned model price card with separate cached-input prices. This sample can enforce cost or
+versioned model price card with separate cache-read and cache-write prices. This sample can enforce cost or
 usage rules by principal, model, service, and UTC period while retaining native APIM burst limits.
 
 An admitted request reserves its conservative maximum cost. A trusted non-streaming response
 settles actual usage, including cached input when reported by the provider. Streaming requests
 remain conservatively charged unless trusted actual usage arrives; they are never refunded merely
 because a timer expires. Cached input discounts do **not** bypass the provider's own TPM limits.
+Anthropic cache writes can cost more than ordinary input: admission reserves the highest relevant
+input price, and the Function normalizes provider-specific usage before settlement.
 
 Document Intelligence and Language use their own units, not fictitious LLM token counts.
 See [architecture and accounting](ARCHITECTURE.md) for boundaries and limitations.
@@ -83,6 +96,9 @@ path for a production lifetime beyond its supported availability without an appr
 - [Original custom rate limiter sample](https://github.com/ThePreston/Custom-Rate-Limiter-API)
 - [Azure Government comparison](https://learn.microsoft.com/azure/azure-government/compare-azure-government-global-azure)
 - [Foundry cloud/region support](https://learn.microsoft.com/azure/foundry/reference/region-support)
+- [Azure OpenAI Responses API](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
+- [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
+- [Anthropic prompt-cache semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 
 ## Disclaimer
 

@@ -6,7 +6,8 @@ flowchart LR
     APIM -->|reserve / settle| Functions["Python Functions: rules + accounting"]
     Functions --> Redis["Atomic Redis counters"]
     Functions --> Tables["Durable configuration / audit / usage"]
-    APIM --> Foundry["Foundry model endpoints"]
+    APIM --> Foundry["Foundry: Chat Completions + Responses"]
+    APIM --> Anthropic["Referenced Foundry: Anthropic Messages"]
     APIM --> Document["Document Intelligence"]
     APIM --> Language["AI Language"]
     Portal["React + Fluent UI portal"] -->|Entra access token| Functions
@@ -37,8 +38,8 @@ using that store. This sample does not implement active-active cross-region ledg
 3. Atomically evaluate all matching limits and reserve the conservative maximum.
 4. Persist the accounting evidence required for recovery before returning an allow decision.
 5. Dispatch the backend request only after admission succeeds.
-6. Settle once using trusted actual usage; release only when non-dispatch/non-billable status is
-   unambiguous. Retries reuse a reservation identity for accounting, not for backend execution.
+6. Settle once using trusted actual usage. The release contract conservatively finalizes liability;
+   it is not an unconditional refund. Retries reuse a reservation identity for accounting, not for backend execution.
 7. Leave unresolved or ambiguous calls conservatively charged. Investigate/reconcile them rather
    than silently reopening budget.
 
@@ -52,7 +53,17 @@ Store budget values as **integer micro-USD**; price cards use decimal USD string
 Avoid binary floating-point money and round reservation charges conservatively.
 Price versions used for reservations must be pinned for settlement.
 
-For OpenAI-compatible responses, cached input is a subset of input:
+The Function pins the API protocol on the reservation. APIM sends only the backend's small usage
+object for actual LLM settlement; the Function performs provider normalization and all price math.
+Normalized input always means **total input**, including reads and writes.
+
+| Protocol | Backend usage mapping |
+| --- | --- |
+| `openai-chat` | `prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens` |
+| `openai-responses` | `input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens` |
+| `anthropic-messages` | Uncached `input_tokens` plus `cache_read_input_tokens` plus `cache_creation_input_tokens`; creation TTLs come from `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` |
+
+For OpenAI, cached input is already a subset of input:
 
 ```text
 uncached_input = input_tokens - cached_input_tokens
@@ -63,13 +74,41 @@ cost = uncached_input * input_price
 
 Input/output prices are normally expressed per million tokens, with conversion applied by the
 Function. Reject impossible cached counts. Missing usage is not zero usage.
-Provider differences require adapters; do not assume one provider's caching fields or quota
-semantics apply to another.
+For Anthropic, **do not** subtract reads from the raw uncached input. Normalize first:
 
-The client cannot promise a cache hit before dispatch. Reserve undiscounted input and the bounded
-maximum output, then apply reported cached discounts on settlement. This can temporarily deny a
+```text
+total_input = raw.input_tokens + raw.cache_read_input_tokens + raw.cache_creation_input_tokens
+uncached_input = total_input - cached_input_tokens - cache_write_input_tokens_5m - cache_write_input_tokens_1h
+cost = uncached_input * input_price
+     + cached_input_tokens * cache_read_price
+     + cache_write_input_tokens_5m * cache_write_5m_price
+     + cache_write_input_tokens_1h * cache_write_1h_price
+     + output_tokens * output_price
+```
+
+The cache creation aggregate must equal the TTL breakdown. Missing/ambiguous billable metadata
+does not become zero. Separate input/output/cache-write price dimensions can be unknown (`null`),
+but admission must reject an unknown dimension it could need. Old OpenAI price cards do not need
+invented cache-write values.
+
+For the invented seed Anthropic prices, 100 uncached input + 50 cache reads + 20 five-minute
+writes + 10 one-hour writes + 10 output tokens costs **600 micro-USD**. Normalized input is 180
+tokens, so the token-policy debit is 190 including output. Summing several cost-rule debits would
+double-count spend; summaries compute one canonical charge per request.
+
+The client cannot promise a cache hit before dispatch. Reserve input at the highest relevant
+uncached/read/write price and bounded maximum output, then apply actual cache usage on settlement.
+OpenAI byte-token input bounds do not establish Anthropic token bounds: the Messages route reserves
+an explicit operator-verified model context input ceiling. This can temporarily deny a
 cheap request whose worst-case cost does not fit the remaining budget. That is the deliberate
 tradeoff for a conservative admission design.
+
+Protocol support is not support for every optional provider feature. The gateway supports bounded
+inline text/client-executed tools, not unknown file/image/audio content, server-side conversation
+history, background jobs or built-in tools with independent billing. Responses is stateless.
+Anthropic endpoints are separately referenced and use managed identity, not an OpenAI resource
+mislabelled as Claude. Cloud capability gates must be verified before enabling either new API;
+protocol portability never establishes Claude/Responses availability in Government.
 
 APIM response caches and provider prompt caching are distinct. A gateway response-cache hit
 avoids model execution; provider prompt caching reduces the reported backend charge. Any future

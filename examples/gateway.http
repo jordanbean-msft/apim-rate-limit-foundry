@@ -25,6 +25,72 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
   "stream": true
 }
 
+### OpenAI Responses: stateless inline input, bounded output
+POST {{gateway}}/foundry/responses
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "sample-model",
+  "input": "Explain why token budgets and dollar budgets differ.",
+  "max_output_tokens": 64,
+  "store": false,
+  "stream": false
+}
+
+### OpenAI Responses: streaming retains conservative reservation
+POST {{gateway}}/foundry/responses
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{
+  "model": "sample-model",
+  "input": "Describe cached input token pricing.",
+  "max_output_tokens": 64,
+  "store": false,
+  "stream": true
+}
+
+### Anthropic Messages: explicit cache breakpoint; backend model/version are operator-pinned
+POST {{gateway}}/anthropic/v1/messages
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+anthropic-version: {{$processEnv ANTHROPIC_API_VERSION}}
+
+{
+  "model": "sample-claude",
+  "max_tokens": 64,
+  "system": [
+    {
+      "type": "text",
+      "text": "You explain AI budget governance clearly. This short example does not guarantee a cache hit.",
+      "cache_control": {"type": "ephemeral", "ttl": "5m"}
+    }
+  ],
+  "messages": [{"role": "user", "content": "Explain the distinction between cache reads and cache writes."}],
+  "stream": false
+}
+
+### Anthropic Messages: streaming and 1-hour cache write pricing
+POST {{gateway}}/anthropic/v1/messages
+Content-Type: application/json
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+anthropic-version: {{$processEnv ANTHROPIC_API_VERSION}}
+
+{
+  "model": "sample-claude",
+  "max_tokens": 64,
+  "system": [
+    {
+      "type": "text",
+      "text": "You explain AI budget governance clearly. A real cacheable prefix must meet the model's minimum length.",
+      "cache_control": {"type": "ephemeral", "ttl": "1h"}
+    }
+  ],
+  "messages": [{"role": "user", "content": "Explain conservative streaming accounting."}],
+  "stream": true
+}
+
 ### Language sentiment: record count rounds per document
 POST {{gateway}}/language/sentiment
 Content-Type: application/json
