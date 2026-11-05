@@ -45,6 +45,7 @@ allow `RateLimit.Admin` or `RateLimit.Reader`, with server-side consumer scoping
 | `PUT /policies/{id}`, `/prices/{id}`, `/assignments/{id}` | Save validated config with audit |
 | `DELETE /{collection}/{id}` | Delete configuration with audit |
 | `GET /usage`, `/audit`, `/reconciliation` | Scoped durable event records |
+| `GET /usage/summary?period=hour\|day` | Scoped UTC admission-time usage/cost summaries; default day |
 
 See `/docs` in the local API for executable schema. Policies support optional `tenant_id` scoping;
 assignments require both tenant and principal IDs. Returned event records contain `id`, `kind`,
@@ -64,11 +65,19 @@ from the blocking windows, not an unrelated shorter rule. Counter keys include m
 so changing either starts a distinct allowance namespace; size-only edits preserve consumption.
 Configuration audit events retain validated record snapshots and the actor.
 
+Summaries count each admitted request once even when several cost policies apply. Later actual
+settlement replaces the conservative contribution. They are derived from durable events on read,
+not separately materialized or invoiced charges; summary scans share the sample's retention and
+partition-scaling limitations. The portal's existing tables continue to show per-event records.
+
 ## Cloud selection
 
 azd/CLI use `AzureCloud` or `AzureUSGovernment`. The backend uses `commercial` or `government`;
 Terraform maps deployment cloud choice to runtime settings and provider environments.
 Cloud-specific endpoints come from resource outputs/configuration, not hostname string replacement.
+The [Tables SDK audience](https://learn.microsoft.com/python/api/azure-data-tables/azure.data.tables.tableclient)
+is `https://storage.azure.com` for Commercial and `https://storage.azure.us` for Government.
+Redis audiences remain a separately verified deployment input; do not infer one from a DNS suffix.
 
 Private deployments require operator-supplied existing subnet IDs and policy-managed DNS.
 Only explicitly selected public development mode should enable public service access.

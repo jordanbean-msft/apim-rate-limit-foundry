@@ -146,6 +146,13 @@ Application Insights complement the durable usage view; sampled telemetry is not
 ledger. Avoid high-cardinality principal IDs as custom metric dimensions; use structured events
 and scoped table queries.
 
+`GET /api/usage/summary?period=hour|day` derives tenant/principal/service/model UTC buckets from
+durable admissions and latest settlements, without summing the same charge across multiple budget
+rules. Late settlement replaces an estimate on the next read. This sample favors rebuilding
+summaries over a second materialized accounting ledger; large histories require pagination,
+retention, and an incremental projection. The five-minute timer conservatively reconciles
+eligible reservations; it does not pretend to recover unreported streaming usage.
+
 Before production, measure end-to-end admission latency, Redis contention, storage persistence
 latency, recovery behavior, and the overreservation rate. Document the expected load, availability,
 recovery objectives, and spend exposure for the actual deployment rather than claiming universal

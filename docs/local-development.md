@@ -45,12 +45,15 @@ in a cloud deployment.
 ## Frontend
 
 ```bash
-npm --prefix web run dev
+WEB_DEMO_MODE=true npm --prefix web run dev
 ```
 
 Use the portal's documented runtime configuration in `web/` for Entra authentication and the API
 base URL. Any explicit demo mode is separate from the live Function API, with a visible demo
 banner; authentication/network failures must not silently switch to demo data.
+The credential-free GUI demo does not edit the local CLI's stores. Live GUI/API integration uses
+the configured Entra-protected gateway and its exact-origin CORS policy; local identity headers
+are for direct API smoke tests, not a browser authentication scheme.
 
 ## Functions host
 

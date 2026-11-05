@@ -38,7 +38,8 @@ See [architecture and accounting](ARCHITECTURE.md) for boundaries and limitation
 
 ## Development
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 22+, and Terraform 1.9+.
+Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 22.13+ LTS (or 24 LTS),
+and Terraform 1.9+.
 Optional local service integration uses Redis and Microsoft's Azurite Storage emulator.
 
 ```bash
