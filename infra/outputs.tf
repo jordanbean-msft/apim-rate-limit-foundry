@@ -39,6 +39,14 @@ output "APPLICATIONINSIGHTS_CONNECTION_STRING" {
   value       = module.monitoring.app_insights_connection_string
   sensitive   = true
 }
+output "AZURE_DASHBOARD_ID" {
+  description = "Shared Azure portal rate-limiter dashboard resource ID."
+  value       = module.monitoring.dashboard_id
+}
+output "AZURE_DASHBOARD_URL" {
+  description = "Shared rate-limiter dashboard in the selected cloud's Azure portal."
+  value       = module.monitoring.dashboard_url
+}
 output "TABLE_ENDPOINT" {
   description = "Durable repository endpoint."
   value       = module.storage.table_endpoint

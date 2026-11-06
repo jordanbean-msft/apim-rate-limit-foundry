@@ -46,6 +46,7 @@ module "monitoring" {
   location            = data.azurerm_resource_group.rg.location
   tags                = local.default_tags
   config              = var.monitoring
+  azure_cloud         = local.cloud
 }
 module "identity" {
   source              = "./modules/identity"

@@ -28,6 +28,86 @@ accounts) emit resource logs/metrics to Log Analytics and are observed as applic
 dependencies in Application Insights. Native resource logs can contain platform
 network metadata; application telemetry excludes credentials, prompts and raw identities.
 
+## Shared Azure portal rate-limiter dashboard
+
+The monitoring module deploys an `azurerm_portal_dashboard`, **not** a workbook or
+the React policy-management portal. It inherits deployment tags, including the
+demo's `SecurityControl=Ignore`, and adds `hidden-title=Granular AI rate limiter`.
+Naming uses the pinned AzureCAF provider's supported `azurerm_portal_dashboard`
+type with the deterministic resource token. No extra configuration is required.
+
+After provisioning, azd captures `AZURE_DASHBOARD_ID` and `AZURE_DASHBOARD_URL`:
+
+```text
+Commercial: https://portal.azure.com/#dashboard/arm<AZURE_DASHBOARD_ID>
+Government: https://portal.azure.us/#dashboard/arm<AZURE_DASHBOARD_ID>
+```
+
+The ID begins with `/subscriptions/`, so the resulting path contains
+`/dashboard/arm/subscriptions/.../providers/Microsoft.Portal/dashboards/<name>`.
+Existing resource-group/dashboard RBAC controls dashboard visibility; viewers
+also need existing workspace query permissions (for example Log Analytics Reader).
+This change introduces **no role grants**. Dashboard resources have no native
+diagnostic settings or Application Insights integration: they store configuration,
+not runtime telemetry. Tiles query the existing workspace in place; no additional
+diagnostic export or duplicate Application Insights ingestion is introduced.
+
+The eight log tiles use Microsoft's `LogsDashboardPart` metadata and the
+workspace **resource ID** as `Scope.resourceIds`. The default dashboard time picker
+is **last 24 hours**. Tile `TimeRange` is deliberately unbound and
+`IsQueryContainTimeRange=false`; no query pins `ago()` or a separate timespan.
+Changing the dashboard time picker therefore applies to every tile, including
+both sides of joins. Function telemetry is scoped to `AppRoleName=rate-limiter`;
+gateway telemetry uses this deployment's dedicated workspace. Sharing that
+workspace with unrelated APIM instances would require an additional resource filter.
+
+| Tile / reusable query in `modules/monitoring/queries/` | Interpretation |
+|---|---|
+| `admissions.kql` | Earliest observed allow/deny per reservation, by service/protocol |
+| `denials.kql` | Recent custom denials, policy IDs, reason, retry/reset and requested conservative liability |
+| `gateway-429.kql` | APIM 429 origin joined to Function decisions using explicitly propagated correlation ID; backend status is separate from custom denial |
+| `policy-pressure.kql` | Latest displayed admission evaluations: conservative demand, applied amount, remaining/limit and allowed/denied/blocked outcome; not a sum of independent policy windows |
+| `cost-liability.kql` | Admission-time cohort: latest visible settlement replaces, never adds to, reserved USD; pending reservations retain conservative liability |
+| `cache-service-units.kql` | Settlement-time cohort: latest settlement per reservation, cache-read ratio/writes, tokens, pages, text records and requests, split by actual/conservative accounting |
+| `latency.kql` | Physical reserve/settle HTTP attempts, failures and duration percentiles |
+| `dependency-failures.kql` | Failed Redis/Table spans with duration/error type; not counted again from duplicate domain traces |
+
+These are **nonbilling operational telemetry**, not the durable ledger.
+Decision/policy rows deduplicate reservation/event/policy identities; settlement
+rows use `arg_max` per reservation before any sum or join. Do not add the cost
+and usage tiles together or sum overlapping policy costs. Older events remain
+queryable via stable `Message` names without requiring `event_version`; new
+properties may be blank on historical data. `KnownCostReservations` makes
+missing historical admission cost visible rather than implying complete totals.
+Historical denial policy lists are displayed as text because older exporters
+serialized them as tuple-like strings.
+
+Sampling, ingestion lag, missing telemetry and independent admission/settlement
+timestamps affect all results. Both sides of joins obey the selected time range:
+a settlement outside the window can leave an apparent pending reservation,
+and settlement-only rows are excluded from the admission-cohort cost tile.
+Native/gateway-or-missing-decision 429 is an **unattributed** category, not proof
+that a native throttle fired. Cache percentages use normalized input tokens as
+the denominator; conservative estimates are explicitly separated from actuals.
+Latency/dependency tiles intentionally retain physical retries.
+
+Queries are standalone KQL with no Terraform placeholders. Operators can validate
+each against the existing workspace without changing Azure resources:
+
+```bash
+az monitor log-analytics query --workspace "<workspace-customer-id>" \
+  --timespan P1D --analytics-query "$(cat infra/modules/monitoring/queries/admissions.kql)"
+terraform -chdir=infra test -filter=tests/dashboard.tftest.hcl
+```
+
+Reference metadata follows the Microsoft
+[machine-learning workspace monitoring dashboard sample](https://github.com/Azure/azure-quickstart-templates/blob/master/quickstarts/microsoft.machinelearningservices/machine-learning-workspace-monitoring-dashboard/azuredeploy.json),
+the [dashboard JSON structure](https://learn.microsoft.com/azure/azure-portal/azure-portal-dashboards-structure),
+and [Log Analytics scope/time-range behavior](https://learn.microsoft.com/azure/azure-monitor/logs/scope).
+Portal rendering and live query execution still need verification after deployment.
+
+## Deployment configuration
+
 Set every `${PLACEHOLDER}` in `main.tfvars.json` and `provider.conf.json` in the azd
 environment. Unused service strings may be explicitly empty, but enable/create flags
 must always be explicit `true`/`false`. Set `PUBLIC_NETWORK_ACCESS_ENABLED=false`

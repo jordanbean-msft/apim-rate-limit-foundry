@@ -27,3 +27,13 @@ output "app_insights_id" {
   description = "Application Insights resource."
   value       = azurerm_application_insights.appinsights.id
 }
+
+output "dashboard_id" {
+  description = "Shared dashboard resource; access inherits existing Azure RBAC."
+  value       = azurerm_portal_dashboard.rate_limiter.id
+}
+
+output "dashboard_url" {
+  description = "Cloud-aware link to the shared Azure portal dashboard."
+  value       = "https://${local.portal_host}/#dashboard/arm${azurerm_portal_dashboard.rate_limiter.id}"
+}

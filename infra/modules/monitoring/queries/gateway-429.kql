@@ -1,0 +1,21 @@
+// Join on the explicitly propagated APIM request ID, not W3C OperationId.
+// Dedup per reservation AND correlation: a replay can represent another physical APIM request.
+let Decisions = AppTraces
+| where AppRoleName == "rate-limiter" and Message == "rate_decision"
+| extend ReservationId = tostring(Properties.reservation_id), Correlation = tolower(tostring(Properties.correlation_id))
+| where isnotempty(ReservationId) and isnotempty(Correlation)
+| summarize arg_min(TimeGenerated, *) by ReservationId, Correlation
+| summarize CustomDenied = countif(tobool(Properties.allowed) == false),
+    CustomDecisions = count() by Correlation;
+ApiManagementGatewayLogs
+| where ResponseCode == 429
+| extend Correlation = tolower(tostring(CorrelationId))
+| summarize arg_max(TimeGenerated, *) by _ResourceId, Correlation
+| join kind=leftouter Decisions on Correlation
+| extend Origin = case(
+    CustomDenied > 0, "Custom limiter denial",
+    BackendResponseCode == 429, "Backend 429",
+    CustomDecisions > 0, "Gateway/native 429 after custom allow",
+    "Native/gateway or no custom-decision telemetry")
+| summarize Responses = count() by ApiId, Origin
+| order by Responses desc

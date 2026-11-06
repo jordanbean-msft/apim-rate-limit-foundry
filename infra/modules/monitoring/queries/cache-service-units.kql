@@ -1,0 +1,18 @@
+// Settlement-time cohort: latest settlement per reservation, not one row per retry or policy.
+AppTraces
+| where AppRoleName == "rate-limiter" and Message == "settlement_recorded"
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_max(TimeGenerated, *) by ReservationId
+| summarize Reservations = count(), InputTokens = sum(tolong(Properties.input_tokens)),
+    OutputTokens = sum(tolong(Properties.output_tokens)),
+    CachedReadTokens = sum(tolong(Properties.cached_input_tokens)),
+    CacheWrite5mTokens = sum(tolong(Properties.cache_write_input_tokens_5m)),
+    CacheWrite1hTokens = sum(tolong(Properties.cache_write_input_tokens_1h)),
+    Pages = sum(tolong(Properties.pages)), TextRecords = sum(tolong(Properties.text_records)),
+    Requests = sum(tolong(Properties.requests)),
+    SettlementUSD = sum(tolong(Properties.cost_micro_usd)) / 1000000.0
+    by Service = tostring(Properties.service), Protocol = tostring(Properties.api_protocol),
+    Accounting = iff(tobool(Properties.estimated), "Conservative", "Actual")
+| extend CachedReadPct = iff(InputTokens > 0, round(100.0 * CachedReadTokens / InputTokens, 2), real(null))
+| order by Service asc, Protocol asc, Accounting asc

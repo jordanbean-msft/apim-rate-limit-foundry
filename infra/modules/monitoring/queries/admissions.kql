@@ -1,0 +1,11 @@
+// Earliest observed decision prevents reservation replays from inflating admissions.
+AppTraces
+| where AppRoleName == "rate-limiter" and Message == "rate_decision"
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_min(TimeGenerated, *) by ReservationId
+| extend Series = strcat(tostring(Properties.service), " / ", tostring(Properties.api_protocol), " / ",
+    iff(tobool(Properties.allowed), "allow", "deny"))
+| summarize Reservations = count() by TimeGenerated = bin(TimeGenerated, 1h), Series
+| order by TimeGenerated asc
+| render timechart

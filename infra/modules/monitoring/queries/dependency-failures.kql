@@ -1,0 +1,8 @@
+// One dependency span per physical attempt. Do not also count dependency_completed traces.
+AppDependencies
+| where AppRoleName == "rate-limiter"
+| where Name startswith "redis." or Name startswith "table."
+| where Success == false
+| summarize Failures = count(), P95ms = percentile(DurationMs, 95), LastFailure = max(TimeGenerated)
+    by Dependency = tostring(Properties.dependency), Name, ErrorType = tostring(Properties.error_type)
+| order by Failures desc

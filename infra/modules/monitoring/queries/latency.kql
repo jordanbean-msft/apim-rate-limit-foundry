@@ -1,0 +1,9 @@
+// Physical HTTP attempts, including retries. No reservation dedup for request latency.
+AppRequests
+| where AppRoleName == "rate-limiter"
+| where Name in ("POST /api/decisions/reserve", "POST /api/decisions/settle")
+| summarize Attempts = count(), Failures = countif(Success == false),
+    P50ms = percentile(DurationMs, 50), P95ms = percentile(DurationMs, 95),
+    MaxMs = max(DurationMs)
+    by Name, ResultCode
+| order by Name asc, ResultCode asc

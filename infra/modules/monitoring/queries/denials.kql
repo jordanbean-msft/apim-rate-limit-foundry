@@ -1,0 +1,14 @@
+// Keep historical denied_policy_ids as display text; older exporters used tuple-like strings.
+AppTraces
+| where AppRoleName == "rate-limiter" and Message == "rate_decision"
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_min(TimeGenerated, *) by ReservationId
+| where tobool(Properties.allowed) == false
+| project TimeGenerated, ReservationId, Service = tostring(Properties.service),
+    Protocol = tostring(Properties.api_protocol), Model = tostring(Properties.model),
+    Reason = tostring(Properties.reason), DeniedPolicies = tostring(Properties.denied_policy_ids),
+    Remaining = tolong(Properties.remaining), RetryAfterSeconds = tolong(Properties.retry_after),
+    ResetAt = tostring(Properties.reset_at),
+    RequestedConservativeUSD = todouble(Properties.reserved_cost_micro_usd) / 1000000.0
+| top 100 by TimeGenerated desc

@@ -25,3 +25,12 @@ variable "config" {
     retention_in_days = number
   })
 }
+
+variable "azure_cloud" {
+  description = "Azure cloud used to select the dashboard portal endpoint."
+  type        = string
+  validation {
+    condition     = contains(["commercial", "government"], var.azure_cloud)
+    error_message = "azure_cloud must be commercial or government."
+  }
+}
