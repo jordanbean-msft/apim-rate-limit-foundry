@@ -9,6 +9,12 @@ from apim_rate_limit_foundry.models import Policy, Price, Reserve, Usage
 from apim_rate_limit_foundry.stores.memory import MemoryCounters, MemoryRepository
 
 
+@pytest.fixture(autouse=True)
+def disable_telemetry_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEMETRY_ENABLED", "false")
+    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
+
+
 @pytest.fixture
 def settings() -> Settings:
     return Settings(_env_file=None, local_auth_enabled=True, local_store_enabled=True)

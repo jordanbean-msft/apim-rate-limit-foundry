@@ -12,6 +12,7 @@ dependencies = [
   "azure-data-tables",
   "redis>=6",
   "aiohttp",
+  "azure-monitor-opentelemetry>=1.8.12",
 ]
 
 [project.optional-dependencies]

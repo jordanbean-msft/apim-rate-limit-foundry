@@ -1,5 +1,4 @@
 import json
-import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -18,8 +17,7 @@ from apim_rate_limit_foundry.models import Assignment, Decision, Policy, Price, 
 from apim_rate_limit_foundry.normalization.incomplete import IncompleteUsageError
 from apim_rate_limit_foundry.normalization.settlement import normalize_settlement_usage
 from apim_rate_limit_foundry.stores.contracts import Conflict, CounterStore, Record, Repository
-
-logger = logging.getLogger(__name__)
+from apim_rate_limit_foundry.telemetry import emit, observe_operation
 
 
 def event(kind: str, record_id: str, tenant: str, principal: str, data: Record) -> Record:
@@ -42,11 +40,20 @@ class Engine:
     async def configuration(self, collection: str) -> list[Record]:
         return [r for r in await self.repository.list(collection) if not r.get("_deleted")]
 
+    @observe_operation("reserve")
     async def reserve(self, request: Reserve) -> Decision:
+        emit(
+            "reservation_requested",
+            service=request.service,
+            model=request.model,
+            api_protocol=request.effective_protocol,
+            estimated=True,
+        )
         validate_estimate(request, self.settings)
         reservation_id = digest(request.tenant_id, request.principal_id, request.request_id)
         fingerprint = reserve_fingerprint(request)
         intent = await self.repository.get("intents", reservation_id)
+        replayed = intent is not None
         if intent is None:
             policies = matching(
                 request,
@@ -54,6 +61,14 @@ class Engine:
                 [Assignment.model_validate(a) for a in await self.configuration("assignments")],
             )
             if not policies:
+                emit(
+                    "rate_decision",
+                    allowed=False,
+                    reason="no_matching_policy",
+                    service=request.service,
+                    model=request.model,
+                    api_protocol=request.effective_protocol,
+                )
                 raise ValueError("No matching policy; admission denied")
             prices = [
                 Price.model_validate(p)
@@ -63,6 +78,14 @@ class Engine:
                 and (request.price_version is None or request.price_version == p["version"])
             ]
             if len(prices) != 1:
+                emit(
+                    "rate_decision",
+                    allowed=False,
+                    reason="price_configuration_invalid",
+                    service=request.service,
+                    model=request.model,
+                    api_protocol=request.effective_protocol,
+                )
                 raise ValueError("Exactly one matching price version is required")
             price = prices[0]
             now = datetime.now(UTC)
@@ -94,9 +117,22 @@ class Engine:
             # conservatively after cache loss, including crashes before the admission reply.
             intent = await self.repository.create("intents", reservation_id, candidate)
         data = intent["data"]
+        if replayed:
+            emit("reservation_intent_replayed", reservation_id=reservation_id, replayed=True)
         if data["fingerprint"] != fingerprint:
+            emit("idempotency_conflict", reservation_id=reservation_id, operation="reserve")
             raise Conflict("Request ID reused with different request")
         if any(d["reset_at"] <= datetime.now(UTC).isoformat() for d in data["debits"]):
+            emit(
+                "rate_decision",
+                reservation_id=reservation_id,
+                allowed=False,
+                reason="reservation_window_expired",
+                replayed=replayed,
+                service=request.service,
+                model=request.model,
+                api_protocol=request.effective_protocol,
+            )
             return Decision(
                 allowed=False,
                 reason="reservation_window_expired",
@@ -105,6 +141,14 @@ class Engine:
             )
         decision = await self.counters.reserve(
             reservation_id, fingerprint, data["debits"], data["decision"]
+        )
+        emit(
+            "counter_reservation_evaluated",
+            reservation_id=reservation_id,
+            allowed=decision["allowed"],
+            reason=decision["reason"],
+            remaining=decision["remaining"],
+            stage="pending_durable_usage",
         )
         decision["headers"] = {
             "X-RateLimit-Remaining": str(decision["remaining"]),
@@ -154,17 +198,37 @@ class Engine:
                 },
             ),
         )
-        logger.info(
+        emit(
             "rate_decision",
-            extra={
-                "reservation_id": reservation_id,
-                "allowed": decision["allowed"],
-                "service": request.service,
-            },
+            reservation_id=reservation_id,
+            allowed=decision["allowed"],
+            service=request.service,
+            model=request.model,
+            api_protocol=request.effective_protocol,
+            reason=decision["reason"],
+            remaining=decision["remaining"],
+            matched_policy_ids=decision.get("matched_policy_ids", []),
+            denied_policy_ids=decision.get("denied_policy_ids", []),
+            reset_at=decision["reset_at"],
+            retry_after=decision["retry_after"],
+            replayed=replayed,
         )
+        for charge in data["debits"]:
+            emit(
+                "reservation_policy_debit",
+                reservation_id=reservation_id,
+                allowed=decision["allowed"],
+                service=request.service,
+                model=request.model,
+                api_protocol=request.effective_protocol,
+                remaining=decision.get("remaining_by_policy", {}).get(charge["policy_id"]),
+                **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
+            )
         return Decision.model_validate(decision)
 
+    @observe_operation("settle")
     async def settle(self, request: Settle) -> Record:
+        emit("settlement_requested", reservation_id=request.reservation_id, status=request.status)
         intent = await self.repository.get("intents", request.reservation_id)
         if intent is None:
             raise Conflict("Unknown reservation")
@@ -190,7 +254,18 @@ class Engine:
                     "api_protocol": original.effective_protocol,
                 },
             )
-            return await self.repository.create("reconciliation", pending_id, pending)
+            persisted_pending = await self.repository.create("reconciliation", pending_id, pending)
+            emit(
+                "settlement_pending",
+                reservation_id=request.reservation_id,
+                status="conservative",
+                estimated=True,
+                reason="incomplete_provider_usage",
+                service=original.service,
+                model=original.model,
+                api_protocol=original.effective_protocol,
+            )
+            return persisted_pending
         cached_reported = request.status == "actual" and (
             "cached_input_tokens" in usage.model_fields_set
         )
@@ -241,10 +316,46 @@ class Engine:
         )
         persisted = await self.repository.create("settlements", request.reservation_id, result)
         if persisted["data"]["fingerprint"] != fingerprint:
+            emit("idempotency_conflict", reservation_id=request.reservation_id, operation="settle")
             raise Conflict("Reservation already durably finalized differently")
         await self.repository.create("reconciliation", request.reservation_id, result)
+        emit(
+            "settlement_recorded",
+            reservation_id=request.reservation_id,
+            service=original.service,
+            model=original.model,
+            api_protocol=original.effective_protocol,
+            status=request.status,
+            estimated=estimated,
+            cost_micro_usd=result["data"]["cost_micro_usd"],
+            cached_input_reported=cached_reported,
+            cache_write_input_reported=writes_reported,
+            price_id=data["price"]["id"],
+            price_version=data["price"]["version"],
+            **(usage if request.status == "actual" else original.usage).model_dump(),
+        )
+        emit(
+            "settlement_price",
+            reservation_id=request.reservation_id,
+            price_id=data["price"]["id"],
+            price_version=data["price"]["version"],
+            **{
+                k: v
+                for k, v in data["price"].items()
+                if k not in ("id", "version", "service", "model")
+            },
+        )
+        for charge in charges:
+            emit(
+                "settlement_policy_debit",
+                reservation_id=request.reservation_id,
+                status=request.status,
+                estimated=estimated,
+                **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
+            )
         return persisted
 
+    @observe_operation("release")
     async def release(self, reservation_id: str) -> Record:
         intent = await self.repository.get("intents", reservation_id)
         if intent is None:
@@ -259,6 +370,7 @@ class Engine:
             )
         )
 
+    @observe_operation("reconcile")
     async def reconcile(self) -> int:
         count = 0
         for intent in await self.repository.list("intents"):
@@ -272,10 +384,13 @@ class Engine:
                 continue
             await self.release(record_id)
             count += 1
+        emit("reconciliation_completed", records=count, status="ok")
         return count
 
+    @observe_operation("recover")
     async def recover(self) -> Record:
         token = await self.counters.begin_recovery()
+        emit("recovery_started", status="admission_closed")
         records: list[Record] = []
         for intent in await self.repository.list("intents"):
             data = intent["data"]
@@ -316,8 +431,10 @@ class Engine:
         )
         await self.repository.create("audit", result["id"], result)
         await self.counters.recover(token, records)
+        emit("recovery_completed", records=len(records), status="recovered")
         return result
 
+    @observe_operation("bind_operation")
     async def bind_operation(self, payload: dict[str, Any]) -> Record:
         intent = await self.repository.get("intents", payload["reservation_id"])
         admitted = await self.repository.get("usage", payload["reservation_id"])
@@ -332,11 +449,27 @@ class Engine:
         old = await self.repository.create("operations", record_id, payload)
         if old != payload:
             raise Conflict("Operation already bound differently")
+        emit(
+            "operation_ownership",
+            operation="bind",
+            allowed=True,
+            service="document-intelligence",
+            reservation_id=payload["reservation_id"],
+            model=payload["model"],
+        )
         return {"allowed": True}
 
+    @observe_operation("check_operation")
     async def check_operation(self, payload: dict[str, Any]) -> Record:
         old = await self.repository.get("operations", digest(payload["operation_id"]))
         allowed = old is not None and all(old.get(k) == v for k, v in payload.items())
+        emit(
+            "operation_ownership",
+            operation="check",
+            allowed=allowed,
+            service="document-intelligence",
+            model=payload["model"],
+        )
         return {
             "allowed": allowed,
             **({"reservation_id": old["reservation_id"]} if allowed and old else {}),

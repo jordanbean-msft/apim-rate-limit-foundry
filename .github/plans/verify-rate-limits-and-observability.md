@@ -6,9 +6,21 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
 
 - [ ] Audit live Redis state and Application Insights, Log Analytics, APIM and hosting logs.
   Parent owns live queries and evidence under ignored `.azure/publicdemo/`.
-- [ ] Add comprehensive structured Function decision, settlement, dependency, configuration,
+- [x] Add comprehensive structured Function decision, settlement, dependency, configuration,
   recovery and error telemetry. Backend agent owns Python source, Function entry point,
   Python dependencies and focused tests; use Microsoft Azure Monitor OpenTelemetry.
+  Backend complete: manual safe spans, allowlisted structured exports, bounded
+  X-Correlation-ID and Functions invocation trace context. Ruff, mypy (including
+  function_app.py), uv build and focused pytest -W error: 90 passed, 1 emulator-only skip.
+  Set APPLICATIONINSIGHTS_CONNECTION_STRING and OTEL_SERVICE_NAME=rate-limiter;
+  TELEMETRY_ENABLED defaults true (tests disable export). Leave worker auto-init flags
+  PYTHON_APPLICATIONINSIGHTS_ENABLE_TELEMETRY/PYTHON_ENABLE_OPENTELEMETRY unset/false.
+  Optional host.json telemetryMode=OpenTelemetry is parent-owned. SDK batches normally,
+  flushes only at shutdown, and cannot replace the durable Table audit on abrupt exit.
+  Read-only Redis inspection: hash {limiter}:ledger; ready/recovering/recovering_until,
+  c:<debit-key> integer counters, r:<reservation-id> JSON decision/debits/final snapshots.
+  accounting.debits(request, policies, price, now) computes debit keys;
+  accounting.digest(tenant, principal, request_id) computes reservation IDs.
 - [ ] Add safe portal server and browser telemetry. Portal agent owns `web/` only:
   request outcomes, API/configuration actions and failures, no token/body/identity logging.
 - [ ] Correct Terraform diagnostic destinations and hosting/APIM telemetry settings.

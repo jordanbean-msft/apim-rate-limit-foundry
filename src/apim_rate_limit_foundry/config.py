@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     max_output_tokens: int = 32768
     max_pages: int = 2000
     max_text_records: int = 1000
+    applicationinsights_connection_string: SecretStr | None = None
+    telemetry_enabled: bool = True
+    otel_service_name: str = "rate-limiter"
 
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":

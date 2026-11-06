@@ -11,6 +11,7 @@ from redis.exceptions import ResponseError
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.stores import scripts
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
+from apim_rate_limit_foundry.telemetry import observe_dependency
 
 
 class RedisCounters:
@@ -83,6 +84,7 @@ class RedisCounters:
                 raise Conflict("Idempotency or recovery conflict") from error
             raise
 
+    @observe_dependency("redis", "reserve")
     async def reserve(
         self, reservation_id: str, fingerprint: str, debits: list[Record], decision: Record
     ) -> Record:
@@ -96,16 +98,19 @@ class RedisCounters:
             )
         )
 
+    @observe_dependency("redis", "finalize")
     async def finalize(self, reservation_id: str, debits: list[Record], fingerprint: str) -> Record:
         return json.loads(
             await self.execute(scripts.FINALIZE, reservation_id, json.dumps(debits), fingerprint)
         )
 
+    @observe_dependency("redis", "begin_recovery")
     async def begin_recovery(self) -> str:
         token = uuid4().hex
         await self.execute(scripts.BEGIN_RECOVERY, token)
         return token
 
+    @observe_dependency("redis", "recover")
     async def recover(self, token: str, records: list[Record]) -> None:
         await self.execute(scripts.RECOVER, token, json.dumps(records))
 

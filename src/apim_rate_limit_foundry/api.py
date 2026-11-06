@@ -25,10 +25,10 @@ from apim_rate_limit_foundry.models import (
     UsageSummary,
 )
 from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
+from apim_rate_limit_foundry.request_telemetry import RequestTelemetryMiddleware
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
-
-logger = logging.getLogger(__name__)
+from apim_rate_limit_foundry.telemetry import emit
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
@@ -50,6 +50,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             await runtime.close()
 
     app = FastAPI(title="AI Rate Limiter", lifespan=lifespan)
+    app.add_middleware(RequestTelemetryMiddleware)
     app.state.get_engine = get_engine
 
     def identity(request: Request) -> Identity:
@@ -59,14 +60,22 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     @app.exception_handler(Conflict)
     async def conflict_handler(request: Request, error: Conflict) -> JSONResponse:
+        emit("request_rejected", level=logging.WARNING, error_type="Conflict", http_status=409)
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @app.exception_handler(ValueError)
     async def invalid_handler(request: Request, error: ValueError) -> JSONResponse:
+        emit("request_rejected", level=logging.WARNING, error_type="ValueError", http_status=400)
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
     async def unavailable_handler(request: Request, error: Exception) -> JSONResponse:
-        logger.error("limiter_dependency_unavailable", extra={"error_type": type(error).__name__})
+        emit(
+            "limiter_dependency_unavailable",
+            level=logging.ERROR,
+            error_type=type(error).__name__,
+            http_status=503,
+            allowed=False,
+        )
         return JSONResponse(
             status_code=503,
             content={
@@ -76,6 +85,16 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     for error_type in (OSError, AzureError, RedisError, RecoveryRequired):
         app.add_exception_handler(error_type, unavailable_handler)
+
+    @app.exception_handler(Exception)
+    async def unexpected_handler(request: Request, error: Exception) -> JSONResponse:
+        # ServerErrorMiddleware handles unexpected failures outside user middleware.
+        # Retain correlation on its response without disclosing exception messages.
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal limiter error; admission denied"},
+            headers={"X-Correlation-ID": request.state.correlation_id},
+        )
 
     @app.get("/api/health")
     async def health() -> Record:
@@ -198,6 +217,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             },
         )
         await get_engine().repository.mutate(collection, record_id, record, audit)
+        emit("configuration_written", action="put", collection=collection, status="ok")
         return record
 
     @app.put("/api/policies/{record_id}")
@@ -230,6 +250,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             },
         )
         await get_engine().repository.mutate(collection, record_id, None, audit)
+        emit("configuration_written", action="delete", collection=collection, status="ok")
         return {"deleted": record_id}
 
     return app
