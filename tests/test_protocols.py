@@ -12,6 +12,7 @@ from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
 from apim_rate_limit_foundry.models import Policy, Price, Reserve, Settle, Usage
 from apim_rate_limit_foundry.normalization.anthropic import normalize_anthropic
+from apim_rate_limit_foundry.normalization.incomplete import IncompleteUsageError
 from apim_rate_limit_foundry.normalization.openai import normalize_openai
 from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
 from apim_rate_limit_foundry.runtime import Runtime
@@ -148,6 +149,45 @@ async def test_openai_protocols_normalize_and_canonicalize_retries(
             )
         )
     assert sorted(protocol_engine.counters.counts.values()) == [110, 190]
+
+
+@pytest.mark.parametrize("protocol", ["openai-chat", "openai-responses"])
+async def test_openai_live_metadata_settles_without_changing_token_accounting(
+    protocol_engine: Engine, request_body: Reserve, protocol: str
+) -> None:
+    chat = protocol == "openai-chat"
+    raw = {
+        "prompt_tokens" if chat else "input_tokens": 100,
+        "completion_tokens" if chat else "output_tokens": 10,
+        "prompt_tokens_details" if chat else "input_tokens_details": {
+            "cached_tokens": 50,
+            **({} if chat else {"cache_write_tokens": 0}),
+        },
+        "latency_checkpoint": {"engine_ttft_ms": 26, "user_visible_ttft_ms": 317},
+    }
+    request = request_body.model_copy(
+        update={"api_protocol": protocol, "usage": Usage(input_tokens=120, output_tokens=20)}
+    )
+    decision = await protocol_engine.reserve(request)
+    settlement = await protocol_engine.settle(
+        Settle(reservation_id=decision.reservation_id, status="actual", provider_usage=raw)
+    )
+    assert settlement["data"]["cost_micro_usd"] == 190
+    assert settlement["data"]["estimated"] is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"latency_checkpoint": {"billable_tokens": 1}},
+        {"latency_checkpoint": {"engine_ttft_ms": -1}},
+        {"latency_checkpoint": "untrusted"},
+        {"input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1}},
+    ],
+)
+def test_openai_metadata_does_not_hide_unpriced_usage(extra: dict) -> None:
+    with pytest.raises((IncompleteUsageError, ValueError)):
+        normalize_openai({"input_tokens": 100, "output_tokens": 10, **extra}, "openai-responses")
 
 
 async def test_anthropic_total_input_cost_and_provenance(

@@ -25,6 +25,9 @@ locals {
 resource "azuread_application" "api" {
   display_name     = "${var.resource_token}-limiter-api"
   sign_in_audience = "AzureADMyOrg"
+  lifecycle {
+    ignore_changes = [identifier_uris]
+  }
   api {
     requested_access_token_version = 2
     oauth2_permission_scope {
@@ -62,7 +65,7 @@ resource "azuread_application" "web" {
   display_name     = "${var.resource_token}-limiter-portal"
   sign_in_audience = "AzureADMyOrg"
   single_page_application {
-    redirect_uris = [var.portal_redirect_uri, "${var.portal_redirect_uri}/"]
+    redirect_uris = ["${trimsuffix(var.portal_redirect_uri, "/")}/"]
   }
   required_resource_access {
     resource_app_id = azuread_application.api.client_id

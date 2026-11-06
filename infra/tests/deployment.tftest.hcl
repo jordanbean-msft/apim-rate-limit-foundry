@@ -3,6 +3,7 @@ mock_provider "azurerm" {
     defaults = {
       name     = "sample-rg"
       location = "usgovvirginia"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg"
     }
   }
   mock_data "azurerm_client_config" {
@@ -15,12 +16,6 @@ mock_provider "azurerm" {
   mock_resource "azurerm_service_plan" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.Web/serverFarms/sample-plan"
-    }
-  }
-  mock_resource "azurerm_api_management" {
-    defaults = {
-      id          = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.ApiManagement/service/sample-gateway"
-      gateway_url = "https://sample-gateway.azure-api.us"
     }
   }
   mock_resource "azurerm_managed_redis" {
@@ -41,6 +36,14 @@ mock_provider "azurerm" {
   }
 }
 mock_provider "azuread" {}
+mock_provider "azapi" {
+  mock_resource "azapi_resource" {
+    defaults = {
+      id     = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.ApiManagement/service/sample-gateway"
+      output = { properties = { gatewayUrl = "https://sample-gateway.azure-api.us" } }
+    }
+  }
+}
 mock_provider "azurecaf" {
   override_during = plan
   mock_resource "azurecaf_name" {
@@ -115,15 +118,16 @@ variables {
   }
   monitoring = { sku = "PerGB2018", retention_in_days = 30 }
   hosting = {
-    functions_sku       = "P1v3"
-    web_sku             = "P1v3"
-    python_version      = "3.12"
-    node_version        = "22-lts"
-    function_workers    = 1
-    web_workers         = 1
-    minimum_tls_version = "1.2"
-    cors_origins        = []
-    max_input_tokens    = 200000
+    functions_sku               = "P1v3"
+    web_sku                     = "P1v3"
+    python_version              = "3.12"
+    node_version                = "22-lts"
+    function_workers            = 1
+    web_workers                 = 1
+    minimum_tls_version         = "1.2"
+    cors_origins                = []
+    max_input_tokens            = 200000
+    allowed_client_applications = []
   }
   storage = { account_tier = "Standard", account_replication_type = "ZRS", table_name = "RateLimiter" }
   redis = {
@@ -343,6 +347,32 @@ run "all_three_protocols_verified_commercial" {
   assert {
     condition     = length(module.ai.protocol_role_assignment_ids) == 1
     error_message = "Responses must reuse the existing Chat role binding on the same account."
+  }
+}
+
+run "responses_reuses_terraform_managed_chat_role" {
+  command = plan
+  variables {
+    azure_cloud = "AzureCloud"
+    azure       = merge(var.azure, { location = "eastus2" })
+    ai = { for key, backend in var.ai : key => merge(backend, {
+      location = "eastus2", endpoint = "https://${key}.cognitiveservices.azure.com", audience = "https://cognitiveservices.azure.com"
+      }, key == "foundry" ? {
+      create         = true, model_name = "gpt-4o-mini", model_version = "2024-07-18",
+      deployment_sku = "Standard", deployment_capacity = 10
+    } : {}) }
+    llm_protocols = merge(var.llm_protocols, {
+      responses = merge(var.llm_protocols.responses, {
+        enabled         = true, capability_verified = true, byte_tokenizer_verified = true, private_endpoint_verified = true,
+        resource_id     = var.ai["foundry"].resource_id, endpoint = "https://sample.openai.azure.com",
+        audience        = "https://ai.azure.com", location = "eastus2",
+        deployment_name = "sample-model", price_version = "sample-v1"
+      })
+    })
+  }
+  assert {
+    condition     = length(module.ai.protocol_role_assignment_ids) == 0
+    error_message = "Enabling Responses after creating Chat must not duplicate the managed account's gateway role."
   }
 }
 

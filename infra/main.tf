@@ -94,14 +94,19 @@ module "ai" {
   depends_on                    = [module.identity]
 }
 module "hosting" {
-  source                                 = "./modules/hosting"
-  names                                  = local.names
-  resource_group_name                    = data.azurerm_resource_group.rg.name
-  location                               = data.azurerm_resource_group.rg.location
-  tags                                   = local.default_tags
-  public_network_access_enabled          = var.public_network_access_enabled
-  network                                = var.network
-  config                                 = var.hosting
+  source                        = "./modules/hosting"
+  names                         = local.names
+  resource_group_name           = data.azurerm_resource_group.rg.name
+  location                      = data.azurerm_resource_group.rg.location
+  tags                          = local.default_tags
+  public_network_access_enabled = var.public_network_access_enabled
+  network                       = var.network
+  config = merge(var.hosting, {
+    allowed_client_applications = distinct(concat(
+      var.hosting.allowed_client_applications,
+      [module.identity.web_client_id, module.identity.gateway.client_id]
+    ))
+  })
   function_identity                      = module.identity.function
   web_identity                           = module.identity.web
   storage_account_name                   = module.storage.name
@@ -147,6 +152,7 @@ module "apim" {
   source                        = "./modules/apim"
   name                          = local.names.apim
   resource_group_name           = data.azurerm_resource_group.rg.name
+  resource_group_id             = data.azurerm_resource_group.rg.id
   location                      = data.azurerm_resource_group.rg.location
   tags                          = local.default_tags
   public_network_access_enabled = var.public_network_access_enabled
@@ -201,7 +207,7 @@ module "diagnostics" {
     },
     { for key, backend in module.ai.backends : "ai-${key}" => backend.id if(
       (!contains(["responses", "anthropic"], key) && (try(var.ai[key].create, false) || contains(local.ai_reference_diagnostic_keys, key))) ||
-      (!contains([for item in values(var.ai) : item.resource_id if item.enabled && !item.create], backend.id) &&
+      (!contains([for item in values(var.ai) : item.resource_id if item.enabled && item.resource_id != ""], backend.id) &&
       (key != "anthropic" || !var.llm_protocols.responses.enabled || var.llm_protocols.anthropic.resource_id != var.llm_protocols.responses.resource_id))
     ) }
   )

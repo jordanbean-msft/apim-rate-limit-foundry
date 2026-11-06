@@ -9,7 +9,7 @@ resource "azurerm_storage_account" "this" {
   shared_access_key_enabled       = false
   default_to_oauth_authentication = true
   allow_nested_items_to_be_public = false
-  public_network_access_enabled   = var.public_network_access_enabled
+  public_network_access           = var.public_network_access_enabled ? "Enabled" : "Disabled"
   tags                            = var.tags
 }
 resource "azurerm_storage_table" "this" {

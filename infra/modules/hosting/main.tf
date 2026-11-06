@@ -17,24 +17,24 @@ resource "azurerm_service_plan" "web" {
   tags                = var.tags
 }
 resource "azurerm_linux_function_app" "this" {
-  name                                     = var.names.function
-  resource_group_name                      = var.resource_group_name
-  location                                 = var.location
-  service_plan_id                          = azurerm_service_plan.function.id
-  storage_account_name                     = var.storage_account_name
-  storage_uses_managed_identity            = true
-  content_share_force_disabled             = true
-  functions_extension_version              = "~4"
-  https_only                               = true
-  public_network_access_enabled            = var.public_network_access_enabled
-  virtual_network_subnet_id                = var.public_network_access_enabled ? null : var.network.functions_subnet_id
-  builtin_logging_enabled                  = false
-  ftp_publish_basic_authentication_enabled = false
+  name                                           = var.names.function
+  resource_group_name                            = var.resource_group_name
+  location                                       = var.location
+  service_plan_id                                = azurerm_service_plan.function.id
+  storage_account_name                           = var.storage_account_name
+  storage_uses_managed_identity                  = true
+  content_share_force_disabled                   = true
+  functions_extension_version                    = "~4"
+  https_only                                     = true
+  public_network_access_enabled                  = var.public_network_access_enabled
+  virtual_network_subnet_id                      = var.public_network_access_enabled ? null : var.network.functions_subnet_id
+  builtin_logging_enabled                        = false
+  ftp_publish_basic_authentication_enabled       = false
+  webdeploy_publish_basic_authentication_enabled = false
   app_settings = merge(var.function_settings, {
     FUNCTIONS_WORKER_RUNTIME        = "python"
     AzureWebJobsStorage__credential = "managedidentity"
     AzureWebJobsStorage__clientId   = var.function_identity.client_id
-    WEBSITE_AUTH_ENABLED            = "true"
   })
   identity {
     type         = "UserAssigned"
@@ -68,6 +68,7 @@ resource "azurerm_linux_function_app" "this" {
       client_id            = var.api_client_id
       tenant_auth_endpoint = "${var.authority}/${var.tenant_id}/v2.0"
       allowed_audiences    = [var.api_audience, var.api_client_id]
+      allowed_applications = var.config.allowed_client_applications
     }
     login {
       token_store_enabled = false
@@ -76,15 +77,16 @@ resource "azurerm_linux_function_app" "this" {
   tags = merge(var.tags, { "azd-service-name" = "api" })
 }
 resource "azurerm_linux_web_app" "this" {
-  name                                     = var.names.web
-  resource_group_name                      = var.resource_group_name
-  location                                 = var.location
-  service_plan_id                          = azurerm_service_plan.web.id
-  https_only                               = true
-  public_network_access_enabled            = var.public_network_access_enabled
-  virtual_network_subnet_id                = var.public_network_access_enabled ? null : var.network.web_subnet_id
-  ftp_publish_basic_authentication_enabled = false
-  app_settings                             = var.web_settings
+  name                                           = var.names.web
+  resource_group_name                            = var.resource_group_name
+  location                                       = var.location
+  service_plan_id                                = azurerm_service_plan.web.id
+  https_only                                     = true
+  public_network_access_enabled                  = var.public_network_access_enabled
+  virtual_network_subnet_id                      = var.public_network_access_enabled ? null : var.network.web_subnet_id
+  ftp_publish_basic_authentication_enabled       = false
+  webdeploy_publish_basic_authentication_enabled = false
+  app_settings                                   = var.web_settings
   identity {
     type         = "UserAssigned"
     identity_ids = [var.web_identity.id]

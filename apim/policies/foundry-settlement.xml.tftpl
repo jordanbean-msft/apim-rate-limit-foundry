@@ -12,11 +12,11 @@
           "prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "completion_tokens_details",
           "input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details",
           "cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation",
-          "server_tool_use", "service_tier", "inference_geo"
+          "server_tool_use", "service_tier", "inference_geo", "latency_checkpoint"
         };
         var nullableObjects = new [] {
           "prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details",
-          "cache_creation", "server_tool_use"
+          "cache_creation", "server_tool_use", "latency_checkpoint"
         };
         var result = new JObject();
         foreach (var field in usage.Properties()) {

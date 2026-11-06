@@ -22,7 +22,7 @@ locals {
   }
   existing_role_pairs = [for key, backend in local.enabled :
     "${backend.resource_id}|${key == "foundry" ? "Cognitive Services OpenAI User" : "Cognitive Services User"}"
-    if !backend.create
+    if backend.resource_id != ""
   ]
   gateway_role_groups = {
     for key, backend in local.enabled :
@@ -58,6 +58,12 @@ resource "azurerm_cognitive_account" "this" {
   local_auth_enabled            = false
   public_network_access_enabled = var.public_network_access_enabled
   tags                          = var.tags
+  lifecycle {
+    postcondition {
+      condition     = each.value.resource_id == "" || lower(each.value.resource_id) == lower(self.id)
+      error_message = "A created backend's supplied resource_id must identify that same account."
+    }
+  }
 }
 resource "azurerm_cognitive_deployment" "foundry" {
   for_each             = { for key, value in local.created : key => value if key == "foundry" }

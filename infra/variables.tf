@@ -58,15 +58,16 @@ variable "monitoring" {
 variable "hosting" {
   description = "Portable Linux Premium/Dedicated function and Node App Service specifications."
   type = object({
-    functions_sku       = string
-    web_sku             = string
-    python_version      = string
-    node_version        = string
-    function_workers    = number
-    web_workers         = number
-    minimum_tls_version = string
-    cors_origins        = list(string)
-    max_input_tokens    = number
+    functions_sku               = string
+    web_sku                     = string
+    python_version              = string
+    node_version                = string
+    function_workers            = number
+    web_workers                 = number
+    minimum_tls_version         = string
+    cors_origins                = list(string)
+    max_input_tokens            = number
+    allowed_client_applications = list(string)
   })
   validation {
     condition     = can(regex("^(EP[123]|[PS][0-9].*)$", var.hosting.functions_sku)) && var.hosting.python_version == "3.12"

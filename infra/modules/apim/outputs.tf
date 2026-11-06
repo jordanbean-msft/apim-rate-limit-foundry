@@ -1,10 +1,10 @@
 output "id" {
   description = "Gateway resource."
-  value       = azurerm_api_management.this.id
+  value       = azapi_resource.this.id
 }
 output "gateway_url" {
   description = "Cloud-aware gateway URL supplied by ARM."
-  value       = azurerm_api_management.this.gateway_url
+  value       = azapi_resource.this.output.properties.gatewayUrl
 }
 output "llm_routes" {
   description = "Only enabled LLM operations and their pinned protocol/model contracts."

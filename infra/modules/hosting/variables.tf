@@ -28,15 +28,16 @@ variable "network" {
 variable "config" {
   description = "Explicit portable compute configuration."
   type = object({
-    functions_sku       = string
-    web_sku             = string
-    python_version      = string
-    node_version        = string
-    function_workers    = number
-    web_workers         = number
-    minimum_tls_version = string
-    cors_origins        = list(string)
-    max_input_tokens    = number
+    functions_sku               = string
+    web_sku                     = string
+    python_version              = string
+    node_version                = string
+    function_workers            = number
+    web_workers                 = number
+    minimum_tls_version         = string
+    cors_origins                = list(string)
+    max_input_tokens            = number
+    allowed_client_applications = list(string)
   })
 }
 variable "function_identity" {

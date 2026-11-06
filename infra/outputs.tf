@@ -53,3 +53,7 @@ output "LLM_GATEWAY_ROUTES" {
   description = "Enabled public LLM paths and operator-pinned protocol/model aliases."
   value       = module.apim.llm_routes
 }
+output "FOUNDRY_RESOURCE_ID" {
+  description = "Created or referenced Chat account, retained by azd for shared-protocol RBAC deduplication."
+  value       = try(module.ai.backends["foundry"].id, "")
+}

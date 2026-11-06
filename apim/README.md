@@ -40,6 +40,10 @@ verified; it executes before reservation with a tenant-qualified principal key, 
 denials cannot debit the budget ledger. It applies to Chat only, never Responses or Messages.
 Unknown prices are rejected by the limiter.
 
+Known OpenAI latency checkpoints are validated but never counted as billable units.
+Responses' zero-valued cache-write counter is accepted; nonzero OpenAI cache writes
+remain conservatively reserved until a supported pricing contract is configured.
+
 ## LLM wire formats
 
 All three routes account as `service=foundry`, with explicit reserve `api_protocol`

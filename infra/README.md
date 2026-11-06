@@ -14,6 +14,8 @@ Set every `${PLACEHOLDER}` in `main.tfvars.json` and `provider.conf.json` in the
 environment. Unused service strings may be explicitly empty, but enable/create flags
 must always be explicit `true`/`false`. Set `PUBLIC_NETWORK_ACCESS_ENABLED=false`
 normally; `true` is a deliberate public development exception, never a fallback.
+The requested demo configuration also sets `SecurityControl=Ignore` in the resource
+tags. Remove this exemption before using the sample outside the approved demo.
 `environment.example.json` enumerates the complete non-secret operator environment
 (suitable as the starting shape for a GitHub environment's `AZD_ENV_JSON`). Replace
 all placeholders, align `*_PRICE_VERSION` to the catalog you seed, and never copy
@@ -29,6 +31,7 @@ Commercial token audience examples to Government without service-specific verifi
 | `APIM_PUBLISHER_NAME`, `APIM_PUBLISHER_EMAIL`, `GATEWAY_CLIENT_AUDIENCE` | APIM owner and allowed client-token audience, distinct from the generated limiter API audience |
 | `REDIS_TOKEN_SCOPE` | Explicit Entra scope, including `/.default`; see sovereign validation caveat below |
 | `ENABLE_FOUNDRY`, `CREATE_FOUNDRY`, `FOUNDRY_RESOURCE_ID`, `FOUNDRY_ENDPOINT`, `FOUNDRY_LOCATION`, `FOUNDRY_DEPLOYMENT_NAME`, `FOUNDRY_MODEL_NAME`, `FOUNDRY_MODEL_VERSION`, `FOUNDRY_DEPLOYMENT_SKU`, `FOUNDRY_TOKEN_AUDIENCE` | Foundry Azure OpenAI-compatible create/reference inputs; no serverless inference/Agents assumption |
+| `FOUNDRY_DEPLOYMENT_CAPACITY`, `FOUNDRY_API_VERSION` | Explicit deployment capacity and dated Chat REST version; verify new-deployment eligibility, not just catalog presence and quota |
 | `ENABLE_DOCUMENT_INTELLIGENCE`, `CREATE_DOCUMENT_INTELLIGENCE`, `DOCUMENT_INTELLIGENCE_RESOURCE_ID`, `DOCUMENT_INTELLIGENCE_ENDPOINT`, `DOCUMENT_INTELLIGENCE_LOCATION`, `DOCUMENT_INTELLIGENCE_TOKEN_AUDIENCE` | Optional Document Intelligence backend |
 | `ENABLE_LANGUAGE`, `CREATE_LANGUAGE`, `LANGUAGE_RESOURCE_ID`, `LANGUAGE_ENDPOINT`, `LANGUAGE_LOCATION`, `LANGUAGE_TOKEN_AUDIENCE` | Optional Language sentiment backend |
 | `FOUNDRY_PRICE_VERSION`, `DOCUMENT_INTELLIGENCE_PRICE_VERSION`, `LANGUAGE_PRICE_VERSION` | Explicit operator-pinned catalog versions; creating a new price version does not silently change admission pricing |
@@ -51,6 +54,14 @@ The Entra deployer needs application/service-principal creation, application rol
 and tenant-wide delegated consent rights, plus Azure role-assignment write rights.
 Remote state needs Blob Data Contributor access. Pre-created resource groups and subnets
 must be in the intended region; no shared networking or resource groups are created.
+Tag the application resource group with `azd-env-name=<environment-name>` so `azd show`
+can discover the existing deployment. Keep the separate state group outside that tag.
+
+Function Easy Auth explicitly allows the portal and gateway client applications.
+`hosting.allowed_client_applications` in `main.tfvars.json` adds approved automation clients;
+the sample includes Microsoft's Azure CLI client for authenticated setup and smoke testing.
+Remove that entry if CLI access is not required. The tenant, token audience and backend
+application roles are still required; an approved client ID alone grants no permissions.
 
 ## Protocol enablement and hard-input-cap verification
 
@@ -69,6 +80,12 @@ examples use `https://ai.azure.com/.default` (set resource audience `https://ai.
 Government requires a `.openai.azure.us` account and independently recorded model, API,
 regional availability and audience verification via `RESPONSES_GOVERNMENT_VERIFIED=true`.
 Protocol portability is not an availability claim; keep disabled without this verification.
+
+After creating Chat's account, azd captures its `FOUNDRY_RESOURCE_ID`. Retain that
+value when enabling Responses against the same account, even with `CREATE_FOUNDRY=true`,
+so the existing gateway role is reused rather than assigned twice. Terraform verifies
+that a supplied ID identifies the account it manages; do not put another account's ID
+in a create configuration.
 
 Messages uses the exact referenced
 `https://<account>.services.ai.azure.com/anthropic/v1/messages`, with a pinned
@@ -135,6 +152,15 @@ unconnected public GitHub-hosted runner.
 The backend and portal receive `AZURE_CLOUD=commercial|government`, the explicit tenant,
 and the cloud-specific Entra authority. Terraform's AzureRM, AzureAD, and remote-state
 backend select their own explicit cloud configuration.
+
+The APIM service uses Microsoft's cloud-aware AzAPI provider and its ARM service API.
+AzureRM currently unconditionally reads legacy tenant-access secrets, which returns
+HTTP 405 when the retired direct-management API is disabled. Do not enable that API to
+work around provisioning. APIM child resources continue to use AzureRM. For an existing
+deployment, back up remote state, import the unchanged service ID at
+`module.apim.azapi_resource.this`, then remove only
+`module.apim.azurerm_api_management.this` from state. Preview must show no destruction
+before applying; never recreate the gateway merely to change its Terraform provider.
 
 For AI backend managed-identity policies, set **resource audiences**, not `/.default`
 scopes. Commercial commonly uses `https://cognitiveservices.azure.com`. Microsoft

@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 5.13"
     }
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.13"
+    }
     azuread = {
       source  = "hashicorp/azuread"
       version = "~> 3.10"
@@ -40,4 +44,10 @@ provider "azurerm" {
 provider "azuread" {
   tenant_id   = var.azure.tenant_id
   environment = var.azure_cloud == "AzureUSGovernment" ? "usgovernment" : "global"
+}
+
+provider "azapi" {
+  subscription_id = var.azure.subscription_id
+  tenant_id       = var.azure.tenant_id
+  environment     = var.azure_cloud == "AzureUSGovernment" ? "usgovernment" : "public"
 }

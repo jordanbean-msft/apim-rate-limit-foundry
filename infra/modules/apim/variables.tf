@@ -6,6 +6,10 @@ variable "resource_group_name" {
   description = "Existing resource group."
   type        = string
 }
+variable "resource_group_id" {
+  description = "Existing resource group ARM scope."
+  type        = string
+}
 variable "location" {
   description = "Resource location."
   type        = string
