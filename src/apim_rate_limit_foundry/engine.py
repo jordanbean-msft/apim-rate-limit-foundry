@@ -172,6 +172,12 @@ class Engine:
             )
         else:
             decision["retry_after"] = 0
+        reserved_cost = cost(
+            Price.model_validate(data["price"]),
+            request.usage,
+            True,
+            request.effective_protocol,
+        )
         # An allow is not returned until its immutable durable usage event exists.
         await self.repository.create(
             "usage",
@@ -187,14 +193,7 @@ class Engine:
                     "status": "reserved" if decision["allowed"] else "denied",
                     "estimated": True,
                     "api_protocol": request.effective_protocol,
-                    "cost_micro_usd": cost(
-                        Price.model_validate(data["price"]),
-                        request.usage,
-                        True,
-                        request.effective_protocol,
-                    )
-                    if decision["allowed"]
-                    else 0,
+                    "cost_micro_usd": reserved_cost if decision["allowed"] else 0,
                 },
             ),
         )
@@ -212,6 +211,9 @@ class Engine:
             reset_at=decision["reset_at"],
             retry_after=decision["retry_after"],
             replayed=replayed,
+            estimated=True,
+            reserved_cost_micro_usd=reserved_cost,
+            cost_micro_usd=reserved_cost if decision["allowed"] else 0,
         )
         for charge in data["debits"]:
             emit(
@@ -222,6 +224,15 @@ class Engine:
                 model=request.model,
                 api_protocol=request.effective_protocol,
                 remaining=decision.get("remaining_by_policy", {}).get(charge["policy_id"]),
+                applied_amount=charge["amount"] if decision["allowed"] else 0,
+                policy_outcome="allowed"
+                if decision["allowed"]
+                else (
+                    "denied"
+                    if charge["policy_id"] in decision.get("denied_policy_ids", [])
+                    else "blocked"
+                ),
+                replayed=replayed,
                 **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
             )
         return Decision.model_validate(decision)
@@ -319,6 +330,12 @@ class Engine:
             emit("idempotency_conflict", reservation_id=request.reservation_id, operation="settle")
             raise Conflict("Reservation already durably finalized differently")
         await self.repository.create("reconciliation", request.reservation_id, result)
+        reserved_cost = cost(
+            Price.model_validate(data["price"]),
+            original.usage,
+            True,
+            original.effective_protocol,
+        )
         emit(
             "settlement_recorded",
             reservation_id=request.reservation_id,
@@ -328,6 +345,8 @@ class Engine:
             status=request.status,
             estimated=estimated,
             cost_micro_usd=result["data"]["cost_micro_usd"],
+            reserved_cost_micro_usd=reserved_cost,
+            refunded_cost_micro_usd=max(0, reserved_cost - result["data"]["cost_micro_usd"]),
             cached_input_reported=cached_reported,
             cache_write_input_reported=writes_reported,
             price_id=data["price"]["id"],
@@ -345,12 +364,18 @@ class Engine:
                 if k not in ("id", "version", "service", "model")
             },
         )
-        for charge in charges:
+        for before, charge in zip(data["debits"], charges, strict=True):
             emit(
                 "settlement_policy_debit",
                 reservation_id=request.reservation_id,
                 status=request.status,
                 estimated=estimated,
+                service=original.service,
+                model=original.model,
+                api_protocol=original.effective_protocol,
+                reserved_amount=before["amount"],
+                applied_amount=charge["amount"],
+                refunded_amount=max(0, before["amount"] - charge["amount"]),
                 **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
             )
         return persisted

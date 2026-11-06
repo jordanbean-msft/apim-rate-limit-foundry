@@ -20,6 +20,8 @@ _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _FIELDS = frozenset(
     {
         "correlation_id",
+        "event_name",
+        "event_version",
         "reservation_id",
         "allowed",
         "service",
@@ -37,11 +39,17 @@ _FIELDS = frozenset(
         "policy_id",
         "metric",
         "amount",
+        "applied_amount",
+        "reserved_amount",
+        "refunded_amount",
+        "policy_outcome",
         "limit",
         "reset_at",
         "price_id",
         "price_version",
         "cost_micro_usd",
+        "reserved_cost_micro_usd",
+        "refunded_cost_micro_usd",
         "cached_input_reported",
         "cache_write_input_reported",
         "input_tokens",
@@ -149,8 +157,16 @@ def safe_attributes(values: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def emit(event: str, *, level: int = logging.INFO, **attributes: Any) -> None:
-    context = safe_attributes({**attributes, "correlation_id": correlation_id.get()})
-    logging.getLogger(LOGGER_NAME).log(level, safe_event(event), extra=context)
+    name = safe_event(event)
+    context = safe_attributes(
+        {
+            **attributes,
+            "correlation_id": correlation_id.get(),
+            "event_name": name,
+            "event_version": 1,
+        }
+    )
+    logging.getLogger(LOGGER_NAME).log(level, name, extra=context)
 
 
 class JsonFormatter(logging.Formatter):

@@ -92,6 +92,31 @@ payload restrictions are in [apim/README.md](apim/README.md).
 Azure Cache for Redis, whose current retirement date is September 30, 2028. Do not select that
 path for a production lifetime beyond its supported availability without an approved migration.
 
+## Rate-limit custom traces
+
+The Function exports structured `AppTraces` to workspace-based Application Insights.
+`Message` and `Properties.event_name` identify the event; `event_version=1` versions
+the allowlisted schema. `correlation_id` joins gateway requests and portal actions;
+`reservation_id` joins admission, per-policy evaluation and settlement.
+
+| Trace | Relevant custom properties |
+|---|---|
+| `rate_decision` | Service/model/protocol, allowed/reason, matched/denied policies, retry/reset, replayed, conservative `reserved_cost_micro_usd`, admitted `cost_micro_usd` (zero on denial) |
+| `reservation_policy_debit` | Policy/unit, requested `amount`, limit/remaining, `applied_amount` (zero on denial), `policy_outcome`: allowed, denied (binding policy), or blocked (another policy rejected the request) |
+| `settlement_recorded` | Actual/conservative status, estimated, usage/cache counters, price version, final cost, original reserved cost and returned liability |
+| `settlement_policy_debit` | Per-policy final amount, original `reserved_amount`, `applied_amount`, `refunded_amount` |
+| `dependency_completed`, `operation_failed` | Redis/Table operation, latency, success/error type without exception text |
+
+Deduplicate admissions by reservation and policy evaluations by reservation/policy.
+Deduplicate settlements by reservation before summing usage or cost: idempotent retries
+can emit another observation without spending again. `applied_amount` describes the
+reservation's debit, **not** an incremental write on replay. Refunds release conservative
+liability; they are not invoice credits or necessarily cache savings. Remaining values
+are per-principal policy observations, not a global live Redis balance.
+Telemetry is asynchronous operational evidence; durable usage records remain the
+accounting source of truth. Prompts, document bodies, auth headers, raw identities
+and Redis keys are excluded from application custom properties.
+
 ## Sources
 
 - [APIM advanced request throttling](https://learn.microsoft.com/azure/api-management/api-management-sample-flexible-throttling)

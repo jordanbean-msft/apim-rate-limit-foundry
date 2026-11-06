@@ -159,10 +159,14 @@ async def test_decision_settlement_logs_show_accounting_without_internal_keys(
         await engine.reserve(request_body.model_copy(update={"request_id": f"extra-{index}"}))
     events = log_attributes(domain_logs, "rate_decision")
     assert events[0]["remaining"] == 200
+    assert events[0]["estimated"] is True
+    assert events[0]["reserved_cost_micro_usd"] == events[0]["cost_micro_usd"] == 100
     assert events[1]["replayed"] is True
     assert events[-1]["allowed"] is False
     assert events[-1]["denied_policy_ids"] == ["policy-1"]
     assert events[-1]["reason"] == "budget_exhausted"
+    assert events[-1]["reserved_cost_micro_usd"] == 100
+    assert events[-1]["cost_micro_usd"] == 0
     assert events[-1]["service"] == "foundry"
     assert events[-1]["model"] == "model-1"
     assert events[-1]["api_protocol"] == "openai-chat"
@@ -178,8 +182,15 @@ async def test_decision_settlement_logs_show_accounting_without_internal_keys(
     assert actual["cached_input_reported"] is True
     assert actual["estimated"] is False
     assert actual["price_version"] == "v1"
+    assert actual["reserved_cost_micro_usd"] == 100
+    assert actual["refunded_cost_micro_usd"] == 82
     assert log_attributes(domain_logs, "settlement_price")[-1]["cached_input_per_million"] == "0.5"
     assert log_attributes(domain_logs, "settlement_policy_debit")[-1]["amount"] == 18
+    settled_policy = log_attributes(domain_logs, "settlement_policy_debit")[-1]
+    assert settled_policy["reserved_amount"] == 100
+    assert settled_policy["applied_amount"] == 18
+    assert settled_policy["refunded_amount"] == 82
+    assert settled_policy["api_protocol"] == "openai-chat"
     await engine.settle(settlement)
     with pytest.raises(Conflict):
         await engine.settle(settlement.model_copy(update={"status": "conservative"}))
@@ -201,7 +212,61 @@ async def test_conservative_settlement_logs_retained_maximum(
     assert result["estimated"] is True
     assert result["cost_micro_usd"] == 100
     assert result["input_tokens"] == 10 and result["output_tokens"] == 20
+    assert result["refunded_cost_micro_usd"] == 0
+    assert log_attributes(domain_logs, "settlement_policy_debit")[-1]["refunded_amount"] == 0
     assert list(engine.counters.counts.values()) == [100]
+
+
+async def test_policy_traces_distinguish_binding_denial_from_unspent_demand(
+    engine: Engine,
+    request_body: Reserve,
+    domain_logs: pytest.LogCaptureFixture,
+) -> None:
+    await engine.repository.create(
+        "policies",
+        "requests-policy",
+        {
+            "id": "requests-policy",
+            "name": "One request",
+            "service": "foundry",
+            "metric": "requests",
+            "period": "day",
+            "limit": 1,
+        },
+    )
+    await engine.reserve(request_body)
+    await engine.reserve(request_body)
+    denied = await engine.reserve(request_body.model_copy(update={"request_id": "denied"}))
+    assert denied.allowed is False
+    assert denied.denied_policy_ids == ["requests-policy"]
+    charges = log_attributes(domain_logs, "reservation_policy_debit")
+    assert charges[0]["policy_outcome"] == "allowed"
+    assert charges[0]["applied_amount"] == charges[0]["amount"]
+    assert charges[2]["replayed"] is True
+    final = {item["policy_id"]: item for item in charges[-2:]}
+    assert final["requests-policy"]["policy_outcome"] == "denied"
+    assert final["policy-1"]["policy_outcome"] == "blocked"
+    assert all(item["applied_amount"] == 0 for item in final.values())
+    assert final["policy-1"]["amount"] == 100
+    assert final["policy-1"]["remaining"] == 200
+
+
+def test_custom_trace_schema_is_versioned_and_cannot_be_overridden(
+    domain_logs: pytest.LogCaptureFixture,
+) -> None:
+    telemetry.emit(
+        "rate_decision",
+        event_name="untrusted-name",
+        event_version=900,
+        allowed=False,
+        tenant_id="private-tenant",
+    )
+    record = domain_logs.records[-1]
+    assert record.getMessage() == "rate_decision"
+    attributes = telemetry.safe_attributes(record.__dict__)
+    assert attributes["event_name"] == "rate_decision"
+    assert attributes["event_version"] == 1
+    assert "tenant_id" not in record.__dict__
 
 
 async def test_incomplete_provider_usage_logs_conservative_pending_without_metadata(
