@@ -201,7 +201,6 @@ module "diagnostics" {
       web           = module.hosting.web_id
       function-plan = module.hosting.function_plan_id
       web-plan      = module.hosting.web_plan_id
-      insights      = module.monitoring.app_insights_id
       workspace     = module.monitoring.workspace_id
       storage       = module.storage.id
       storage-blob  = "${module.storage.id}/blobServices/default"

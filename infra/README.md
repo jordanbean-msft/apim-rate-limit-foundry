@@ -236,7 +236,11 @@ paths, protocol names, pinned models, backend paths and protocol-specific versio
 
 Supported resource logs and metrics are discovered and sent to the shared workspace
 for APIM, compute plans/apps, storage and all four subservices, Redis, AI accounts,
-Application Insights, and the workspace. Resource-specific tables use `Dedicated`.
+and the workspace. Resource-specific tables use `Dedicated`. Workspace-based
+Application Insights writes application telemetry directly to that workspace.
+Do not add a diagnostic export from Application Insights back to its linked workspace:
+this duplicates telemetry and is an
+[unsupported destination](https://learn.microsoft.com/azure/azure-monitor/platform/diagnostic-settings#diagnostic-settings-for-application-insights).
 UAMIs, Entra registrations, RBAC assignments and private endpoints do not expose
 resource diagnostic categories; their changes are covered by platform Activity Logs
 (subscription-level export remains the landing-zone owner's responsibility).

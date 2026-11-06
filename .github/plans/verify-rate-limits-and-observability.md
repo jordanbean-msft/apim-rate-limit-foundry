@@ -53,6 +53,13 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   budgets, actual cached settlement and conservative streaming. Restore test policies.
   Request allow/deny and exact Redis debits verified. GUI create succeeds, but subsequent
   edits are blocked by modal state in the live harness; portal agent is diagnosing.
+  Deployed focus fix resolves the modal problem. All 16 authenticated GUI cases pass:
+  shared requests 2/4, tokens 1/10000, cost 1/1000000 microUSD, Language records 3/4
+  and pages 1/2. Exact Redis counters, raised/disabled policies and GUI deletion pass.
+  Cached Redis debit is 1517 microUSD versus 4742 uncached; the monthly counter
+  equals the sum of admitted ledger debits (77100). Both SSE formats remain estimated.
+  Final audit found duplicate telemetry from Application Insights diagnostics exporting
+  back to its own workspace. Removing that unsupported redundant export is pending.
 - [ ] Record concrete correlation evidence, destinations, endpoints and limitations.
   Anthropic live verification needs an approved backend. Interactive MFA may require
   the operator; browser automation must disclose any use of an existing delegated token.
