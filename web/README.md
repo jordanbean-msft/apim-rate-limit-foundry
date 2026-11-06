@@ -278,6 +278,11 @@ expires_in: remainingLifetimeSeconds, client_info},
    could capture tokens or operator PII; destroy the browser context afterward.
 
 Prefer role/label selectors, not generated Fluent IDs or CSS class hashes.
+The workspace provides Fluent's focus-restoration target for its programmatically
+opened dialogs; closing an editor or deleting its opener row restores focus to
+the stable workspace instead of leaving navigation hidden from assistive technology.
+Wait for page DOM content and specific UI readiness rather than `networkidle`
+because background telemetry may keep network activity alive.
 Navigation: `getByRole('button', {name: 'Budget policies', exact: true})`.
 Wait for `Refresh` to be enabled before editing; click `Create policy`.
 In `getByRole('dialog', {name: 'Create policy'})` (or `Edit policy`), use

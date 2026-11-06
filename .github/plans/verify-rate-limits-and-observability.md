@@ -33,6 +33,9 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   Node 22 lint/typecheck, all 68 tests, production build and production dependency
   audit passed. Runtime settings, schema, privacy limits and delegated MSAL GUI
   harness/selectors are documented in `web/README.md`; parent owns live verification.
+  Narrow GUI follow-up reproduced stale root aria-hidden after programmatic dialog
+  removal. Added Fluent workspace focus-restoration target; real Chromium checks
+  confirm accessible navigation after save, cancel and deletion of the opener row.
 - [x] Correct Terraform diagnostic destinations and hosting/APIM telemetry settings.
   Parent owns `infra/`, APIM policies, operator docs and developer automation.
   Provisioned 100% APIM information diagnostics, safe headers/no bodies, Function SDK

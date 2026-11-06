@@ -12,6 +12,7 @@ import {
   MessageBarBody,
   Select,
   Spinner,
+  useRestoreFocusTarget,
 } from '@fluentui/react-components';
 import {
   ArrowClockwiseRegular,
@@ -189,6 +190,7 @@ export function Portal({
   const [mutationError, setMutationError] = useState('');
   const [notice, setNotice] = useState('');
   const sequence = useRef(0);
+  const restoreFocusTarget = useRestoreFocusTarget();
   const admin = roles.includes('RateLimit.Admin');
   const canRead = admin || roles.includes('RateLimit.Reader');
 
@@ -339,7 +341,7 @@ export function Portal({
             )}
           </div>
         </header>
-        <main id="main" tabIndex={-1}>
+        <main id="main" tabIndex={-1} {...restoreFocusTarget}>
           {demo && (
             <MessageBar intent="warning">
               <MessageBarBody>
