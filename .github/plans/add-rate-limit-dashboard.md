@@ -12,20 +12,37 @@ Commercial/Government compatibility, authentication and all accounting behavior.
   allowed/denied/blocked policy outcomes and original/refunded settlement liability.
   116 strict Python tests pass (eight optional skips), 38 focused telemetry/engine
   tests pass, mypy (41 files), Ruff/format, hooks and package build pass.
-- [ ] Build a shared Azure portal dashboard using workspace log-query tiles for
+- [x] Build a shared Azure portal dashboard using workspace log-query tiles for
   allow/deny, APIM 429 origin, per-policy pressure, settlement/cache usage, latency
   and dependency failures. Dashboard agent owns `infra/`, focused Terraform tests
   and operator documentation. No duplicate Insights diagnostic export.
   Acceptance: cloud-aware portal URL/output, tagged resources, valid JSON/KQL,
   Terraform format/validate/plans with no warnings.
-- [ ] Integrate code and infrastructure, run relevant combined validation, preview
+  Integrated dashboard and eight reusable KQL queries; 16 mocked Terraform tests,
+  recursive format/validate and TFLint/hooks pass. Both cloud URLs tested.
+- [x] Integrate code and infrastructure, run relevant combined validation, preview
   no unintended deletion, deploy through azd. Depends on both implementation items.
-- [ ] Generate representative allowed/denied/settled calls; verify new custom
+  Monitoring-scoped provisioning added only dashboard/name (two additions, zero
+  changes/deletions); API-only deployment succeeded. Existing P1v2 plans and
+  disabled Always On were preserved rather than reverting unrelated live drift.
+- [x] Generate representative allowed/denied/settled calls; verify new custom
   properties and every dashboard query against live workspace data; verify the
   persisted dashboard resource and portal rendering when available. Remove only
   task-created test policies. Depends on deployment.
-- [ ] Record dashboard link, verification evidence and limitations. Depends on
+  Live smoke passed Chat, Responses, both SSE formats, cached settlement, Language,
+  PDF polling, custom 429 and durable recovery. All eight queries from the persisted
+  tagged dashboard executed successfully; 22 fresh custom traces verified versioned
+  schema, denied/blocked zero debits and settlement refunds. No dependency failures
+  observed. Workload RBAC and sole Function Redis assignment verified unchanged.
+  Azure portal browser rendering requires interactive sign-in and was not verified;
+  ARM persistence and actual workspace query execution were verified instead.
+- [x] Record dashboard link, verification evidence and limitations. Depends on
   live verification.
+  Dashboard: https://portal.azure.com/#dashboard/arm/subscriptions/0ec6c427-01d3-4462-ae56-fd9656157157/resourceGroups/rg-apim-ai-demo-eus2/providers/Microsoft.Portal/dashboards/dsb-ndbhzjvlnze1y-rate-limiter
+  Evidence: ignored `.azure/publicdemo/rate-dashboard-evidence.json`, provision log
+  and refreshed smoke results. Telemetry has ingestion/windowing limitations and
+  is not billing/accounting truth. Government compatibility is structurally tested,
+  not deployed live; Anthropic remains disabled pending an approved backend.
 
 Work in isolated worktrees for parallel changes. Update assigned progress only
 after implementation and specified validation pass.
