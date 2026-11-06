@@ -253,18 +253,24 @@ resource "azurerm_api_management_api_diagnostic" "this" {
   api_name                  = each.key == "portal" ? azurerm_api_management_api.portal.name : azurerm_api_management_api.ai[each.key].name
   api_management_logger_id  = azurerm_api_management_logger.this.id
   always_log_errors         = true
+  sampling_percentage       = var.config.diagnostic_sampling_percentage
+  verbosity                 = "information"
   log_client_ip             = false
   http_correlation_protocol = "W3C"
   frontend_request {
-    body_bytes = 0
+    body_bytes     = 0
+    headers_to_log = ["X-Correlation-ID"]
   }
   frontend_response {
-    body_bytes = 0
+    body_bytes     = 0
+    headers_to_log = ["X-Correlation-ID", "X-RateLimit-Reservation", "X-RateLimit-Estimated"]
   }
   backend_request {
-    body_bytes = 0
+    body_bytes     = 0
+    headers_to_log = ["X-Correlation-ID"]
   }
   backend_response {
-    body_bytes = 0
+    body_bytes     = 0
+    headers_to_log = ["X-Correlation-ID"]
   }
 }

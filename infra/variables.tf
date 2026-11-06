@@ -68,7 +68,14 @@ variable "hosting" {
     cors_origins                = list(string)
     max_input_tokens            = number
     allowed_client_applications = list(string)
+    telemetry_sampling_ratio    = number
+    log_retention_days          = number
+    log_disk_quota_mb           = number
   })
+  validation {
+    condition     = var.hosting.telemetry_sampling_ratio >= 0 && var.hosting.telemetry_sampling_ratio <= 1 && var.hosting.log_retention_days >= 1 && var.hosting.log_disk_quota_mb >= 25 && var.hosting.log_disk_quota_mb <= 100
+    error_message = "Telemetry ratio must be 0..1 and local logs need positive retention and 25..100 MB."
+  }
   validation {
     condition     = can(regex("^(EP[123]|[PS][0-9].*)$", var.hosting.functions_sku)) && var.hosting.python_version == "3.12"
     error_message = "Use Linux Python 3.12 on Elastic Premium or Dedicated (not Flex/Consumption)."
@@ -94,6 +101,7 @@ variable "redis" {
     government_capacity = number
     minimum_tls_version = string
     token_scope         = string
+    inspection_enabled  = bool
   })
   validation {
     condition     = endswith(var.redis.token_scope, "/.default")
@@ -127,7 +135,12 @@ variable "gateway" {
     llm_policy_verified            = bool
     llm_tokens_per_minute          = number
     openai_byte_tokenizer_verified = bool
+    diagnostic_sampling_percentage = number
   })
+  validation {
+    condition     = var.gateway.diagnostic_sampling_percentage >= 0 && var.gateway.diagnostic_sampling_percentage <= 100
+    error_message = "APIM diagnostic sampling must be 0..100 percent."
+  }
   validation {
     condition     = !var.ai["foundry"].enabled || var.gateway.openai_byte_tokenizer_verified
     error_message = "Chat admission requires explicit verification of the deployed OpenAI byte-tokenizer bound."

@@ -44,6 +44,7 @@ variable "config" {
     enable_optional_llm_policy     = bool
     llm_policy_verified            = bool
     llm_tokens_per_minute          = number
+    diagnostic_sampling_percentage = number
     openai_byte_tokenizer_verified = bool
   })
 }

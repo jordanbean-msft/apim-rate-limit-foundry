@@ -13,6 +13,7 @@
     <send-request mode="new" response-variable-name="operation-binding" timeout="${send_request_timeout}" ignore-error="true">
       <set-url>${function_url}/api/operations/bind</set-url>
       <set-method>POST</set-method>
+      <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
       <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
       <set-body>@(new JObject(new JProperty("operation_id", (string)context.Variables["operation-id"]),
         new JProperty("reservation_id", (string)context.Variables["reservation-id"]),

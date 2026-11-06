@@ -2,6 +2,7 @@
   <send-request mode="new" response-variable-name="reservation-response" timeout="${send_request_timeout}" ignore-error="true">
     <set-url>${function_url}/api/decisions/reserve</set-url>
     <set-method>POST</set-method>
+    <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
     <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
     <set-body>@{
       var request = new JObject(
@@ -30,10 +31,20 @@
     </when>
   </choose>
   <set-variable name="decision" value='@(((IResponse)context.Variables["reservation-response"]).Body.As&lt;string&gt;())' />
+  <trace source="rate-limiter" severity="information">
+    <message>limiter_decision</message>
+    <metadata name="correlation_id" value="@(context.RequestId.ToString())" />
+    <metadata name="service" value='@((string)context.Variables["service"])' />
+    <metadata name="model" value='@((string)context.Variables["model"])' />
+    <metadata name="allowed" value='@(JObject.Parse((string)context.Variables["decision"])["allowed"].ToString())' />
+    <metadata name="reservation_id" value='@((string)JObject.Parse((string)context.Variables["decision"])["reservation_id"] ?? "")' />
+    <metadata name="denied_policy_ids" value='@(JObject.Parse((string)context.Variables["decision"])["denied_policy_ids"].ToString())' />
+  </trace>
   <choose>
     <when condition='@(!(bool)JObject.Parse((string)context.Variables["decision"])["allowed"])'>
       <return-response>
         <set-status code="429" reason="Budget exceeded" />
+        <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
         <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
         <set-header name="Retry-After" exists-action="override"><value>@(((int?)JObject.Parse((string)context.Variables["decision"])["retry_after"] ?? 1).ToString())</value></set-header>
         <set-header name="RateLimit-Remaining" exists-action="override"><value>@(JObject.Parse((string)context.Variables["decision"])["remaining"].ToString())</value></set-header>

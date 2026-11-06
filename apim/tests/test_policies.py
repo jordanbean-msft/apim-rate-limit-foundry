@@ -49,6 +49,38 @@ def render(path: str, **values: str) -> str:
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_limiter_calls_and_denials_share_gateway_generated_correlation(self) -> None:
+        for path in (
+            "fragments/reserve.xml.tftpl",
+            "fragments/settle.xml.tftpl",
+            "policies/document-submit.xml.tftpl",
+            "policies/document-poll.xml.tftpl",
+        ):
+            root = ET.fromstring(
+                render(path)
+                if "document-submit" not in path
+                else "<fragment>" + render(path) + "</fragment>"
+            )
+            for call in root.findall(".//send-request"):
+                header = call.find("./set-header[@name='X-Correlation-ID']/value")
+                self.assertIsNotNone(header, path)
+                self.assertIn("context.RequestId", header.text)
+        reservation = ET.fromstring(render("fragments/reserve.xml.tftpl"))
+        denial = next(
+            node
+            for node in reservation.findall(".//return-response")
+            if node.find("./set-status").get("code") == "429"
+        )
+        self.assertIsNotNone(denial.find("./set-header[@name='X-Correlation-ID']"))
+        for path in ("fragments/reserve.xml.tftpl", "fragments/settle.xml.tftpl"):
+            root = ET.fromstring(render(path))
+            trace = root.find("./trace")
+            self.assertIsNotNone(trace)
+            metadata = {item.get("name") for item in trace.findall("metadata")}
+            self.assertIn("correlation_id", metadata)
+            self.assertNotIn("principal_id", metadata)
+            self.assertNotIn("request_body", metadata)
+
     def test_native_llm_denial_precedes_budget_reservation_with_tenant_key(self) -> None:
         native = render("policies/llm-limit.xml.tftpl")
         policy = ET.fromstring(

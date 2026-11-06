@@ -4,18 +4,20 @@
     <cors allow-credentials="false">
       <allowed-origins><origin>${web_url}</origin></allowed-origins>
       <allowed-methods preflight-result-max-age="300"><method>GET</method><method>PUT</method><method>DELETE</method><method>POST</method></allowed-methods>
-      <allowed-headers><header>Authorization</header><header>Content-Type</header></allowed-headers>
+      <allowed-headers><header>Authorization</header><header>Content-Type</header><header>X-Correlation-ID</header></allowed-headers>
+      <expose-headers><header>X-Correlation-ID</header></expose-headers>
     </cors>
     <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
       <openid-config url="${authority}/${tenant_id}/v2.0/.well-known/openid-configuration" />
       <audiences><audience>${api_client_id}</audience><audience>${api_audience}</audience></audiences>
       <required-claims><claim name="tid" match="all"><value>${tenant_id}</value></claim></required-claims>
     </validate-jwt>
+    <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
     <set-backend-service base-url="${function_url}/api" />
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
     <set-header name="X-MS-CLIENT-PRINCIPAL" exists-action="delete" />
   </inbound>
   <backend><forward-request /></backend>
-  <outbound><base /></outbound>
+  <outbound><base /><set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header></outbound>
   <on-error><base /></on-error>
 </policies>

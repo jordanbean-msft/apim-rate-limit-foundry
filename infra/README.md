@@ -10,6 +10,24 @@ excluding test sources and npm development dependencies from the App Service pac
 
 ## Required configuration
 
+Set `REDIS_INSPECTION_ENABLED=false` normally. Explicitly enabling it grants the
+deployment operator read-only Redis inspection for diagnostics; disable it again
+after verification. Commercial uses the documented `2026-05-01-preview` custom ACL
+API through AzAPI because AzureRM's stable assignment grants full data access.
+Government uses the existing `Data Reader` policy. Neither path grants write/reset
+commands. The application's workload assignment is unchanged.
+
+Telemetry retains all requests in this demo (`hosting.telemetry_sampling_ratio=1`,
+`gateway.diagnostic_sampling_percentage=100`). Local hosting logs retain seven days
+within 100 MB; the shared workspace retains its separately configured period.
+APIM logs only correlation/reservation headers, never Authorization or message bodies.
+Managed Redis connection audit logs belong to its **default database**, not the
+parent instance; both database logs and parent metrics are routed to the workspace.
+Services without native Application Insights instrumentation (Redis, Storage and AI
+accounts) emit resource logs/metrics to Log Analytics and are observed as application
+dependencies in Application Insights. Native resource logs can contain platform
+network metadata; application telemetry excludes credentials, prompts and raw identities.
+
 Set every `${PLACEHOLDER}` in `main.tfvars.json` and `provider.conf.json` in the azd
 environment. Unused service strings may be explicitly empty, but enable/create flags
 must always be explicit `true`/`false`. Set `PUBLIC_NETWORK_ACCESS_ENABLED=false`

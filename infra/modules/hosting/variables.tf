@@ -38,6 +38,9 @@ variable "config" {
     cors_origins                = list(string)
     max_input_tokens            = number
     allowed_client_applications = list(string)
+    telemetry_sampling_ratio    = number
+    log_retention_days          = number
+    log_disk_quota_mb           = number
   })
 }
 variable "function_identity" {

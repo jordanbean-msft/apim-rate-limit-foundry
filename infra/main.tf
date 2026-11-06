@@ -80,6 +80,7 @@ module "redis" {
   azure_cloud                   = local.cloud
   config                        = var.redis
   principal_id                  = module.identity.function.principal_id
+  inspection_principal_id       = var.azure.principal_id
   depends_on                    = [module.identity]
 }
 module "ai" {
@@ -116,24 +117,28 @@ module "hosting" {
   tenant_id                              = var.azure.tenant_id
   authority                              = local.authority
   function_settings = {
-    AZURE_CLOUD                          = local.cloud
-    AZURE_TENANT_ID                      = var.azure.tenant_id
-    AZURE_CLIENT_ID                      = module.identity.function.client_id
-    TABLE_ENDPOINT                       = module.storage.table_endpoint
-    TABLE_NAME                           = var.storage.table_name
-    AzureWebJobsStorage__blobServiceUri  = module.storage.blob_endpoint
-    AzureWebJobsStorage__queueServiceUri = module.storage.queue_endpoint
-    AzureWebJobsStorage__tableServiceUri = module.storage.table_endpoint
-    REDIS_HOST                           = module.redis.hostname
-    REDIS_PORT                           = tostring(module.redis.port)
-    REDIS_USERNAME                       = module.identity.function.principal_id
-    REDIS_TOKEN_SCOPE                    = var.redis.token_scope
-    LOCAL_AUTH_ENABLED                   = "false"
-    LOCAL_STORE_ENABLED                  = "false"
-    MAX_INPUT_TOKENS                     = tostring(var.hosting.max_input_tokens)
-    MAX_OUTPUT_TOKENS                    = tostring(var.gateway.max_output_tokens)
-    SCM_DO_BUILD_DURING_DEPLOYMENT       = "true"
-    ENABLE_ORYX_BUILD                    = "true"
+    AZURE_CLOUD                           = local.cloud
+    AZURE_TENANT_ID                       = var.azure.tenant_id
+    AZURE_CLIENT_ID                       = module.identity.function.client_id
+    TABLE_ENDPOINT                        = module.storage.table_endpoint
+    TABLE_NAME                            = var.storage.table_name
+    AzureWebJobsStorage__blobServiceUri   = module.storage.blob_endpoint
+    AzureWebJobsStorage__queueServiceUri  = module.storage.queue_endpoint
+    AzureWebJobsStorage__tableServiceUri  = module.storage.table_endpoint
+    REDIS_HOST                            = module.redis.hostname
+    REDIS_PORT                            = tostring(module.redis.port)
+    REDIS_USERNAME                        = module.identity.function.principal_id
+    REDIS_TOKEN_SCOPE                     = var.redis.token_scope
+    LOCAL_AUTH_ENABLED                    = "false"
+    LOCAL_STORE_ENABLED                   = "false"
+    MAX_INPUT_TOKENS                      = tostring(var.hosting.max_input_tokens)
+    MAX_OUTPUT_TOKENS                     = tostring(var.gateway.max_output_tokens)
+    SCM_DO_BUILD_DURING_DEPLOYMENT        = "true"
+    ENABLE_ORYX_BUILD                     = "true"
+    APPLICATIONINSIGHTS_CONNECTION_STRING = module.monitoring.app_insights_connection_string
+    OTEL_SERVICE_NAME                     = "rate-limiter"
+    OTEL_TRACES_SAMPLER_ARG               = tostring(var.hosting.telemetry_sampling_ratio)
+    TELEMETRY_ENABLED                     = "true"
   }
   web_settings = {
     AZURE_CLOUD                                = local.cloud
@@ -205,6 +210,7 @@ module "diagnostics" {
       storage-file  = "${module.storage.id}/fileServices/default"
       redis         = module.redis.id
     },
+    local.cloud == "commercial" ? { redis-database = "${module.redis.id}/databases/default" } : {},
     { for key, backend in module.ai.backends : "ai-${key}" => backend.id if(
       (!contains(["responses", "anthropic"], key) && (try(var.ai[key].create, false) || contains(local.ai_reference_diagnostic_keys, key))) ||
       (!contains([for item in values(var.ai) : item.resource_id if item.enabled && item.resource_id != ""], backend.id) &&

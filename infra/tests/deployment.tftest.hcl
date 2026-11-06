@@ -128,12 +128,16 @@ variables {
     cors_origins                = []
     max_input_tokens            = 200000
     allowed_client_applications = []
+    telemetry_sampling_ratio    = 1
+    log_retention_days          = 7
+    log_disk_quota_mb           = 100
   }
   storage = { account_tier = "Standard", account_replication_type = "ZRS", table_name = "RateLimiter" }
   redis = {
     managed_sku         = "Balanced_B1"
     high_availability   = true
     government_capacity = 1
+    inspection_enabled  = false
     minimum_tls_version = "1.2"
     token_scope         = "https://redis.azure.com/.default"
   }
@@ -158,6 +162,7 @@ variables {
     enable_optional_llm_policy     = false
     llm_policy_verified            = false
     llm_tokens_per_minute          = 100000
+    diagnostic_sampling_percentage = 100
     openai_byte_tokenizer_verified = true
   }
   llm_protocols = {

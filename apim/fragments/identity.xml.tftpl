@@ -1,4 +1,5 @@
 <fragment>
+  <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
   <choose>
     <when condition='@(!String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Authorization", "")))'>
       <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer" output-token-variable-name="validated-jwt">

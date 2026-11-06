@@ -47,6 +47,10 @@ resource "azurerm_linux_function_app" "this" {
     ftps_state                             = "Disabled"
     vnet_route_all_enabled                 = !var.public_network_access_enabled
     application_insights_connection_string = var.application_insights_connection_string
+    app_service_logs {
+      disk_quota_mb         = var.config.log_disk_quota_mb
+      retention_period_days = var.config.log_retention_days
+    }
     application_stack {
       python_version = var.config.python_version
     }
@@ -103,4 +107,17 @@ resource "azurerm_linux_web_app" "this" {
     }
   }
   tags = merge(var.tags, { "azd-service-name" = "web" })
+  logs {
+    application_logs {
+      file_system_level = "Information"
+    }
+    http_logs {
+      file_system {
+        retention_in_days = var.config.log_retention_days
+        retention_in_mb   = var.config.log_disk_quota_mb
+      }
+    }
+    detailed_error_messages = false
+    failed_request_tracing  = false
+  }
 }

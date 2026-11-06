@@ -30,7 +30,12 @@ variable "config" {
     government_capacity = number
     minimum_tls_version = string
     token_scope         = string
+    inspection_enabled  = bool
   })
+}
+variable "inspection_principal_id" {
+  description = "Operator object ID for explicitly enabled read-only Redis inspection."
+  type        = string
 }
 variable "principal_id" {
   description = "Function identity object ID."
