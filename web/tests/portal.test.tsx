@@ -6,6 +6,8 @@ import { Portal } from '../src/Portal';
 import { RecordEditor } from '../src/RecordEditor';
 import type { Policy } from '../src/contracts';
 import { createDemoApi } from '../src/demo';
+import * as telemetry from '../src/telemetry';
+import { TelemetryBoundary } from '../src/TelemetryBoundary';
 
 const policy: Policy = {
   id: 'p1',
@@ -20,12 +22,97 @@ const policy: Policy = {
   enabled: true,
   priority: 10,
 };
+
+describe('portal telemetry outcomes', () => {
+  it('logs page, refresh and failed/successful delete results without identity or record data', async () => {
+    const user = userEvent.setup();
+    const log = vi.spyOn(telemetry, 'track');
+    const api = createDemoApi();
+    const id = (await api.list('policies'))[0].id;
+    vi.spyOn(api, 'remove').mockRejectedValueOnce(new Error('private-server-message'));
+    wrap(
+      <Portal
+        api={api}
+        roles={['RateLimit.Admin']}
+        identity="private-identity"
+        cloud="commercial"
+        demo
+      />,
+    );
+    await waitFor(() =>
+      expect(log).toHaveBeenCalledWith(
+        'portal_refresh',
+        { outcome: 'success' },
+        expect.objectContaining({ collectionCount: 6, failureCount: 0 }),
+      ),
+    );
+    expect(log).toHaveBeenCalledWith('portal_page', { page: 'overview', outcome: 'success' });
+    await user.click(screen.getByRole('button', { name: 'Budget policies' }));
+    expect(log).toHaveBeenCalledWith('portal_page', { page: 'policies', outcome: 'success' });
+    await user.click(screen.getByRole('button', { name: `Delete ${id}` }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('private-server-message');
+    expect(log).toHaveBeenCalledWith('portal_configuration', {
+      collection: 'policies',
+      action: 'delete',
+      outcome: 'failure',
+      errorCategory: 'api',
+    });
+    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() =>
+      expect(log).toHaveBeenCalledWith('portal_configuration', {
+        collection: 'policies',
+        action: 'delete',
+        outcome: 'success',
+        errorCategory: 'none',
+      }),
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private');
+    expect(JSON.stringify(log.mock.calls)).not.toContain(id);
+  });
+
+  it('logs a cancelled editor without submitting form contents', async () => {
+    const user = userEvent.setup();
+    const log = vi.spyOn(telemetry, 'track');
+    const save = vi.fn();
+    const close = vi.fn();
+    wrap(<RecordEditor collection="policies" policies={[]} onSave={save} onClose={close} />);
+    await user.type(screen.getByLabelText(/^Name/), 'private policy name');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(save).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith('portal_configuration', {
+      collection: 'policies',
+      action: 'create',
+      outcome: 'cancelled',
+      errorCategory: 'none',
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private');
+  });
+
+  it('logs a static render error category and presents no raw exception details', () => {
+    const log = vi.spyOn(telemetry, 'track');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    function Broken(): never {
+      throw new Error('private-render-record');
+    }
+    wrap(
+      <TelemetryBoundary>
+        <Broken />
+      </TelemetryBoundary>,
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent('private');
+    expect(log).toHaveBeenCalledWith('portal_browser_error', { errorCategory: 'render_error' });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private');
+  });
+});
 function wrap(children: React.ReactNode) {
   return render(<FluentProvider theme={webLightTheme}>{children}</FluentProvider>);
 }
 
 describe('policy and price workflows', () => {
   it('rejects fractional microUSD and saves an integer budget with a UTC period', async () => {
+    const log = vi.spyOn(telemetry, 'track');
     const user = userEvent.setup();
     const save = vi.fn().mockResolvedValue(undefined);
     wrap(
@@ -43,6 +130,12 @@ describe('policy and price workflows', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('safe whole number');
     expect(save).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('portal_configuration', {
+      collection: 'policies',
+      action: 'update',
+      outcome: 'failure',
+      errorCategory: 'validation',
+    });
     await user.clear(limit);
     await user.type(limit, '5000000');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -54,6 +147,15 @@ describe('policy and price workflows', () => {
           metric: 'cost',
         }),
       ),
+    );
+    expect(log).toHaveBeenCalledWith('portal_configuration', {
+      collection: 'policies',
+      action: 'update',
+      outcome: 'success',
+      errorCategory: 'none',
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(
+      /Monthly budget|p1|5000000|25000000|principal/,
     );
   });
 

@@ -39,6 +39,7 @@ import type {
 } from './contracts';
 import { objectValue, services, utcTime } from './format';
 import { RecordEditor } from './RecordEditor';
+import { track } from './telemetry';
 
 type Page = 'overview' | Collection | 'denials';
 type Data = { [K in Collection]: Collections[K][] };
@@ -191,11 +192,22 @@ export function Portal({
   const admin = roles.includes('RateLimit.Admin');
   const canRead = admin || roles.includes('RateLimit.Reader');
 
+  useEffect(() => {
+    track('portal_page', { page, outcome: 'success' });
+  }, [page]);
+
   const refresh = useCallback(async () => {
     if (!canRead) return;
+    const start = performance.now();
     const requestId = ++sequence.current;
     setLoading(true);
     const results = await Promise.allSettled(collections.map((collection) => api.list(collection)));
+    const failureCount = results.filter((result) => result.status === 'rejected').length;
+    track(
+      'portal_refresh',
+      { outcome: failureCount ? 'partial_failure' : 'success' },
+      { collectionCount: collections.length, failureCount, durationMs: performance.now() - start },
+    );
     if (requestId !== sequence.current) return;
     const next = { ...emptyData };
     const failures: Partial<Record<Collection, string>> = {};
@@ -235,14 +247,36 @@ export function Portal({
     setMutationError('');
     try {
       await api.remove(deleting.collection, deleting.id);
+      track('portal_configuration', {
+        collection: deleting.collection,
+        action: 'delete',
+        outcome: 'success',
+        errorCategory: 'none',
+      });
       setDeleting(null);
       setNotice('Record deleted.');
       await refresh();
     } catch (cause) {
+      track('portal_configuration', {
+        collection: deleting.collection,
+        action: 'delete',
+        outcome: 'failure',
+        errorCategory: 'api',
+      });
       setMutationError(cause instanceof Error ? cause.message : 'Delete failed.');
     } finally {
       setDeleteBusy(false);
     }
+  }
+  function cancelDelete() {
+    if (!deleting || deleteBusy) return;
+    track('portal_configuration', {
+      collection: deleting.collection,
+      action: 'delete',
+      outcome: 'cancelled',
+      errorCategory: 'none',
+    });
+    setDeleting(null);
   }
   const currentCollection = page === 'denials' ? 'usage' : page === 'overview' ? null : page;
 
@@ -432,7 +466,7 @@ export function Portal({
         <Dialog
           open
           onOpenChange={(_, value) => {
-            if (!value.open && !deleteBusy) setDeleting(null);
+            if (!value.open) cancelDelete();
           }}
         >
           <DialogSurface>
@@ -451,7 +485,7 @@ export function Portal({
                 )}
               </DialogContent>
               <div className="dialog-actions">
-                <Button disabled={deleteBusy} onClick={() => setDeleting(null)}>
+                <Button disabled={deleteBusy} onClick={cancelDelete}>
                   Cancel
                 </Button>
                 <Button

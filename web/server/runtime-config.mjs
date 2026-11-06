@@ -1,3 +1,5 @@
+import { publicAppInsights } from './telemetry-config.mjs';
+
 const authorities = {
   commercial: 'https://login.microsoftonline.com',
   government: 'https://login.microsoftonline.us',
@@ -43,6 +45,7 @@ export function buildConfig(env = process.env) {
     apiScope,
     apiBaseUrl,
     demoMode,
+    appInsights: publicAppInsights(env.APPLICATIONINSIGHTS_CONNECTION_STRING, cloud),
   };
 }
 

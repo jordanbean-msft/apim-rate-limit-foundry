@@ -8,6 +8,8 @@ import { createMsal, tokenRoles } from './auth';
 import type { Role, RuntimeConfig } from './contracts';
 import { createDemoApi } from './demo';
 import { Portal } from './Portal';
+import { initializeTelemetry, track } from './telemetry';
+import { TelemetryBoundary } from './TelemetryBoundary';
 import './styles.css';
 
 function CloudSession({ config }: { config: RuntimeConfig }) {
@@ -36,12 +38,14 @@ function CloudSession({ config }: { config: RuntimeConfig }) {
       .acquireTokenSilent({ account, scopes: [config.apiScope] })
       .then((result) => {
         if (active) {
+          track('portal_bootstrap', { action: 'authentication', outcome: 'success' });
           setRoles(tokenRoles(result.accessToken));
           setError('');
         }
       })
       .catch((cause: unknown) => {
         if (active) {
+          track('portal_bootstrap', { action: 'authentication', outcome: 'failure' });
           setInteractionRequired(cause instanceof InteractionRequiredAuthError);
           setError(
             'Unable to authorize this API session. Check configuration and consent, then sign in again.',
@@ -54,11 +58,10 @@ function CloudSession({ config }: { config: RuntimeConfig }) {
   }, [instance, account, config.apiScope, inProgress]);
 
   const signIn = () => {
-    void instance
-      .loginRedirect({ scopes: [config.apiScope], account })
-      .catch(() =>
-        setError('Sign-in could not start. Check your connection and tenant configuration.'),
-      );
+    void instance.loginRedirect({ scopes: [config.apiScope], account }).catch(() => {
+      track('portal_bootstrap', { action: 'sign_in', outcome: 'failure' });
+      setError('Sign-in could not start. Check your connection and tenant configuration.');
+    });
   };
 
   if (!account || roles === null) {
@@ -102,7 +105,10 @@ function CloudSession({ config }: { config: RuntimeConfig }) {
       identity={account.name || account.username}
       cloud={config.cloud}
       onSignOut={() => {
-        void instance.logoutRedirect({ account });
+        void instance.logoutRedirect({ account }).catch(() => {
+          track('portal_bootstrap', { action: 'sign_out', outcome: 'failure' });
+          setError('Sign-out could not start. Please retry.');
+        });
       }}
     />
   );
@@ -125,11 +131,14 @@ function Bootstrap() {
           throw new Error('Invalid public configuration');
         }
         if (active) {
+          initializeTelemetry(value);
+          track('portal_bootstrap', { action: 'configuration', outcome: 'success' });
           setConfig(value);
           setError('');
         }
       })
       .catch(() => {
+        track('portal_bootstrap', { action: 'configuration', outcome: 'failure' });
         if (active)
           setError(
             'The portal is not configured. Set the required web runtime settings and restart the server. No demo fallback was enabled.',
@@ -177,7 +186,9 @@ function Bootstrap() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <FluentProvider theme={webLightTheme}>
-      <Bootstrap />
+      <TelemetryBoundary>
+        <Bootstrap />
+      </TelemetryBoundary>
     </FluentProvider>
   </StrictMode>,
 );

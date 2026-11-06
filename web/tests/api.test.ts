@@ -14,7 +14,10 @@ describe('authenticated API', () => {
     expect(fetch).toHaveBeenCalledWith(
       'https://gateway.example/portal/usage',
       expect.objectContaining({
-        headers: { Authorization: 'Bearer api-access-token' },
+        headers: expect.objectContaining({
+          Authorization: 'Bearer api-access-token',
+          'X-Correlation-ID': expect.stringMatching(/^[0-9a-f-]{36}$/),
+        }),
         credentials: 'omit',
       }),
     );
@@ -32,9 +35,11 @@ describe('authenticated API', () => {
   );
 
   it.each([200, 204])('supports HTTP %i delete acknowledgments', async (status) => {
-    const fetch = vi.fn().mockResolvedValue(
-      new Response(status === 200 ? '{"deleted":"policy-1"}' : null, { status }),
-    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(status === 200 ? '{"deleted":"policy-1"}' : null, { status }),
+      );
     vi.stubGlobal('fetch', fetch);
     await expect(
       createApi('https://api.example/api', async () => 'token').remove('policies', 'policy-1'),
@@ -50,6 +55,91 @@ describe('authenticated API', () => {
     await expect(
       createApi('https://api.example/api', async () => 'token').list('usage'),
     ).rejects.toThrow('invalid collection response');
+  });
+
+  it.each([
+    ['http', new Response('{"secret":"response-private"}', { status: 403 })],
+    ['invalid_response', new Response('{"secret":"response-private"}')],
+    ['invalid_response', new Response('invalid-json-private')],
+  ])(
+    'logs sanitized %s outcomes without headers, URL or response data',
+    async (category, response) => {
+      const telemetry = vi.fn();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+      const api = createApi(
+        'https://private.example/api?private-query',
+        async () => 'private-token',
+        telemetry,
+      );
+      await expect(api.list('policies')).rejects.toThrow();
+      expect(telemetry).toHaveBeenCalledWith(
+        'portal_api',
+        expect.objectContaining({
+          collection: 'policies',
+          outcome: 'failure',
+          errorCategory: category,
+        }),
+        expect.objectContaining({ requestCount: 1, status: response.status }),
+      );
+      expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/private|Authorization|secret/);
+    },
+  );
+
+  it('logs token and network errors without their messages and preserves the original rejection', async () => {
+    for (const category of ['authentication', 'network']) {
+      const error = new Error('private token/URL/identity');
+      const telemetry = vi.fn();
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(error));
+      const getToken =
+        category === 'authentication'
+          ? async () => {
+              throw error;
+            }
+          : async () => 'private-token';
+      await expect(
+        createApi('https://private.example', getToken, telemetry).list('usage'),
+      ).rejects.toBe(error);
+      expect(telemetry).toHaveBeenCalledWith(
+        'portal_api',
+        expect.objectContaining({ errorCategory: category }),
+        expect.objectContaining({ status: 0, requestCount: category === 'authentication' ? 0 : 1 }),
+      );
+      expect(JSON.stringify(telemetry.mock.calls)).not.toContain('private');
+    }
+  });
+
+  it('logs a successful mutation without its ID or body, even when the telemetry sink throws', async () => {
+    const telemetry = vi.fn().mockImplementation(() => {
+      throw new Error('sink unavailable');
+    });
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createApi('https://api.example', async () => 'private-token', telemetry).remove(
+        'policies',
+        'private-principal',
+      ),
+    ).resolves.toBeUndefined();
+    expect(telemetry).toHaveBeenCalledWith(
+      'portal_api',
+      expect.objectContaining({ collection: 'policies', method: 'DELETE', outcome: 'success' }),
+      expect.objectContaining({ status: 204 }),
+    );
+    expect(JSON.stringify(telemetry.mock.calls)).not.toContain('private');
+    const headers = fetch.mock.calls[0][1].headers;
+    expect(headers['X-Correlation-ID']).toBe(telemetry.mock.calls[0][1].correlationId);
+  });
+
+  it('preserves API access when optional correlation generation fails', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+      throw new Error('unavailable');
+    });
+    const fetch = vi.fn().mockResolvedValue(new Response('[]'));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createApi('https://api.example', async () => 'token').list('usage'),
+    ).resolves.toEqual([]);
+    expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('X-Correlation-ID');
   });
 
   it('fails closed when no portal roles are present in an access token', () => {

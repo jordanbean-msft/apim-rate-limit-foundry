@@ -16,6 +16,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@microsoft/applicationinsights-web": "^3.3.10",
     "@azure/msal-browser": "^4.26.0",
     "@azure/msal-react": "^3.0.22",
     "@fluentui/react-components": "^9.70.0",

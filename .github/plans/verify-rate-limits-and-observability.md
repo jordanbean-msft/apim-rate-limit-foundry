@@ -21,8 +21,13 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   c:<debit-key> integer counters, r:<reservation-id> JSON decision/debits/final snapshots.
   accounting.debits(request, policies, price, now) computes debit keys;
   accounting.digest(tenant, principal, request_id) computes reservation IDs.
-- [ ] Add safe portal server and browser telemetry. Portal agent owns `web/` only:
+- [x] Add safe portal server and browser telemetry. Portal agent owns `web/` only:
   request outcomes, API/configuration actions and failures, no token/body/identity logging.
+  Implemented structured Node outcomes and manually allowlisted Microsoft browser SDK
+  events with cloud-specific endpoint validation/CSP and generated X-Correlation-ID.
+  Node 22 lint/typecheck, all 68 tests, production build and production dependency
+  audit passed. Runtime settings, schema, privacy limits and delegated MSAL GUI
+  harness/selectors are documented in `web/README.md`; parent owns live verification.
 - [ ] Correct Terraform diagnostic destinations and hosting/APIM telemetry settings.
   Parent owns `infra/`, APIM policies, operator docs and developer automation.
 - [ ] Integrate and validate Python, web, gateway and Terraform changes, then deploy.

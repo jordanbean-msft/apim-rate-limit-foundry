@@ -14,6 +14,7 @@ import {
 } from '@fluentui/react-components';
 import type { EditableCollection, EditableRecord, Metric, Policy, Service } from './contracts';
 import { services } from './format';
+import { track } from './telemetry';
 
 type Draft = Record<string, string | boolean>;
 const metricChoices: Record<Service, Metric[]> = {
@@ -201,6 +202,7 @@ export function RecordEditor({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError('');
+    let errorCategory = 'validation';
     try {
       const parsed = parseDraft(collection, draft);
       if (
@@ -209,21 +211,45 @@ export function RecordEditor({
       ) {
         throw new Error('Every policy ID must exist. Create the policies first.');
       }
+
       setSaving(true);
+      errorCategory = 'api';
       await onSave(parsed);
+      track('portal_configuration', {
+        collection,
+        action: record ? 'update' : 'create',
+        outcome: 'success',
+        errorCategory: 'none',
+      });
       onClose();
     } catch (cause) {
+      track('portal_configuration', {
+        collection,
+        action: record ? 'update' : 'create',
+        outcome: 'failure',
+        errorCategory,
+      });
       setError(cause instanceof Error ? cause.message : 'The record could not be saved.');
     } finally {
       setSaving(false);
     }
   }
 
+  function cancel() {
+    track('portal_configuration', {
+      collection,
+      action: record ? 'update' : 'create',
+      outcome: 'cancelled',
+      errorCategory: 'none',
+    });
+    onClose();
+  }
+
   return (
     <Dialog
       open
       onOpenChange={(_, data) => {
-        if (!data.open && !saving) onClose();
+        if (!data.open && !saving) cancel();
       }}
     >
       <DialogSurface className="editor">
@@ -379,7 +405,7 @@ export function RecordEditor({
               )}
             </DialogContent>
             <div className="dialog-actions">
-              <Button disabled={saving} onClick={onClose}>
+              <Button disabled={saving} onClick={cancel}>
                 Cancel
               </Button>
               <Button appearance="primary" type="submit" disabled={saving}>

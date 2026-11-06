@@ -69,6 +69,7 @@ export interface RuntimeConfig {
   apiScope: string;
   apiBaseUrl: string;
   demoMode: boolean;
+  appInsights?: { connectionString: string; ingestionOrigin: string };
 }
 
 export interface PortalApi {
