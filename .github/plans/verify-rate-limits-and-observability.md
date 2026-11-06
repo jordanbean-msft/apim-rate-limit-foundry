@@ -40,29 +40,41 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   Parent owns `infra/`, APIM policies, operator docs and developer automation.
   Provisioned 100% APIM information diagnostics, safe headers/no bodies, Function SDK
   settings, hosting log retention and Redis default-database ConnectionEvents.
-  Operator ACL is read-only and must be removed after final Redis inspection.
-- [ ] Integrate and validate Python, web, gateway and Terraform changes, then deploy.
+  Temporary read-only operator ACL was removed after inspection; workload ACL retained.
+- [x] Integrate and validate Python, web, gateway and Terraform changes, then deploy.
   Depends on the three implementation items; require zero-warning Terraform validation,
   warning-free tests and applicable lint/type/build checks.
   Initial integrated provisioning and both application deployments succeeded.
   Live tracing revealed HTTP response codes were exported as zero; corrected standard
-  HTTP span attributes and passed 19 focused telemetry tests. Final deployment pending.
-- [ ] Configure multiple limits through the authenticated portal and verify allowed/denied
+  HTTP span attributes and passed 19 focused telemetry tests. Final code and Terraform
+  deployed; 114 strict Python tests, 68 portal tests, 14 Terraform plans and hooks pass.
+- [x] Configure multiple limits through the authenticated portal and verify allowed/denied
   calls to Chat, Responses, Language and Document Intelligence, counter values and logs.
   Confirm request, cost and service-unit limits, disabled/raised limits, shared protocol
   budgets, actual cached settlement and conservative streaming. Restore test policies.
-  Request allow/deny and exact Redis debits verified. GUI create succeeds, but subsequent
-  edits are blocked by modal state in the live harness; portal agent is diagnosing.
+  Request allow/deny and exact Redis debits verified. A stale Fluent aria-hidden state
+  initially blocked subsequent edits; the focus-restoration fix resolves it.
   Deployed focus fix resolves the modal problem. All 16 authenticated GUI cases pass:
   shared requests 2/4, tokens 1/10000, cost 1/1000000 microUSD, Language records 3/4
   and pages 1/2. Exact Redis counters, raised/disabled policies and GUI deletion pass.
   Cached Redis debit is 1517 microUSD versus 4742 uncached; the monthly counter
   equals the sum of admitted ledger debits (77100). Both SSE formats remain estimated.
   Final audit found duplicate telemetry from Application Insights diagnostics exporting
-  back to its own workspace. Removing that unsupported redundant export is pending.
-- [ ] Record concrete correlation evidence, destinations, endpoints and limitations.
+  back to its own workspace. Removed that unsupported redundant export; a fresh live
+  inference confirms exactly one rate_decision log instead of two and actual settlement.
+- [x] Record concrete correlation evidence, destinations, endpoints and limitations.
   Anthropic live verification needs an approved backend. Interactive MFA may require
   the operator; browser automation must disclose any use of an existing delegated token.
+  Evidence: .azure/publicdemo/{gui-rate-limit-results,observability-evidence,
+  final-state-evidence}.json. Confirmed native logs for all three AI accounts, Redis
+  REDConnectionEvents, StorageTableLogs, FunctionAppLogs, AppServiceConsoleLogs, APIM
+  GatewayLogs/custom traces and browser/Function correlation in Application Insights
+  and Log Analytics. SDK payload/Authorization/raw-identity fields and browser
+  user/session/URL context are absent. Six baseline policies and four prices remain.
+  Portal: https://ailimit-app-ndbhzjvlnze1y.azurewebsites.net
+  Gateway: https://ailimit-apim-ndbhzjvlnze1y.azure-api.net
+  Demo prices are illustrative, not invoices. GUI used approved delegated MSAL tokens;
+  no interactive MFA or live Claude backend was tested. Government was not redeployed.
 
 Agents work on isolated branches/worktrees, read this plan before coding, run their
 focused validation, update their assigned progress and commit only owned files.
