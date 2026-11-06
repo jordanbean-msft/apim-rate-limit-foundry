@@ -74,6 +74,7 @@ def test_exporter_initialization_is_explicit_once_and_safe(
         update={
             "applicationinsights_connection_string": SecretStr("secret-connection"),
             "telemetry_enabled": True,
+            "otel_traces_sampler_arg": 0.25,
         }
     )
     monitoring.configure_monitoring(production)
@@ -83,7 +84,7 @@ def test_exporter_initialization_is_explicit_once_and_safe(
     assert options["logger_name"] == telemetry.LOGGER_NAME
     assert options["connection_string"] == "secret-connection"
     assert options["resource"].attributes["service.name"] == "rate-limiter"
-    assert options["sampling_ratio"] == 1.0
+    assert options["sampling_ratio"] == 0.25
     assert options["disable_offline_storage"] is True
     assert options["disable_metrics"] is True
     assert options["enable_trace_based_sampling_for_logs"] is False
@@ -352,6 +353,10 @@ async def test_http_correlation_trace_parent_and_safe_error_logs(
     assert requests[0].parent.span_id == int("0123456789abcdef", 16)
     assert requests[-1].status.status_code == StatusCode.ERROR
     assert requests[0].attributes["route"] == "/api/decisions/reserve"
+    assert requests[0].attributes["http.request.method"] == "POST"
+    assert requests[0].attributes["http.route"] == "/api/decisions/reserve"
+    assert requests[0].attributes["http.response.status_code"] == 200
+    assert requests[-1].attributes["http.response.status_code"] == 503
     assert telemetry.correlation_id.get() == ""
     assert "secret-query" not in repr(requests)
     assert "secret-query" not in domain_logs.text

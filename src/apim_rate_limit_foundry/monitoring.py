@@ -48,7 +48,7 @@ def configure_monitoring(settings: Settings) -> None:
             connection_string=connection_string.get_secret_value(),
             logger_name=LOGGER_NAME,
             resource=Resource.create({"service.name": settings.otel_service_name}),
-            sampling_ratio=1.0,
+            sampling_ratio=settings.otel_traces_sampler_arg,
             enable_trace_based_sampling_for_logs=False,
             enable_live_metrics=False,
             enable_performance_counters=False,

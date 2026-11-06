@@ -12,12 +12,16 @@
       <audiences><audience>${api_client_id}</audience><audience>${api_audience}</audience></audiences>
       <required-claims><claim name="tid" match="all"><value>${tenant_id}</value></claim></required-claims>
     </validate-jwt>
-    <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
+    <set-variable name="correlation-id" value='@{
+      var value = context.Request.Headers.GetValueOrDefault("X-Correlation-ID", "");
+      return System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$") ? value : context.RequestId.ToString();
+    }' />
+    <set-header name="X-Correlation-ID" exists-action="override"><value>@((string)context.Variables["correlation-id"])</value></set-header>
     <set-backend-service base-url="${function_url}/api" />
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
     <set-header name="X-MS-CLIENT-PRINCIPAL" exists-action="delete" />
   </inbound>
   <backend><forward-request /></backend>
-  <outbound><base /><set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header></outbound>
+  <outbound><base /><set-header name="X-Correlation-ID" exists-action="override"><value>@((string)context.Variables["correlation-id"])</value></set-header></outbound>
   <on-error><base /></on-error>
 </policies>

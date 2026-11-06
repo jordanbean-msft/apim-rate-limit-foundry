@@ -66,7 +66,11 @@ class RequestTelemetryMiddleware:
                 "limiter.request",
                 context=parent,
                 kind=SpanKind.SERVER,
-                attributes={"correlation_id": correlation_id.get(), "http_method": method},
+                attributes={
+                    "correlation_id": correlation_id.get(),
+                    "http_method": method,
+                    "http.request.method": method,
+                },
                 record_exception=False,
                 set_status_on_exception=False,
             ) as span:
@@ -97,7 +101,9 @@ class RequestTelemetryMiddleware:
                     route = route if route in _ROUTES else "unmatched"
                     span.update_name(f"{method} {route}")
                     span.set_attribute("route", route)
+                    span.set_attribute("http.route", route)
                     span.set_attribute("http_status", status)
+                    span.set_attribute("http.response.status_code", status)
                     span.set_status(StatusCode.ERROR if status >= 500 else StatusCode.OK)
                     emit(
                         "request_completed",

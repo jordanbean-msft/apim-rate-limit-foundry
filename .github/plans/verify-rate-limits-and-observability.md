@@ -4,8 +4,13 @@ Audit the existing public Commercial demo without disabling authentication, rese
 Redis, accepting Claude terms or logging credentials, prompts, document bodies or PII.
 Keep infrastructure updates in Terraform and preserve the demo resource tags.
 
-- [ ] Audit live Redis state and Application Insights, Log Analytics, APIM and hosting logs.
+- [x] Audit live Redis state and Application Insights, Log Analytics, APIM and hosting logs.
   Parent owns live queries and evidence under ignored `.azure/publicdemo/`.
+  Read-only operator inspection confirms a ready ledger and exact shared request counters:
+  Chat + Responses consume two units; denied calls leave the counter unchanged.
+  Correlation 5b966a1c-ce3b-47a6-969a-4c26d261a311 joins a Function denial to APIM 429
+  with no backend response. Live REDConnectionEvents, StorageTableLogs, FunctionAppLogs,
+  AppServiceConsoleLogs, AppTraces, AppEvents and AppDependencies reach the workspace.
 - [x] Add comprehensive structured Function decision, settlement, dependency, configuration,
   recovery and error telemetry. Backend agent owns Python source, Function entry point,
   Python dependencies and focused tests; use Microsoft Azure Monitor OpenTelemetry.
@@ -28,15 +33,23 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   Node 22 lint/typecheck, all 68 tests, production build and production dependency
   audit passed. Runtime settings, schema, privacy limits and delegated MSAL GUI
   harness/selectors are documented in `web/README.md`; parent owns live verification.
-- [ ] Correct Terraform diagnostic destinations and hosting/APIM telemetry settings.
+- [x] Correct Terraform diagnostic destinations and hosting/APIM telemetry settings.
   Parent owns `infra/`, APIM policies, operator docs and developer automation.
+  Provisioned 100% APIM information diagnostics, safe headers/no bodies, Function SDK
+  settings, hosting log retention and Redis default-database ConnectionEvents.
+  Operator ACL is read-only and must be removed after final Redis inspection.
 - [ ] Integrate and validate Python, web, gateway and Terraform changes, then deploy.
   Depends on the three implementation items; require zero-warning Terraform validation,
   warning-free tests and applicable lint/type/build checks.
+  Initial integrated provisioning and both application deployments succeeded.
+  Live tracing revealed HTTP response codes were exported as zero; corrected standard
+  HTTP span attributes and passed 19 focused telemetry tests. Final deployment pending.
 - [ ] Configure multiple limits through the authenticated portal and verify allowed/denied
   calls to Chat, Responses, Language and Document Intelligence, counter values and logs.
   Confirm request, cost and service-unit limits, disabled/raised limits, shared protocol
   budgets, actual cached settlement and conservative streaming. Restore test policies.
+  Request allow/deny and exact Redis debits verified. GUI create succeeds, but subsequent
+  edits are blocked by modal state in the live harness; portal agent is diagnosing.
 - [ ] Record concrete correlation evidence, destinations, endpoints and limitations.
   Anthropic live verification needs an approved backend. Interactive MFA may require
   the operator; browser automation must disclose any use of an existing delegated token.

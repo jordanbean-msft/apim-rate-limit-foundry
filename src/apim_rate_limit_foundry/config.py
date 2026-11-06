@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     applicationinsights_connection_string: SecretStr | None = None
     telemetry_enabled: bool = True
     otel_service_name: str = "rate-limiter"
+    otel_traces_sampler_arg: float = Field(default=1.0, ge=0, le=1)
 
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":
