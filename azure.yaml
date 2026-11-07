@@ -21,6 +21,16 @@ services:
         shell: sh
         run: ./infra/scripts/package-function.sh
         interactive: false
+  stream:
+    project: ./stream
+    language: python
+    host: function
+    resourceName: ${AZURE_STREAM_FUNCTION_NAME}
+    hooks:
+      prepackage:
+        shell: sh
+        run: ../infra/scripts/package-stream.sh
+        interactive: false
   web:
     project: ./web
     language: js

@@ -9,7 +9,7 @@
         new JProperty("request_id", (string)context.Variables["request-id"]),
         new JProperty("principal_id", (string)context.Variables["principal-id"]),
         new JProperty("tenant_id", (string)context.Variables["tenant-id"]),
-        new JProperty("subscription_id", context.Subscription == null ? null : context.Subscription.Id),
+        new JProperty("subscription_id", (string)context.Variables["subscription-id"]),
         new JProperty("service", (string)context.Variables["service"]),
         new JProperty("model", (string)context.Variables["model"]),
         new JProperty("price_version", (string)context.Variables["price-version"]),
@@ -20,6 +20,9 @@
       );
       if (!String.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string&gt;("api-protocol", ""))) {
         request["api_protocol"] = (string)context.Variables["api-protocol"];
+      }
+      if (context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false)) {
+        request["payload_sha256"] = (string)context.Variables["payload-sha256"];
       }
       return request.ToString();
     }</set-body>

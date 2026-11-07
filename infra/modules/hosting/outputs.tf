@@ -14,3 +14,7 @@ output "web_plan_id" {
   description = "Web plan resource."
   value       = azurerm_service_plan.web.id
 }
+output "stream_id" {
+  description = "Dedicated stream Function resource, when enabled."
+  value       = var.streaming_enabled ? azurerm_linux_function_app.stream[0].id : null
+}

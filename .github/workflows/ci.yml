@@ -69,6 +69,9 @@ jobs:
       - name: Gateway policy contracts
         run: uv run python -W error -m unittest discover -s apim/tests -v
 
+      - name: Package separate streaming Function host
+        run: ./infra/scripts/package-stream.sh
+
       - name: Coverage report
         run: uv run pytest --cov --cov-report=xml --cov-report=term-missing
 

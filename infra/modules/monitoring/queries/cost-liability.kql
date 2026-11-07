@@ -1,7 +1,8 @@
 // Admission cohort within the selected window. Settlements outside that window are not visible.
 // Never sum policy debits: policies can overlap for the same reservation.
 let Settlements = AppTraces
-| where AppRoleName == "rate-limiter" and Message == "settlement_recorded"
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "settlement_recorded"
+| where isnotempty(tostring(Properties.subscription_id))
 | extend ReservationId = tostring(Properties.reservation_id)
 | where isnotempty(ReservationId)
 | summarize arg_max(TimeGenerated, *) by ReservationId
@@ -9,7 +10,8 @@ let Settlements = AppTraces
     SettledCost = tolong(Properties.cost_micro_usd), Estimated = tobool(Properties.estimated),
     RefundedCost = tolong(Properties.refunded_cost_micro_usd);
 AppTraces
-| where AppRoleName == "rate-limiter" and Message == "rate_decision"
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "rate_decision"
+| where isnotempty(tostring(Properties.subscription_id))
 | extend ReservationId = tostring(Properties.reservation_id)
 | where isnotempty(ReservationId)
 | summarize arg_min(TimeGenerated, *) by ReservationId

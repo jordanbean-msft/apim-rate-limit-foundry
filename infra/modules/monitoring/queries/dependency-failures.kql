@@ -1,6 +1,6 @@
 // One dependency span per physical attempt. Do not also count dependency_completed traces.
 AppDependencies
-| where AppRoleName == "rate-limiter"
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream")
 | where Name startswith "redis." or Name startswith "table."
 | where Success == false
 | summarize Failures = count(), P95ms = percentile(DurationMs, 95), LastFailure = max(TimeGenerated)

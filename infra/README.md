@@ -1,343 +1,424 @@
-# Infrastructure operator notes
+# Infrastructure reference
 
-This is a non-production reference deployment. No resources are provisioned by validation.
-`azure.yaml` packages the **root** Python Function host and the portal's `dist/`,
-`server/`, and `package.json`. Run azd from the repository root. The Function prepackage
-hook exports `requirements.txt` with uv; do not commit generated credentials or state.
-The portal uses `node server/index.mjs` and has no runtime npm dependencies.
-Its prepackage hook stages only those three artifacts under ignored `infra/.artifacts/web`,
-excluding test sources and npm development dependencies from the App Service package.
+This guide owns Terraform/azd inputs, packaging and provider-specific maintenance.
+Use [deployment](../docs/deployment.md) for the execution runbook,
+[Azure topology](../docs/azure-topology.md) for resources/networking/identity, and
+[observability](../docs/observability.md) for dashboard and logging details.
+Validation does not provision Azure resources.
+The [editable physical architecture](../docs/diagrams/physical-architecture.drawio)
+has separate public-demo and private-reference pages; see
+[previews and editing instructions](../docs/diagrams/README.md).
 
-## Required configuration
+## Input sources and value flow
 
-Set `REDIS_INSPECTION_ENABLED=false` normally. Explicitly enabling it grants the
-deployment operator read-only Redis inspection for diagnostics; disable it again
-after verification. Commercial uses the documented `2026-05-01-preview` custom ACL
-API through AzAPI because AzureRM's stable assignment grants full data access.
-Government uses the existing `Data Reader` policy. Neither path grants write/reset
-commands. The application's workload assignment is unchanged.
+[`environment.example.json`](environment.example.json) is the complete non-secret
+azd environment shape. [`main.tfvars.json`](main.tfvars.json) maps those strings
+into typed Terraform objects; [`variables.tf`](variables.tf) defines validations.
+[`provider.conf.json`](provider.conf.json) supplies remote-state placeholders.
+Read all placeholders before provisioning; the short deployment example is not
+a complete environment.
 
-Telemetry retains all requests in this demo (`hosting.telemetry_sampling_ratio=1`,
-`gateway.diagnostic_sampling_percentage=100`). Local hosting logs retain seven days
-within 100 MB; the shared workspace retains its separately configured period.
-APIM logs only correlation/reservation headers, never Authorization or message bodies.
-Managed Redis connection audit logs belong to its **default database**, not the
-parent instance; both database logs and parent metrics are routed to the workspace.
-Services without native Application Insights instrumentation (Redis, Storage and AI
-accounts) emit resource logs/metrics to Log Analytics and are observed as application
-dependencies in Application Insights. Native resource logs can contain platform
-network metadata; application telemetry excludes credentials, prompts and raw identities.
-
-## Shared Azure portal rate-limiter dashboard
-
-The monitoring module deploys an `azurerm_portal_dashboard`, **not** a workbook or
-the React policy-management portal. It inherits deployment tags, including the
-demo's `SecurityControl=Ignore`, and adds `hidden-title=Granular AI rate limiter`.
-Naming uses the pinned AzureCAF provider's supported `azurerm_portal_dashboard`
-type with the deterministic resource token. No extra configuration is required.
-
-After provisioning, azd captures `AZURE_DASHBOARD_ID` and `AZURE_DASHBOARD_URL`:
+`CREATE_FOUNDRY=true` manages a Microsoft Foundry **`AIServices` / S0** account,
+with project management enabled and a dedicated user-assigned managed identity.
+No hub, project or Agent Service is required for these account-level inference
+APIs. The account retains its existing diagnostic export; managed identities
+have no resource diagnostic categories or native Application Insights integration.
+APIM and the streaming Function retain their least-privilege OpenAI User roles
+for OpenAI models; the account's own identity is not the inference caller.
+Created Chat backends use the account's custom-subdomain **OpenAI-compatible
+inference origin**, not its general AIServices endpoint or a Foundry project URL.
+Existing compatible referenced accounts remain supported. See the
+[in-place upgrade runbook](../docs/deployment.md#upgrade-an-existing-openai-account).
 
 ```text
-Commercial: https://portal.azure.com/#dashboard/arm<AZURE_DASHBOARD_ID>
-Government: https://portal.azure.us/#dashboard/arm<AZURE_DASHBOARD_ID>
+azd environment strings
+    -> main.tfvars.json / provider.conf.json substitution
+    -> typed Terraform variables and modules
+    -> SCREAMING_SNAKE_CASE outputs captured by azd
+    -> service names, application settings and public portal configuration
 ```
 
-The ID begins with `/subscriptions/`, so the resulting path contains
-`/dashboard/arm/subscriptions/.../providers/Microsoft.Portal/dashboards/<name>`.
-Existing resource-group/dashboard RBAC controls dashboard visibility; viewers
-also need existing workspace query permissions (for example Log Analytics Reader).
-This change introduces **no role grants**. Dashboard resources have no native
-diagnostic settings or Application Insights integration: they store configuration,
-not runtime telemetry. Tiles query the existing workspace in place; no additional
-diagnostic export or duplicate Application Insights ingestion is introduced.
+| Input group | Important distinctions |
+| --- | --- |
+| `AZURE_*`, `ARM_ENVIRONMENT` | Existing subscription/tenant/region/RG/deployer; cloud name is `AzureCloud` or `AzureUSGovernment`, provider/state environment `public` or `usgovernment` |
+| `RS_RESOURCE_GROUP`, `RS_STORAGE_ACCOUNT`, `RS_CONTAINER_NAME` | Existing Entra-authenticated state backend in the selected cloud |
+| `*_SUBNET_ID`, `PUBLIC_NETWORK_ACCESS_ENABLED` | Explicit public exception or existing private subnets; see topology requirements |
+| `APIM_PUBLISHER_*`, `GATEWAY_CLIENT_AUDIENCE` | Publisher metadata and inference-token audience, distinct from generated limiter API audience |
+| `ENABLE_*`, `CREATE_*`, backend IDs/endpoints/locations | Explicit create/reference ownership; disabled values must still satisfy placeholder substitution |
+| `*_DEPLOYMENT_*`, `*_API_VERSION`, `*_TOKEN_AUDIENCE` | Model alias, provider version and verified resource audience, not inferred from hostname |
+| `*_PRICE_VERSION` | Route's pinned catalog version; catalog edits do not change this pin |
+| `MAX_INPUT_TOKENS`, tokenizer/context attestations | Shared Function bound and protocol-specific hard-input evidence |
+| `REDIS_TOKEN_SCOPE`, `REDIS_INSPECTION_ENABLED` | Verified data-plane scope and normally disabled operator-only read inspection |
 
-The eight log tiles use Microsoft's `LogsDashboardPart` metadata and the
-workspace **resource ID** as `Scope.resourceIds`. The default dashboard time picker
-is **last 24 hours**. Tile `TimeRange` is deliberately unbound and
-`IsQueryContainTimeRange=false`; no query pins `ago()` or a separate timespan.
-Changing the dashboard time picker therefore applies to every tile, including
-both sides of joins. Function telemetry is scoped to `AppRoleName=rate-limiter`;
-gateway telemetry uses this deployment's dedicated workspace. Sharing that
-workspace with unrelated APIM instances would require an additional resource filter.
+Use explicit empty strings/false for disabled fields, not missing placeholders.
+Never put credentials into `AZD_ENV_JSON` or commit generated state/environment files.
 
-| Tile / reusable query in `modules/monitoring/queries/` | Interpretation |
-|---|---|
-| `admissions.kql` | Earliest observed allow/deny per reservation, by service/protocol |
-| `denials.kql` | Recent custom denials, policy IDs, reason, retry/reset and requested conservative liability |
-| `gateway-429.kql` | APIM 429 origin joined to Function decisions using explicitly propagated correlation ID; backend status is separate from custom denial |
-| `policy-pressure.kql` | Latest displayed admission evaluations: conservative demand, applied amount, remaining/limit and allowed/denied/blocked outcome; not a sum of independent policy windows |
-| `cost-liability.kql` | Admission-time cohort: latest visible settlement replaces, never adds to, reserved USD; pending reservations retain conservative liability |
-| `cache-service-units.kql` | Settlement-time cohort: latest settlement per reservation, cache-read ratio/writes, tokens, pages, text records and requests, split by actual/conservative accounting |
-| `latency.kql` | Physical reserve/settle HTTP attempts, failures and duration percentiles |
-| `dependency-failures.kql` | Failed Redis/Table spans with duration/error type; not counted again from duplicate domain traces |
+### Managed models and application subscriptions
 
-These are **nonbilling operational telemetry**, not the durable ledger.
-Decision/policy rows deduplicate reservation/event/policy identities; settlement
-rows use `arg_max` per reservation before any sum or join. Do not add the cost
-and usage tiles together or sum overlapping policy costs. Older events remain
-queryable via stable `Message` names without requiring `event_version`; new
-properties may be blank on historical data. `KnownCostReservations` makes
-missing historical admission cost visible rather than implying complete totals.
-Historical denial policy lists are displayed as text because older exporters
-serialized them as tuple-like strings.
+Set `MANAGED_MODELS` explicitly to `{}` to retain legacy/reference-only behavior,
+or load [`managed-models.example.json`](managed-models.example.json) after checking
+the target account's current catalog and quota:
 
-Sampling, ingestion lag, missing telemetry and independent admission/settlement
-timestamps affect all results. Both sides of joins obey the selected time range:
-a settlement outside the window can leave an apparent pending reservation,
-and settlement-only rows are excluded from the admission-cohort cost tile.
-Native/gateway-or-missing-decision 429 is an **unattributed** category, not proof
-that a native throttle fired. Cache percentages use normalized input tokens as
-the denominator; conservative estimates are explicitly separated from actuals.
-Latency/dependency tiles intentionally retain physical retries.
-
-Queries are standalone KQL with no Terraform placeholders. Operators can validate
-each against the existing workspace without changing Azure resources:
-
-```bash
-az monitor log-analytics query --workspace "<workspace-customer-id>" \
-  --timespan P1D --analytics-query "$(cat infra/modules/monitoring/queries/admissions.kql)"
-terraform -chdir=infra test -filter=tests/dashboard.tftest.hcl
+```sh
+azd env set MANAGED_MODELS "$(cat infra/managed-models.example.json)"
+azd env set APPLICATION_SUBSCRIPTIONS_CONFIG '{"inference":{"demo-app-a":{"tenant_id":"<AZURE_TENANT_ID>","display_name":"Demo application A"},"demo-app-b":{"tenant_id":"<AZURE_TENANT_ID>","display_name":"Demo application B"}},"portal":{"subscription_id":"portal-server","display_name":"Portal server"}}'
 ```
 
-Reference metadata follows the Microsoft
-[machine-learning workspace monitoring dashboard sample](https://github.com/Azure/azure-quickstart-templates/blob/master/quickstarts/microsoft.machinelearningservices/machine-learning-workspace-monitoring-dashboard/azuredeploy.json),
-the [dashboard JSON structure](https://learn.microsoft.com/azure/azure-portal/azure-portal-dashboards-structure),
-and [Log Analytics scope/time-range behavior](https://learn.microsoft.com/azure/azure-monitor/logs/scope).
-Portal rendering and live query execution still need verification after deployment.
+Replace both tenant placeholders with the explicit deployment tenant. These IDs
+are persistent APIM subscription resource names, not key values or Entra user IDs.
+`APPLICATION_SUBSCRIPTIONS` and `APPLICATION_REGISTRY` outputs contain only the
+inference IDs, tenant IDs and display names. Both Function hosts receive the same
+`APPLICATION_REGISTRY`. Portal subscriptions never enter cost-limited app metadata.
+The portal product contains only the control-plane API; the inference product
+contains only inference APIs. Every API and product requires a native subscription
+key **and** policy-validated Entra authentication. Do not use all-access/API-scoped
+subscriptions or put keys in URLs.
 
-## Deployment configuration
+The managed example adds real `gpt-5.4`, `gpt-5.4-mini` and `gpt-5.4-nano`
+deployments, each with explicit GlobalStandard capacity 10 and separate Chat and
+Responses caps/price-card keys pinned to `azure-global-text-2026-11-06`. It
+preserves the existing account and legacy
+`sample-model` deployment. Configuring managed models hides legacy sample entries
+from the active registry and removes their implicit model defaults; other enabled
+protocol references and additional `LLM_MODELS` references remain supported.
+Managed aliases cannot overwrite the
+legacy deployment or duplicate referenced registry keys. Private and Government
+attestations in this Commercial/public example are intentionally false; verify
+and change them before using another cloud/network mode. No Marketplace terms
+are accepted.
 
-Set every `${PLACEHOLDER}` in `main.tfvars.json` and `provider.conf.json` in the azd
-environment. Unused service strings may be explicitly empty, but enable/create flags
-must always be explicit `true`/`false`. Set `PUBLIC_NETWORK_ACCESS_ENABLED=false`
-normally; `true` is a deliberate public development exception, never a fallback.
-The requested demo configuration also sets `SecurityControl=Ignore` in the resource
-tags. Remove this exemption before using the sample outside the approved demo.
-`environment.example.json` enumerates the complete non-secret operator environment
-(suitable as the starting shape for a GitHub environment's `AZD_ENV_JSON`). Replace
-all placeholders, align `*_PRICE_VERSION` to the catalog you seed, and never copy
-Commercial token audience examples to Government without service-specific verification.
+On 2026-11-06 the existing eastus2 account catalog reported all three GA model
+versions in the example with Chat and Responses capability. GlobalStandard quota
+used/limit was 0/3000 (`gpt-5.4`), 1060/3002 (mini), and 4484/15000 (nano).
+Quota is subscription-wide and can change before provisioning.
+[Azure OpenAI pricing](https://azure.microsoft.com/en-us/pricing/details/azure-openai/)
+and the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices?%24filter=armRegionName%20eq%20%27eastus2%27%20and%20contains%28meterName%2C%20%275.4%27%29&currencyCode=%27USD%27)
+agree on these Global Standard USD rates per million tokens:
 
-| Input | Meaning |
-|---|---|
-| `AZURE_CLOUD` | `AzureCloud` or `AzureUSGovernment` (not the application's lowercase cloud enum) |
-| `ARM_ENVIRONMENT` | `public` or `usgovernment`, including for the remote state backend |
-| `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION`, `AZURE_ENV_NAME`, `AZURE_RESOURCE_GROUP`, `AZURE_PRINCIPAL_ID` | Existing deployment context and initial administrator object ID |
-| `RS_RESOURCE_GROUP`, `RS_STORAGE_ACCOUNT`, `RS_CONTAINER_NAME` | Existing Entra-authenticated state storage in the selected cloud |
-| `PRIVATE_ENDPOINT_SUBNET_ID`, `FUNCTIONS_SUBNET_ID`, `WEB_SUBNET_ID`, `APIM_SUBNET_ID` | Existing subnet IDs; app subnets delegated to `Microsoft.Web/serverFarms`; APIM subnet configured for classic internal VNet injection |
-| `APIM_PUBLISHER_NAME`, `APIM_PUBLISHER_EMAIL`, `GATEWAY_CLIENT_AUDIENCE` | APIM owner and allowed client-token audience, distinct from the generated limiter API audience |
-| `REDIS_TOKEN_SCOPE` | Explicit Entra scope, including `/.default`; see sovereign validation caveat below |
-| `ENABLE_FOUNDRY`, `CREATE_FOUNDRY`, `FOUNDRY_RESOURCE_ID`, `FOUNDRY_ENDPOINT`, `FOUNDRY_LOCATION`, `FOUNDRY_DEPLOYMENT_NAME`, `FOUNDRY_MODEL_NAME`, `FOUNDRY_MODEL_VERSION`, `FOUNDRY_DEPLOYMENT_SKU`, `FOUNDRY_TOKEN_AUDIENCE` | Foundry Azure OpenAI-compatible create/reference inputs; no serverless inference/Agents assumption |
-| `FOUNDRY_DEPLOYMENT_CAPACITY`, `FOUNDRY_API_VERSION` | Explicit deployment capacity and dated Chat REST version; verify new-deployment eligibility, not just catalog presence and quota |
-| `ENABLE_DOCUMENT_INTELLIGENCE`, `CREATE_DOCUMENT_INTELLIGENCE`, `DOCUMENT_INTELLIGENCE_RESOURCE_ID`, `DOCUMENT_INTELLIGENCE_ENDPOINT`, `DOCUMENT_INTELLIGENCE_LOCATION`, `DOCUMENT_INTELLIGENCE_TOKEN_AUDIENCE` | Optional Document Intelligence backend |
-| `ENABLE_LANGUAGE`, `CREATE_LANGUAGE`, `LANGUAGE_RESOURCE_ID`, `LANGUAGE_ENDPOINT`, `LANGUAGE_LOCATION`, `LANGUAGE_TOKEN_AUDIENCE` | Optional Language sentiment backend |
-| `FOUNDRY_PRICE_VERSION`, `DOCUMENT_INTELLIGENCE_PRICE_VERSION`, `LANGUAGE_PRICE_VERSION` | Explicit operator-pinned catalog versions; creating a new price version does not silently change admission pricing |
-| `MAX_INPUT_TOKENS`, `OPENAI_BYTE_TOKENIZER_VERIFIED` | Function input admission bound (positive integer) and explicit Chat byte-tokenizer/framing verification |
-| `ENABLE_RESPONSES`, `RESPONSES_CAPABILITY_VERIFIED`, `RESPONSES_GOVERNMENT_VERIFIED`, `RESPONSES_BYTE_TOKENIZER_VERIFIED`, `RESPONSES_PRIVATE_ENDPOINT_VERIFIED` | Explicit Responses enablement and target-cloud/model/API/tokenizer/private-connectivity acceptance flags |
-| `RESPONSES_RESOURCE_ID`, `RESPONSES_ENDPOINT`, `RESPONSES_TOKEN_AUDIENCE`, `RESPONSES_LOCATION`, `RESPONSES_DEPLOYMENT_NAME`, `RESPONSES_PRICE_VERSION`, `RESPONSES_ROLE_NAME`, `RESPONSES_API_VERSION` | Referenced Responses account, exact endpoint/resource audience/region/model/catalog, RBAC role and independent `v1` or `preview` version |
-| `ENABLE_ANTHROPIC`, `ANTHROPIC_CAPABILITY_VERIFIED`, `ANTHROPIC_PRIVATE_ENDPOINT_VERIFIED`, `ANTHROPIC_HARD_INPUT_CAP_VERIFIED` | Explicit Messages enablement, Commercial capability, private-connectivity and hard-input-cap verification |
-| `ANTHROPIC_INPUT_CAP_EVIDENCE`, `ANTHROPIC_CONTEXT_INPUT_TOKENS` | Recorded verification evidence and full backend-enforced maximum accepted input, not a desired per-request cap |
-| `ANTHROPIC_RESOURCE_ID`, `ANTHROPIC_ENDPOINT`, `ANTHROPIC_TOKEN_AUDIENCE`, `ANTHROPIC_LOCATION`, `ANTHROPIC_DEPLOYMENT_NAME`, `ANTHROPIC_PRICE_VERSION`, `ANTHROPIC_VERSION`, `ANTHROPIC_ROLE_NAME` | Referenced Foundry AI Services account, exact endpoint/resource audience/region/model/catalog, pinned date header and non-OpenAI-only role |
+| Model | Input | Cached input | Output |
+| --- | ---: | ---: | ---: |
+| gpt-5.4 (under 272k input) | 2.50 | 0.25 | 15.00 |
+| gpt-5.4-mini | 0.75 | 0.075 | 4.50 |
+| gpt-5.4-nano | 0.20 | 0.02 | 1.25 |
 
-Review fixed specifications in `main.tfvars.json` before provision: classic `Developer_1`
-APIM (no SLA; change to `Premium_1` for production evaluation), Linux Dedicated `P1v3`
-Python 3.12 Functions and Node 22 portal, storage `Standard_ZRS`, Commercial
-`Balanced_B1` Managed Redis and Government nonclustered Premium P1 Cache. The Function
-uses identity-authenticated blob/queue host storage, no Azure Files credentials, and
-disables automatic Azure Files content-share configuration. Function content deploys
-through SCM/Oryx on the Dedicated plan. Do not select Flex Consumption.
+These are references, not seeded price cards or contractual quotes. The example's
+128000/64000/32000 input caps keep requests in the short-context pricing regime;
+output caps are 4096/4096/2048. Seed and approve the three alias/version price cards
+before enabling inference.
 
-The Entra deployer needs application/service-principal creation, application role assignment,
-and tenant-wide delegated consent rights, plus Azure role-assignment write rights.
-Remote state needs Blob Data Contributor access. Pre-created resource groups and subnets
-must be in the intended region; no shared networking or resource groups are created.
-Tag the application resource group with `azd-env-name=<environment-name>` so `azd show`
-can discover the existing deployment. Keep the separate state group outside that tag.
+### Portal-only secret storage and Graph consent
 
-Function Easy Auth explicitly allows the portal and gateway client applications.
-`hosting.allowed_client_applications` in `main.tfvars.json` adds approved automation clients;
-the sample includes Microsoft's Azure CLI client for authenticated setup and smoke testing.
-Remove that entry if CLI access is not required. The tenant, token audience and backend
-application roles are still required; an approved client ID alone grants no permissions.
+The explicit hosting inputs retain the existing P1v2 plans and disabled Always On
+for the main Function/web workloads; the stream host remains Always On. The Node
+24 update does not resize plans or silently reconcile those live settings.
+
+The dedicated `portal_key_vault` module has the standard four-file layout. Native
+APIM product subscriptions intentionally require a key in addition to Entra,
+so this credential is an explicit exception to managed-identity-only data-plane
+authentication. Terraform stores the portal subscription's generated primary key
+in Key Vault and protected remote state. There are no root key outputs, browser
+settings or hardcoded credentials. Restrict remote-state access and never publish
+plans/state or generated azd environment files. The deployer gets Secrets Officer
+for initial IaC; only the web workload identity gets Secrets User. No inference
+identity receives vault permissions.
+
+The web App Service resolves the versionless secret through
+`key_vault_reference_identity_id` and its server-only
+`PORTAL_APIM_SUBSCRIPTION_KEY=@Microsoft.KeyVault(SecretUri=...)` setting.
+`WEB_API_PROXY_ENABLED=true` keeps browser calls same-origin; `API_BASE_URL`
+remains the absolute APIM `/portal` upstream. Browser code uses `/api` and
+`X-Portal-Access-Token`, while the Node server injects the subscription key.
+Key Vault diagnostics export every supported category/metric. Key Vault has no
+native Application Insights agent; the web workload retains its native agent.
+Private mode creates a policy-DNS-managed endpoint; the runner and web integration
+subnet must reach it. APIM key rotation must update the vault secret; versionless
+App Service references refresh automatically (allow the platform refresh interval
+or request an authenticated configuration-reference refresh after rotation).
+
+The existing portal registration retains native EasyAuth, SPA PKCE, API roles
+and managed-identity federation. It adds only Microsoft Graph delegated
+`User.Read`, with explicit tenant-wide delegated consent. The Graph enterprise
+application/scope is resolved through the selected cloud's Entra provider, not a
+cross-cloud object ID. `GRAPH_BASE_URL` is cloud-specific. Own-photo access uses
+a separate Graph token, never the API token; no directory-wide application
+permission or new registration is created. The operator needs sufficient Entra
+permission/admin role to grant consent.
+
+### Additional model references
+
+`LLM_MODELS` is a required azd environment value. The checked-in example uses
+`{}`; `main.tfvars.json` injects this value as a typed Terraform map, not a quoted
+JSON string. Each entry is an already-deployed reference; Terraform never creates
+the additional model deployment. Existing azd environments must explicitly add
+`azd env set LLM_MODELS '{}'` before provisioning if they have no additional models.
+This input differs from the generated runtime `MODEL_REGISTRY`; do not pass
+`examples/model-registry.json` as `LLM_MODELS`. The exact object shape is:
+
+```json
+{
+  "<api_protocol>:<alias>": {
+    "api_protocol": "openai-chat | openai-responses | anthropic-messages",
+    "resource_id": "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<account>",
+    "endpoint": "https://<verified-account-origin>",
+    "audience": "https://cognitiveservices.azure.com",
+    "location": "eastus2",
+    "deployment_name": "<actual-provider-deployment>",
+    "price_version": "<published-price-card-version>",
+    "max_input_tokens": 64000,
+    "max_output_tokens": 2048,
+    "role_definition_name": "Cognitive Services OpenAI User",
+    "capability_verified": true,
+    "government_verified": false,
+    "byte_tokenizer_verified": true,
+    "private_endpoint_verified": true,
+    "api_version": "2024-10-21",
+    "anthropic_version": "",
+    "hard_input_cap_verified": false,
+    "input_cap_evidence": ""
+  }
+}
+```
+
+All attributes are required; protocol-irrelevant values are explicit empty
+strings or `false`. The key's protocol must equal `api_protocol`, and its suffix
+is the client/accounting alias. `deployment_name` may differ from that alias.
+Input/output caps are positive integers no greater than `MAX_INPUT_TOKENS` and
+`gateway.max_output_tokens`. Origins must be HTTPS with no credentials, path,
+query or fragment; resource, audience and region must match the selected cloud.
+Set the tokenizer/capability/private-network attestations only after verifying
+the referenced deployment. Messages additionally requires `hard_input_cap_verified`,
+nonempty `input_cap_evidence`, an `anthropic_version`, and an input ceiling at
+most the Function cap. Its `max_input_tokens` must be the verified full backend
+hard input ceiling, not a preferred application cap. Government Responses requires its separate availability
+attestation; Government Messages is rejected. Preflight checks each referenced
+resource exists, has key authentication disabled, and is private-only with
+verified DNS/routing when public access is disabled.
+
+This complete shape illustrates two entries per protocol (replace sample
+resource IDs/origins/deployment names with real same-cloud resources before
+provisioning):
+
+```json
+{
+  "openai-chat:chat-fast": {
+    "api_protocol": "openai-chat", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/chat",
+    "endpoint": "https://chat.openai.azure.com", "audience": "https://cognitiveservices.azure.com", "location": "eastus2",
+    "deployment_name": "gpt-4o-mini-fast", "price_version": "chat-v1", "max_input_tokens": 64000, "max_output_tokens": 2048,
+    "role_definition_name": "Cognitive Services OpenAI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": true, "private_endpoint_verified": true, "api_version": "2024-10-21",
+    "anthropic_version": "", "hard_input_cap_verified": false, "input_cap_evidence": ""
+  },
+  "openai-chat:chat-quality": {
+    "api_protocol": "openai-chat", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/chat",
+    "endpoint": "https://chat.openai.azure.com", "audience": "https://cognitiveservices.azure.com", "location": "eastus2",
+    "deployment_name": "gpt-4o-quality", "price_version": "chat-v2", "max_input_tokens": 128000, "max_output_tokens": 4096,
+    "role_definition_name": "Cognitive Services OpenAI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": true, "private_endpoint_verified": true, "api_version": "2024-10-21",
+    "anthropic_version": "", "hard_input_cap_verified": false, "input_cap_evidence": ""
+  },
+  "openai-responses:responses-fast": {
+    "api_protocol": "openai-responses", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/responses",
+    "endpoint": "https://responses.openai.azure.com", "audience": "https://ai.azure.com", "location": "eastus2",
+    "deployment_name": "gpt-4o-mini-responses", "price_version": "responses-v1", "max_input_tokens": 64000, "max_output_tokens": 1024,
+    "role_definition_name": "Cognitive Services OpenAI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": true, "private_endpoint_verified": true, "api_version": "v1",
+    "anthropic_version": "", "hard_input_cap_verified": false, "input_cap_evidence": ""
+  },
+  "openai-responses:responses-quality": {
+    "api_protocol": "openai-responses", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/responses",
+    "endpoint": "https://responses.openai.azure.com", "audience": "https://ai.azure.com", "location": "eastus2",
+    "deployment_name": "gpt-4o-responses", "price_version": "responses-v2", "max_input_tokens": 128000, "max_output_tokens": 2048,
+    "role_definition_name": "Cognitive Services OpenAI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": true, "private_endpoint_verified": true, "api_version": "v1",
+    "anthropic_version": "", "hard_input_cap_verified": false, "input_cap_evidence": ""
+  },
+  "anthropic-messages:messages-fast": {
+    "api_protocol": "anthropic-messages", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/messages",
+    "endpoint": "https://messages.services.ai.azure.com", "audience": "https://ai.azure.com", "location": "eastus2",
+    "deployment_name": "claude-3-5-haiku", "price_version": "messages-v1", "max_input_tokens": 128000, "max_output_tokens": 1024,
+    "role_definition_name": "Azure AI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": false, "private_endpoint_verified": true, "api_version": "",
+    "anthropic_version": "2023-06-01", "hard_input_cap_verified": true, "input_cap_evidence": "Replace with verified backend hard-cap evidence"
+  },
+  "anthropic-messages:messages-quality": {
+    "api_protocol": "anthropic-messages", "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/sample-rg/providers/Microsoft.CognitiveServices/accounts/messages",
+    "endpoint": "https://messages.services.ai.azure.com", "audience": "https://ai.azure.com", "location": "eastus2",
+    "deployment_name": "claude-sonnet-4-5", "price_version": "messages-v2", "max_input_tokens": 128000, "max_output_tokens": 2048,
+    "role_definition_name": "Azure AI User", "capability_verified": true, "government_verified": false,
+    "byte_tokenizer_verified": false, "private_endpoint_verified": true, "api_version": "",
+    "anthropic_version": "2023-06-01", "hard_input_cap_verified": true, "input_cap_evidence": "Replace with verified backend hard-cap evidence"
+  }
+}
+```
+
+Terraform folds these references and enabled legacy inputs into one exact
+`protocol:alias` registry. APIM rejects unknown/wrong-protocol aliases before
+reservation and uses each entry's pricing/version/limits/endpoint. An omitted
+`model` uses only the corresponding explicitly configured legacy deployment;
+additional references never become an implicit default. The API and streaming
+Functions receive the same `MODEL_REGISTRY`; the old `STREAM_BACKENDS` setting
+remains for legacy runtime compatibility. `LLM_GATEWAY_ROUTES` includes every
+alias under each route's `models` map; its legacy `model` field is empty when
+that route has no explicit default.
+
+When adding aliases for an account already created by this deployment, retain
+the azd-captured `FOUNDRY_RESOURCE_ID` even with `CREATE_FOUNDRY=true`. That known
+ID lets Terraform reuse the existing gateway/stream roles and diagnostics;
+the module verifies it identifies the managed account.
+
+Configured example sizes include classic APIM `Developer_1`, Dedicated Linux `P1v2`
+hosting, Python 3.12/Node 24 LTS, ZRS storage and cloud-specific Redis. These are
+**configuration examples**, not assertions about a deployed environment or production
+recommendations. APIM Developer has no production SLA; do not select Functions Flex
+Consumption for these packages.
+
+Tag the existing application RG `azd-env-name=<environment-name>` for discovery;
+keep the separate state RG outside that tag. `SecurityControl=Ignore` is specific
+to the approved demo, not a baseline security setting.
+
+## Service packaging and outputs
+
+Run azd from the repository root. [`azure.yaml`](../azure.yaml) defines:
+
+| Service | Package hook | Host/output |
+| --- | --- | --- |
+| `api` | [`package-function.sh`](scripts/package-function.sh) exports frozen requirements with uv | Root ASGI Function, `AZURE_FUNCTION_NAME` |
+| `stream` | [`package-stream.sh`](scripts/package-stream.sh) builds project wheel and exports runtime dependencies | Separate Function, `AZURE_STREAM_FUNCTION_NAME` / `AZURE_STREAM_FUNCTION_ID` |
+| `web` | [`package-web.sh`](scripts/package-web.sh) stages `dist/`, `server/`, `package.json` under ignored `.artifacts/web` | App Service, `AZURE_WEB_NAME` |
+
+The portal production server needs only Node built-ins, not runtime `node_modules`.
+Function content uses identity-based host storage and SCM/Oryx, not Azure Files
+credentials. The root `.funcignore` excludes `stream/` and its wheel.
+
+Other outputs include `API_AUDIENCE`, `API_SCOPE`, `WEB_CLIENT_ID`, `API_BASE_URL`,
+`WEB_URL`, `GATEWAY_URL`, `FOUNDRY_RESOURCE_ID`, `LLM_GATEWAY_ROUTES`, and
+`AZURE_DASHBOARD_ID`/`AZURE_DASHBOARD_URL`. Treat outputs marked sensitive and remote
+state as protected even when a particular endpoint is not itself a credential.
+
+## Dedicated streaming host
+
+`streaming.enabled=true` creates a separate app on the existing Function plan.
+It shares the Function identity/stores/Easy Auth audience, but has a distinct
+name, diagnostics and `OTEL_SERVICE_NAME=rate-limiter-stream`.
+Only it enables `PYTHON_ENABLE_INIT_INDEXING=1`.
+
+Runtime backend JSON is keyed by enabled protocol and contains fixed endpoint,
+path, model, audience and provider versions. It is assembled from Terraform's
+enabled backends, not a client URL. AI grants are deduplicated by resource/role.
+
+Use the **runtime-compatible intersection** when overriding limits:
+
+| Setting | Configured example | Effective Python runtime range |
+| --- | ---: | --- |
+| `streaming.max_event_bytes` | 65536 | 8192–1048576 bytes |
+| `streaming.timeout_seconds` | 180 | 10–210 seconds |
+
+The current Terraform variable checks are looser (1024-byte minimum and
+230-second maximum). Passing Terraform alone therefore does not prove a custom
+value will start the Python app. Match [`Settings`](../src/apim_rate_limit_foundry/config.py);
+the example values fit both. The body cap follows `gateway.max_body_bytes`.
+
+Stream-only diagnostics/private endpoints are separate root modules,
+`stream_diagnostics` and `stream_private_endpoints`. This avoids pulling the
+existing application resources through a broad input-map dependency during a
+carefully scoped change. The Function plan remains a dependency.
+
+For `streaming.enabled=false`, no observer or its AI grants are created. Deploy
+only `api` and `web`; direct provider streaming retains conservative accounting.
+See [local development](../docs/local-development.md#dedicated-streaming-host)
+for local host/debug instructions.
 
 ## Protocol enablement and hard-input-cap verification
 
-Optional protocols default **disabled**. Even disabled fields must be present in the azd
-environment; use the explicit empty strings/false flags in `environment.example.json`.
-No new protocol creates an AI account/deployment. Responses can reuse Chat's resource;
-Anthropic references an existing **AI Services** account with an already deployed Claude
-model. RBAC is deduplicated by principal/scope/role, preserving existing bindings, and
-diagnostic settings are deduplicated by resource ID.
+Responses and Messages default disabled. Enablement flags are operator
+attestations, not automatic proof of provider behavior. The exact wire subset
+is owned by the [APIM contract](../apim/README.md).
 
-Responses uses `https://<account>.openai.azure.com/openai/v1/responses`, with its own
-`api-version=v1|preview`, and the deployment alias in the JSON model. It does **not**
-inherit Chat's dated version or `/deployments/...` path. Its audience is explicit;
-current [Responses documentation](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
-examples use `https://ai.azure.com/.default` (set resource audience `https://ai.azure.com`).
-Government requires a `.openai.azure.us` account and independently recorded model, API,
-regional availability and audience verification via `RESPONSES_GOVERNMENT_VERIFIED=true`.
-Protocol portability is not an availability claim; keep disabled without this verification.
+### Responses
 
-After creating Chat's account, azd captures its `FOUNDRY_RESOURCE_ID`. Retain that
-value when enabling Responses against the same account, even with `CREATE_FOUNDRY=true`,
-so the existing gateway role is reused rather than assigned twice. Terraform verifies
-that a supplied ID identifies the account it manages; do not put another account's ID
-in a create configuration.
+Provide `ENABLE_RESPONSES` and the capability/tokenizer/private-connectivity
+attestations applicable to the target. It references an existing account and uses
+`/openai/v1/responses`, its own `v1|preview` version, deployment alias and explicit
+audience/role. It does not inherit Chat's dated REST version or deployment URL.
 
-Messages uses the exact referenced
-`https://<account>.services.ai.azure.com/anthropic/v1/messages`, with a pinned
-`anthropic-version` header (example `2023-06-01`) and **no** Chat API-version query.
-[Claude on Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
-documents Entra resource audience `https://ai.azure.com` and Cognitive Services User /
-Foundry User roles. Set a real role available in the target tenant (`Azure AI User` is
-also accepted as a named configuration), not Cognitive Services OpenAI User.
-Government Anthropic enablement is rejected: this sample has no verified sovereign Claude
-availability and never falls back to Commercial.
+When referencing Chat's newly created account, retain its output `FOUNDRY_RESOURCE_ID`
+even with `CREATE_FOUNDRY=true`; Terraform verifies ownership and reuses the role.
+Government additionally requires `RESPONSES_GOVERNMENT_VERIFIED` and independently
+verified account, audience, model/API and regional availability. Never enable it
+by copying a Commercial endpoint.
 
-Before enabling Messages, the operator must:
+### Messages
 
-1. Verify the referenced deployment, model/version, region, pinned API header, Entra
-   audience and **standard-tier text** capability against current provider documentation
-   and a controlled endpoint test. Verify local-key authentication is disabled.
-2. Establish the backend's hard maximum accepted input, including system/tools/history
-   and platform-added tokens. Use the full maximum possible accepted input for this
-   deployment/configuration, not an arbitrary smaller application preference. If only a
-   total context-window bound is established, reserving that entire window is conservative.
-   Record the model/version, documented limit, controlled acceptance/rejection evidence and
-   approval reference in `ANTHROPIC_INPUT_CAP_EVIDENCE`; set
-   `ANTHROPIC_HARD_INPUT_CAP_VERIFIED=true` only when established.
-3. Set `ANTHROPIC_CONTEXT_INPUT_TOKENS` to at least that verified maximum and
-   `MAX_INPUT_TOKENS` to at least the same number (example 200000, **not** a universal
-   Claude maximum). Terraform and preflight fail closed if the shared Function bound is
-   smaller. Every Messages request reserves this full input ceiling plus its output cap.
-   No UTF-8-byte assumption is made for Anthropic tokenizers.
-4. Seed the pinned `ANTHROPIC_PRICE_VERSION` for `service=foundry` and its deployment
-   alias, including explicit uncached/read/write-5m/write-1h decimal rates. Confirm the
-   gateway identity can invoke the backend and the limiter can admit/conservatively settle it.
-5. In private mode, verify existing backend private endpoints, DNS and APIM connectivity;
-   set `*_PRIVATE_ENDPOINT_VERIFIED=true` only after that check. Terraform does not take
-   ownership of referenced account networking.
+Reference an approved AI Services account with a deployed Claude model, explicit
+audience/role, pinned `ANTHROPIC_VERSION`, and no Chat API-version query.
+An OpenAI-only role is not sufficient. Marketplace terms and provider approvals
+are operator responsibilities; Government enablement is rejected.
 
-If a model upgrade, endpoint/API/header change or platform feature can increase the input
-ceiling or change prices, disable the route and reverify before enabling it again.
-Caller beta/tier/geography overrides, built-in tools, opaque history and media are rejected
-or removed at the gateway; supported request formats are listed in [the gateway notes](../apim/README.md).
-The verification flags are deliberate operator attestations, not automated proof of a model
-hard limit. Preflight checks selected cloud/resource properties and disabled public/local-key
-access where required; no offline test certifies model availability or provider behavior.
+Before setting the capability flags:
 
-## Private networking
+1. Verify model/version, region, endpoint, standard-tier text behavior, Entra
+   audience, role and local-key authentication being disabled.
+2. Establish the full hard maximum accepted input, including system/tools/history
+   and platform-added tokens. An arbitrary preferred application cap is not proof.
+   Record documentation, controlled acceptance/rejection and approval in
+   `ANTHROPIC_INPUT_CAP_EVIDENCE`.
+3. Set `ANTHROPIC_HARD_INPUT_CAP_VERIFIED=true`,
+   `ANTHROPIC_CONTEXT_INPUT_TOKENS` to at least that proven bound, and
+   `MAX_INPUT_TOKENS` to at least the same number. Every request reserves this
+   entire ceiling plus maximum output; no OpenAI byte-token assumption is reused.
+4. Publish matching uncached/read/write-5m/write-1h/output prices and model rules.
+5. In private mode, verify externally owned backend endpoints/DNS and connectivity
+   from both the gateway and streaming host before attesting private reachability.
 
-Private ingress is the default explicit tfvars choice. Classic APIM uses **internal VNet
-injection**, not APIM private endpoints, because these modes cannot be combined. Its
-management/control-plane endpoint remains subject to Azure's APIM management routing
-requirements. Functions, web, Redis, and newly created AI resources receive private
-endpoints; Storage gets blob, queue, table, and file endpoints. Public development mode
-omits private endpoints and VNet integration and enables public data-plane access.
+Disable and reverify after changes that can increase accepted context or change
+the pricing contract. Consult the current [Responses](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
+and [Claude on Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
+documentation rather than treating example audiences or capacities as universal.
 
-Existing DNS zones, links, and private DNS zone groups are policy-managed. Every endpoint
-ignores `private_dns_zone_group` drift. Referenced AI accounts must already have private
-connectivity and local-auth disabled; Terraform grants RBAC and diagnostics but does not
-silently change externally owned networking. The deployment runner and portal users need
-private routing, private SCM DNS resolution, and connectivity to the private endpoints.
-Permit APIM control-plane dependencies, Entra, package feeds, Azure Monitor ingestion,
-and the correct cloud's ARM endpoints. Private deployment is not supported on an
-unconnected public GitHub-hosted runner.
+## Authentication and telemetry settings
 
-## Cloud audiences are not DNS suffixes
+Terraform permits the SPA/gateway client applications through Function Easy Auth;
+`hosting.allowed_client_applications` adds approved automation. The example includes
+Microsoft's Azure CLI client for setup/testing. Remove it if unnecessary; an allowed
+client still needs tenant/audience/role authorization. Details and actual grants
+are in [Azure topology](../docs/azure-topology.md#identity-and-token-boundaries).
 
-The backend and portal receive `AZURE_CLOUD=commercial|government`, the explicit tenant,
-and the cloud-specific Entra authority. Terraform's AzureRM, AzureAD, and remote-state
-backend select their own explicit cloud configuration.
+The public portal config/runtime fields are documented in [web/README.md](../web/README.md);
+backend variables are in [configuration reference](../docs/configuration-reference.md).
+Do not maintain a second environment-variable list here.
 
-The APIM service uses Microsoft's cloud-aware AzAPI provider and its ARM service API.
-AzureRM currently unconditionally reads legacy tenant-access secrets, which returns
-HTTP 405 when the retired direct-management API is disabled. Do not enable that API to
-work around provisioning. APIM child resources continue to use AzureRM. For an existing
-deployment, back up remote state, import the unchanged service ID at
-`module.apim.azapi_resource.this`, then remove only
-`module.apim.azurerm_api_management.this` from state. Preview must show no destruction
-before applying; never recreate the gateway merely to change its Terraform provider.
+Demo telemetry uses sampling ratio 1 and APIM sampling 100%; local hosting logs
+retain seven days within 100 MB, independent of workspace retention.
+`REDIS_INSPECTION_ENABLED=false` is normal. Enabling it explicitly gives the
+deployer read-only inspection, not write/reset access: Commercial uses AzAPI's
+`2026-05-01-preview` custom ACL because the stable AzureRM assignment is broader;
+Government uses `Data Reader`. Disable inspection again after verification.
+The baseline engines are nonclustered/no-eviction, and counter keys share a
+`{limiter}` slot tag. A cold readiness gate requires protected
+[recovery](../docs/operations.md#recovery), not flushing state or waiting for TTL.
 
-For AI backend managed-identity policies, set **resource audiences**, not `/.default`
-scopes. Commercial commonly uses `https://cognitiveservices.azure.com`. Microsoft
-explicitly documents Azure OpenAI Government's audience/scope as
-`https://cognitiveservices.azure.us` (scope `https://cognitiveservices.azure.us/.default`) in the
-[Microsoft Azure OpenAI SDK sovereign-cloud guidance](https://learn.microsoft.com/dotnet/api/overview/azure/ai.openai-readme).
-Do not assume the same audience for every AI service merely from `.azure.us` hostnames:
-each service has an explicit `*_TOKEN_AUDIENCE` input. Validate the selected Government
-service's Entra audience and REST API version in the target tenant before enabling it.
-Endpoints for referenced accounts must be copied from that account's properties.
-New accounts use the exact endpoint returned by ARM.
+## Shared Azure portal rate-limiter dashboard
 
-[Redis Entra documentation](https://learn.microsoft.com/azure/azure-cache-for-redis/cache-azure-active-directory-for-authentication)
-documents `https://redis.azure.com/.default` (or its documented application-ID scope).
-It does **not** establish a `redis.azure.us` audience. The Government input is deliberately
-required and must be tenant-validated; this sample does not invent a sovereign scope.
+The monitoring module publishes the dashboard outputs and inherits tags.
+The [observability guide](../docs/observability.md) owns the complete 13-chart/
+9-grid inventory, schemas, viewer RBAC, scope/time behavior and source queries.
+It is the single dashboard operator reference.
 
-[Government Cache retirement](https://learn.microsoft.com/azure/azure-cache-for-redis/retirement-faq)
-is an explicit production gate: Basic/Standard/Premium retire September 30, 2028.
-Managed Redis Government availability is not assumed. Both cloud baselines use
-nonclustered/no-eviction engines; backend keys additionally use a common `{limiter}`
-hash tag. Cache cold start fails closed until an administrator recovers durable counters.
+## APIM provider maintenance
 
-## Authentication and runtime
+The parent APIM service uses cloud-aware AzAPI. AzureRM's legacy tenant-access
+secret read can return HTTP 405 when direct management is disabled; do not enable
+the retired API to work around provisioning. APIM child resources use AzureRM.
 
-Easy Auth validates every Function route with Entra; unauthenticated requests return 401,
-including the health endpoint. No excluded route trusts a caller-supplied principal header.
-APIM removes caller `X-MS-CLIENT-PRINCIPAL` on portal forwarding; App Service supplies
-the validated header. Gateway workload calls use a distinct UAMI and `RateLimit.Gateway`
-application role. The API registration separately exposes `RateLimit.Admin` and
-`RateLimit.Reader`; the deployer is initially assigned Admin. The public SPA registration
-has the generated `access_as_user` scope with explicit consent and redirect URLs.
-Browser requests must use APIM `/portal`, whose CORS policy handles preflight before
-JWT validation; a direct Function browser integration is not configured.
+For an existing deployment being migrated between those parent resource addresses:
+back up remote state, import the unchanged service ID at
+`module.apim.azapi_resource.this`, then remove **only**
+`module.apim.azurerm_api_management.this` from state. Review a no-destruction plan
+before applying; never recreate a gateway merely to change its Terraform provider.
 
-Function settings: `AZURE_CLOUD`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `TABLE_ENDPOINT`,
-`TABLE_NAME=RateLimiter`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME` (UAMI **object**
-ID), `REDIS_TOKEN_SCOPE`, `LOCAL_AUTH_ENABLED=false`, `LOCAL_STORE_ENABLED=false`,
-`WEBSITE_AUTH_ENABLED=true`, identity-based `AzureWebJobsStorage__credential/clientId`
-and exact ARM-returned `AzureWebJobsStorage__blobServiceUri/queueServiceUri/tableServiceUri`
-(avoiding reliance on Global-cloud account-name shorthand),
-and `APPLICATIONINSIGHTS_CONNECTION_STRING`. `MAX_INPUT_TOKENS` comes from
-`hosting.max_input_tokens`; `MAX_OUTPUT_TOKENS` comes from `gateway.max_output_tokens`.
-These settings align backend validation with gateway admission; the portal does not need
-provider credentials or protocol configuration.
+## Validation boundary
 
-Portal settings: `AZURE_CLOUD`, `AZURE_TENANT_ID`, `WEB_CLIENT_ID`, `API_AUDIENCE`,
-`API_SCOPE=api://<limiter-app-id>/access_as_user`, `API_BASE_URL=https://<gateway>/portal`.
-Root outputs export service names for azd, API identifiers, portal/gateway URLs, and
-telemetry/data endpoints. Application Insights connection information and private
-data-plane endpoint outputs are sensitive. `LLM_GATEWAY_ROUTES` publishes enabled client
-paths, protocol names, pinned models, backend paths and protocol-specific versions.
-
-## Observability and validation
-
-Supported resource logs and metrics are discovered and sent to the shared workspace
-for APIM, compute plans/apps, storage and all four subservices, Redis, AI accounts,
-and the workspace. Resource-specific tables use `Dedicated`. Workspace-based
-Application Insights writes application telemetry directly to that workspace.
-Do not add a diagnostic export from Application Insights back to its linked workspace:
-this duplicates telemetry and is an
-[unsupported destination](https://learn.microsoft.com/azure/azure-monitor/platform/diagnostic-settings#diagnostic-settings-for-application-insights).
-UAMIs, Entra registrations, RBAC assignments and private endpoints do not expose
-resource diagnostic categories; their changes are covered by platform Activity Logs
-(subscription-level export remains the landing-zone owner's responsibility).
-Function Insights integration and APIM application diagnostics are configured without
-logging request/response bodies, auth headers, subscription keys, or document content.
-
-```sh
-terraform -chdir=infra fmt -check -recursive
-terraform -chdir=infra init -backend=false
-terraform -chdir=infra validate -json
-terraform -chdir=infra test
-tflint --chdir=infra --recursive
-uv run --frozen python -W error -m unittest discover -s apim/tests -v
-```
-
-These are offline structural/schema checks, not proof of regional quota, successful
-Entra issuance, APIM's server-side policy compiler, policy-managed DNS convergence,
-or a working deployment. Before production, run a configured private-network smoke
-test for identity rejection, allow/deny, actual settlement, streaming conservative
-finalization, Redis recovery, and cross-principal document-poll rejection.
+Use [local validation commands](../docs/local-development.md#tests-and-checks)
+and the live [acceptance checklist](../docs/operations.md#operator-acceptance-checklist).
+Offline mocked plans, schema validation and XML tests do not prove quotas,
+private DNS, Entra issuance, APIM compilation, or actual client acceptance.

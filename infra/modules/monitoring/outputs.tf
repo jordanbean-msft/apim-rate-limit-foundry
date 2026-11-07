@@ -23,6 +23,10 @@ output "workspace_id" {
   description = "Shared Log Analytics destination."
   value       = azurerm_log_analytics_workspace.law.id
 }
+output "workspace_customer_id" {
+  description = "Log Analytics query API workspace UUID."
+  value       = azurerm_log_analytics_workspace.law.workspace_id
+}
 output "app_insights_id" {
   description = "Application Insights resource."
   value       = azurerm_application_insights.appinsights.id

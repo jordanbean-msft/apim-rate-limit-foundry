@@ -2,19 +2,24 @@
   try {
   var body = JObject.Parse((string)context.Variables["request-body"]);
   var fields = new [] {"model","messages","max_tokens","max_completion_tokens","n","stream","temperature","top_p","stop",
-    "presence_penalty","frequency_penalty","seed","tools","tool_choice","parallel_tool_calls","reasoning_effort","store"};
+    "presence_penalty","frequency_penalty","seed","tools","tool_choice","parallel_tool_calls","reasoning_effort","store","stream_options"};
   foreach (var field in body.Properties()) {
     if (!fields.Contains(field.Name)) { return "unsupported chat field: " + field.Name; }
   }
   if ((body["max_tokens"] == null) == (body["max_completion_tokens"] == null)) { return "supply exactly one output-token cap"; }
   var max = body["max_tokens"] ?? body["max_completion_tokens"];
   if (max.Type != JTokenType.Integer || !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
-      (int)max &gt; ${max_output_tokens}) { return "output-token cap exceeds the configured bound"; }
+      (int)max &gt; (int)context.Variables["model-max-output-tokens"]) { return "output-token cap exceeds the configured bound"; }
   if (body["n"] != null &amp;&amp; (body["n"].Type != JTokenType.Integer || body["n"].ToString() != "1")) { return "n must be 1"; }
   foreach (var name in new [] {"stream","parallel_tool_calls","store"}) {
     if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Boolean) { return name + " must be boolean"; }
   }
   if ((bool?)body["store"] == true) { return "stored chat history is unsupported"; }
+  if (body["stream_options"] != null) {
+    var options = body["stream_options"] as JObject;
+    if (options == null || options.Properties().Any(field =&gt; field.Name != "include_usage") ||
+        (options["include_usage"] != null &amp;&amp; options["include_usage"].Type != JTokenType.Boolean)) { return "stream_options supports only boolean include_usage"; }
+  }
   foreach (var name in new [] {"temperature","top_p","presence_penalty","frequency_penalty"}) {
     if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Integer &amp;&amp; body[name].Type != JTokenType.Float) { return name + " must be numeric"; }
   }
@@ -86,7 +91,7 @@
     }
   }
   var estimate = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + messages.Count * 32 + 128 * 32 + 128;
-  if (estimate &gt; ${max_input_tokens}) { return "conservative input bound exceeds Function MAX_INPUT_TOKENS"; }
+  if (estimate &gt; (int)context.Variables["model-max-input-tokens"]) { return "conservative input bound exceeds the selected model bound"; }
   return "";
   } catch { return "malformed chat request fields"; }
 }' />

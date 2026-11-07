@@ -6,6 +6,8 @@ repos:
         args: [--maxkb=1000]
       - id: check-case-conflict
       - id: check-json
+        # azd substitutes object-valued placeholders; gateway-templates checks rendered JSON.
+        exclude: ^infra/main\.tfvars\.json$
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
@@ -24,6 +26,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: gateway-templates
+        name: gateway and rendered Terraform templates
+        entry: uv run python -W error -m unittest discover -s apim/tests -p test_policies.py
+        language: system
+        pass_filenames: false
+        files: ^(apim/|infra/(main\.tfvars\.json|provider\.conf\.json|environment\.example\.json)$)
+
       - id: terraform-fmt
         name: terraform fmt (infrastructure)
         entry: bash -c 'cd infra && terraform fmt -check -recursive .'

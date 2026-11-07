@@ -47,6 +47,14 @@ output "AZURE_DASHBOARD_URL" {
   description = "Shared rate-limiter dashboard in the selected cloud's Azure portal."
   value       = module.monitoring.dashboard_url
 }
+output "LOG_ANALYTICS_WORKSPACE_ID" {
+  description = "Workspace UUID used by the server-side Azure Monitor Logs SDK."
+  value       = module.monitoring.workspace_customer_id
+}
+output "LOG_ANALYTICS_WORKSPACE_RESOURCE_ID" {
+  description = "Fixed workspace resource scope for portal dashboard queries."
+  value       = module.monitoring.workspace_id
+}
 output "TABLE_ENDPOINT" {
   description = "Durable repository endpoint."
   value       = module.storage.table_endpoint
@@ -64,4 +72,20 @@ output "LLM_GATEWAY_ROUTES" {
 output "FOUNDRY_RESOURCE_ID" {
   description = "Created or referenced Chat account, retained by azd for shared-protocol RBAC deduplication."
   value       = try(module.ai.backends["foundry"].id, "")
+}
+output "AZURE_STREAM_FUNCTION_NAME" {
+  description = "Dedicated HTTP streaming Function service for azd."
+  value       = var.streaming.enabled ? local.names.stream : null
+}
+output "AZURE_STREAM_FUNCTION_ID" {
+  description = "Dedicated streaming host resource ID."
+  value       = module.hosting.stream_id
+}
+output "APPLICATION_SUBSCRIPTIONS" {
+  description = "Safe inference application metadata only; excludes subscription keys and the server-side portal subscription."
+  value       = jsonencode(local.application_registry)
+}
+output "APPLICATION_REGISTRY" {
+  description = "Validated subscription-ID to tenant/display-name map used by both Function hosts."
+  value       = jsonencode(local.application_registry)
 }

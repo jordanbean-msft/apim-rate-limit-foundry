@@ -1,16 +1,22 @@
-# VS Code REST Client examples. Use an APIM subscription ID configuration and a valid
-# subscription key supplied only in your personal, untracked REST Client environment.
+# VS Code REST Client examples. Every request needs BOTH Entra authorization and
+# an inference product key, supplied only through your untracked environment.
+# The stable APIM subscription ID owns the application's budget, not either secret key.
 # Model and operation names must match the configured APIM API and price cards.
 @gateway = https://your-gateway.azure-api.net
-@responsesModel = {{$processEnv RESPONSES_DEPLOYMENT_NAME}}
-@anthropicModel = {{$processEnv ANTHROPIC_DEPLOYMENT_NAME}}
+@chatModel = {{$processEnv CHAT_MODEL_ALIAS}}
+@fastModel = {{$processEnv FAST_MODEL_ALIAS}}
+@responsesModel = {{$processEnv RESPONSES_MODEL_ALIAS}}
+@anthropicModel = {{$processEnv ANTHROPIC_MODEL_ALIAS}}
+@fastAnthropicModel = {{$processEnv FAST_ANTHROPIC_MODEL_ALIAS}}
 
 ### Non-streaming: APIM reserves, backend executes, actual usage settles
 POST {{gateway}}/foundry/chat/completions
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
+  "model": "{{chatModel}}",
   "messages": [{"role": "user", "content": "Explain why budget caps differ from TPM limits."}],
   "max_tokens": 64,
   "stream": false
@@ -19,9 +25,11 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 ### Streaming: conservative reservation, no client-supplied cache discount
 POST {{gateway}}/foundry/chat/completions
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
+  "model": "{{chatModel}}",
   "messages": [{"role": "user", "content": "Describe cached input token pricing."}],
   "max_tokens": 64,
   "stream": true
@@ -30,6 +38,7 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 ### OpenAI Responses: stateless inline input, bounded output
 POST {{gateway}}/foundry/responses
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
@@ -43,6 +52,7 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 ### OpenAI Responses: streaming retains conservative reservation
 POST {{gateway}}/foundry/responses
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
@@ -56,6 +66,7 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 ### Anthropic Messages: explicit cache breakpoint; backend model/version are operator-pinned
 POST {{gateway}}/anthropic/v1/messages
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 
@@ -76,6 +87,7 @@ anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 ### Anthropic Messages: streaming and 1-hour cache write pricing
 POST {{gateway}}/anthropic/v1/messages
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 
@@ -96,6 +108,7 @@ anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
 ### Language sentiment: record count rounds per document
 POST {{gateway}}/language/sentiment
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
@@ -108,11 +121,64 @@ Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 ### Document Intelligence: selected pages are enforced on the backend, not just claimed
 POST {{gateway}}/document-intelligence/analyze?pages=1-2
 Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
 Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
 {
   "base64Source": "{{$processEnv SAMPLE_PDF_BASE64}}"
 }
 
-# Follow the returned gateway Operation-Location with the same identity.
-# Do not call a raw backend URL or reuse another principal's operation ID.
+# Follow the returned gateway Operation-Location with an Entra token and the same app subscription.
+# Do not call a raw backend URL or reuse another application's operation ID.
+
+# Set approved aliases, for example gpt-5.4 and gpt-5.4-mini, after actual deployment.
+# Chat and Responses each need their own registry entry for a shared alias.
+### Chat standard alias
+POST {{gateway}}/foundry/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{"model":"{{chatModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
+
+### Chat fast alias
+POST {{gateway}}/foundry/chat/completions
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{"model":"{{fastModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
+
+### Responses standard alias
+POST {{gateway}}/foundry/responses
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{"model":"{{responsesModel}}","input":"Hello","max_output_tokens":64,"store":false}
+
+### Responses fast alias
+POST {{gateway}}/foundry/responses
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+
+{"model":"{{fastModel}}","input":"Hello","max_output_tokens":64,"store":false}
+
+### Messages standard alias
+POST {{gateway}}/anthropic/v1/messages
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
+
+{"model":"{{anthropicModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
+
+### Messages fast alias
+POST {{gateway}}/anthropic/v1/messages
+Content-Type: application/json
+Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
+Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
+anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
+
+{"model":"{{fastAnthropicModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}

@@ -4,9 +4,15 @@
     <cors allow-credentials="false">
       <allowed-origins><origin>${web_url}</origin></allowed-origins>
       <allowed-methods preflight-result-max-age="300"><method>GET</method><method>PUT</method><method>DELETE</method><method>POST</method></allowed-methods>
-      <allowed-headers><header>Authorization</header><header>Content-Type</header><header>X-Correlation-ID</header></allowed-headers>
+      <allowed-headers><header>Authorization</header><header>Ocp-Apim-Subscription-Key</header><header>Content-Type</header><header>X-Correlation-ID</header></allowed-headers>
       <expose-headers><header>X-Correlation-ID</header></expose-headers>
     </cors>
+    <choose>
+      <when condition='@(context.Subscription == null || context.Product == null || String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Ocp-Apim-Subscription-Key", "")))'>
+        <return-response><set-status code="401" reason="Product subscription key required" /></return-response>
+      </when>
+    </choose>
+    <set-query-parameter name="subscription-key" exists-action="delete" />
     <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer">
       <openid-config url="${authority}/${tenant_id}/v2.0/.well-known/openid-configuration" />
       <audiences><audience>${api_client_id}</audience><audience>${api_audience}</audience></audiences>

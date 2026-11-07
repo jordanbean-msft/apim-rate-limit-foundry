@@ -1,0 +1,86 @@
+{
+  "gpt-5.4": {
+    "model_name": "gpt-5.4",
+    "model_version": "2026-03-05",
+    "deployment_sku": "GlobalStandard",
+    "deployment_capacity": 10,
+    "protocols": {
+      "openai-chat": {
+        "api_version": "2024-10-21",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      },
+      "openai-responses": {
+        "api_version": "v1",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      }
+    }
+  },
+  "gpt-5.4-mini": {
+    "model_name": "gpt-5.4-mini",
+    "model_version": "2026-03-17",
+    "deployment_sku": "GlobalStandard",
+    "deployment_capacity": 10,
+    "protocols": {
+      "openai-chat": {
+        "api_version": "2024-10-21",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 64000,
+        "max_output_tokens": 4096,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      },
+      "openai-responses": {
+        "api_version": "v1",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 64000,
+        "max_output_tokens": 4096,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      }
+    }
+  },
+  "gpt-5.4-nano": {
+    "model_name": "gpt-5.4-nano",
+    "model_version": "2026-03-17",
+    "deployment_sku": "GlobalStandard",
+    "deployment_capacity": 10,
+    "protocols": {
+      "openai-chat": {
+        "api_version": "2024-10-21",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      },
+      "openai-responses": {
+        "api_version": "v1",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
+        "capability_verified": true,
+        "government_verified": false,
+        "byte_tokenizer_verified": true,
+        "private_endpoint_verified": false
+      }
+    }
+  }
+}

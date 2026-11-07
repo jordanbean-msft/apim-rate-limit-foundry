@@ -18,6 +18,7 @@
       <set-body>@(new JObject(new JProperty("operation_id", (string)context.Variables["operation-id"]),
         new JProperty("reservation_id", (string)context.Variables["reservation-id"]),
         new JProperty("principal_id", (string)context.Variables["principal-id"]),
+        new JProperty("subscription_id", (string)context.Variables["subscription-id"]),
         new JProperty("tenant_id", (string)context.Variables["tenant-id"]),
         new JProperty("model", (string)context.Variables["model"])).ToString())</set-body>
       <authentication-managed-identity resource="${api_audience}" client-id="${gateway_client_id}" />

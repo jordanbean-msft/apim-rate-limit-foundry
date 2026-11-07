@@ -8,15 +8,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS = {
+    "service": "foundry",
     "authority": "https://login.microsoftonline.us",
     "tenant_id": "00000000-0000-0000-0000-000000000001",
     "api_audience": "api://00000000-0000-0000-0000-000000000002",
     "api_client_id": "00000000-0000-0000-0000-000000000002",
     "gateway_client_id": "00000000-0000-0000-0000-000000000003",
     "function_url": "https://limiter.azurewebsites.us",
+    "stream_url": "https://stream.azurewebsites.us",
+    "streaming_enabled": "true",
     "web_url": "https://portal.azurewebsites.us",
     "audiences": "<audience>api://client</audience>",
-    "subscription_mapping": json.dumps({"subscription-id": "tenant-id"}).replace('"', '\\"'),
     "burst_calls": "60",
     "burst_seconds": "60",
     "send_request_timeout": "10",
@@ -32,6 +34,50 @@ PARAMETERS = {
     "ai_audience": "https://cognitiveservices.azure.us",
     "api_version": "2024-11-30",
     "api_protocol": "openai-chat",
+    "legacy_default_alias": "sample-model",
+    "admission": "",
+    "settlement": "",
+    "model_lookup": '<include-fragment fragment-id="limiter-model-lookup" />',
+    "model_registry": json.dumps(
+        {
+            "openai-chat:sample-model": {
+                "api_protocol": "openai-chat",
+                "endpoint": "https://backend.cognitiveservices.azure.us",
+                "path": "/openai/deployments/provider-chat/chat/completions",
+                "model": "provider-chat",
+                "audience": "https://cognitiveservices.azure.us",
+                "api_version": "2024-11-30",
+                "anthropic_version": "",
+                "price_version": "chat-v1",
+                "max_input_tokens": 64000,
+                "max_output_tokens": 2048,
+            },
+            "openai-responses:sample-model": {
+                "api_protocol": "openai-responses",
+                "endpoint": "https://backend.openai.azure.us",
+                "path": "/openai/v1/responses",
+                "model": "provider-responses",
+                "audience": "https://cognitiveservices.azure.us",
+                "api_version": "v1",
+                "anthropic_version": "",
+                "price_version": "responses-v1",
+                "max_input_tokens": 64000,
+                "max_output_tokens": 1024,
+            },
+            "anthropic-messages:sample-model": {
+                "api_protocol": "anthropic-messages",
+                "endpoint": "https://backend.services.ai.azure.com",
+                "path": "/anthropic/v1/messages",
+                "model": "provider-messages",
+                "audience": "https://ai.azure.com",
+                "api_version": "",
+                "anthropic_version": "2023-06-01",
+                "price_version": "messages-v1",
+                "max_input_tokens": 128000,
+                "max_output_tokens": 1024,
+            },
+        }
+    ).replace('"', '\\"'),
     "price_version": "sample-v1",
     "backend_path": "/model",
     "backend_query": "",
@@ -97,7 +143,8 @@ class GatewayPolicyTests(unittest.TestCase):
         reservation = policy.find("./inbound/include-fragment[@fragment-id='limiter-reserve']")
         self.assertLess(statements.index(limiter), statements.index(reservation))
         self.assertIn('context.Variables["tenant-id"]', limiter.get("counter-key"))
-        self.assertIn('context.Variables["principal-id"]', limiter.get("counter-key"))
+        self.assertIn('context.Variables["subscription-id"]', limiter.get("counter-key"))
+        self.assertNotIn("principal-id", limiter.get("counter-key"))
 
     def test_unreported_cached_usage_is_not_fabricated_as_zero(self) -> None:
         policy = render("policies/foundry-settlement.xml.tftpl")
@@ -120,6 +167,13 @@ class GatewayPolicyTests(unittest.TestCase):
         placeholders = set(re.findall(r"\$\{([A-Z_]+)\}", configuration))
         example = json.loads((infra / "environment.example.json").read_text())
         self.assertEqual(placeholders - example.keys(), set())
+        for filename in ("main.tfvars.json", "provider.conf.json"):
+            template = (infra / filename).read_text()
+            rendered = re.sub(r"\$\{([A-Z_]+)\}", lambda match: example[match[1]], template)
+            parameters = json.loads(rendered)
+            if filename == "main.tfvars.json":
+                for field in ("llm_models", "managed_models", "applications"):
+                    self.assertIsInstance(parameters[field], dict)
 
     def test_complete_rendered_policy_xml(self) -> None:
         for service, prefix in [
@@ -152,11 +206,75 @@ class GatewayPolicyTests(unittest.TestCase):
                     len(root.findall("./inbound/include-fragment[@fragment-id='limiter-reserve']")),
                     1,
                 )
-                self.assertEqual(
-                    root.find("./backend/forward-request").get("buffer-response"), "false"
+
+    def test_generic_model_lookup_is_exact_and_precedes_admission(self) -> None:
+        fragment = ET.fromstring(render("fragments/model-lookup.xml.tftpl"))
+        entry = fragment.find("./set-variable[@name='model-entry']")
+        self.assertIsNotNone(entry)
+        self.assertIn('registry[(string)context.Variables["model-key"]]', entry.get("value"))
+        self.assertIn('context.Variables["api-protocol"]', entry.get("value"))
+        self.assertIn("return entry.ToString", entry.get("value"))
+        self.assertEqual(len(fragment.findall(".//when")), 1)
+        self.assertIn(
+            "limiter-model-lookup", render("policies/ai.xml.tftpl").split("${admission}")[0]
+        )
+        template = (ROOT / "policies/ai.xml.tftpl").read_text()
+        self.assertLess(template.index("${model_lookup}"), template.index("${admission}"))
+
+    def test_service_routes_keep_model_and_price_before_reservation(self) -> None:
+        for service, model in (
+            ("document-intelligence", "prebuilt-read"),
+            ("language", "sentiment"),
+        ):
+            with self.subTest(service=service):
+                root = ET.fromstring(
+                    render(
+                        "policies/ai.xml.tftpl",
+                        service=service,
+                        api_protocol="",
+                        model=model,
+                        price_version="service-v1",
+                        model_lookup="",
+                    )
                 )
-                self.assertNotIn("/api/decisions/release", xml)
-                self.assertNotIn("AsJwt", xml)
+                inbound = root.find("inbound")
+                statements = list(inbound)
+                reserve = inbound.find("./include-fragment[@fragment-id='limiter-reserve']")
+                for name, value in (("model", model), ("price-version", "service-v1")):
+                    variable = inbound.find(f"./set-variable[@name='{name}']")
+                    self.assertIsNotNone(variable)
+                    self.assertEqual(variable.get("value"), value)
+                    self.assertLess(statements.index(variable), statements.index(reserve))
+
+    def test_provider_deployment_rewrite_precedes_stream_hash_and_reservation(self) -> None:
+        policy = render("policies/ai.xml.tftpl")
+        inbound = policy.split("<inbound>", 1)[1].split("</inbound>", 1)[0]
+        self.assertLess(
+            inbound.index('body["model"] = (string)context.Variables["model-provider"]'),
+            inbound.index('name="payload-sha256"'),
+        )
+        self.assertLess(
+            inbound.index('name="payload-sha256"'), inbound.index('fragment-id="limiter-reserve"')
+        )
+        template = (ROOT / "policies/ai.xml.tftpl").read_text()
+        self.assertLess(template.index("${model_lookup}"), template.index("${admission}"))
+        self.assertIn('context.Variables["model-endpoint"]', inbound)
+        self.assertIn('context.Variables["model-path"]', inbound)
+        self.assertIn('context.Variables["model-audience"]', inbound)
+        self.assertIn('context.Variables["price-version"]', render("fragments/reserve.xml.tftpl"))
+
+    def test_model_admission_uses_selected_registry_token_limits(self) -> None:
+        for path in (
+            "policies/foundry-admission.xml.tftpl",
+            "policies/responses-admission.xml.tftpl",
+            "policies/anthropic-admission.xml.tftpl",
+        ):
+            content = render(path)
+            self.assertIn('context.Variables["model-max-output-tokens"]', content)
+            if "anthropic" in path:
+                self.assertIn('context.Variables["model-max-input-tokens"]', content)
+            else:
+                self.assertIn('context.Variables["model-max-input-tokens"]', content)
 
     def test_fragments_have_no_policy_sections(self) -> None:
         for name in ["identity", "reserve", "settle"]:
@@ -173,6 +291,78 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("context.Subscription.Id", xml)
         self.assertNotIn("Subscription.Key", xml)
         self.assertEqual(xml.count("<rate-limit-by-key "), 1)
+
+    def test_every_gateway_requires_both_jwt_and_native_product_subscription(self) -> None:
+        for path, inbound_path in (
+            ("fragments/identity.xml.tftpl", "."),
+            ("policies/portal.xml.tftpl", "./inbound"),
+        ):
+            with self.subTest(path=path):
+                root = ET.fromstring(render(path))
+                inbound = root.find(inbound_path)
+                jwt = inbound.find("./validate-jwt")
+                self.assertIsNotNone(jwt)
+                self.assertEqual(jwt.get("header-name"), "Authorization")
+                guard = inbound.find("./choose/when")
+                self.assertIn("context.Subscription == null", guard.get("condition"))
+                self.assertIn("context.Product == null", guard.get("condition"))
+                self.assertIn("Ocp-Apim-Subscription-Key", guard.get("condition"))
+                self.assertEqual(guard.find("./return-response/set-status").get("code"), "401")
+                self.assertIsNotNone(
+                    inbound.find("./set-query-parameter[@name='subscription-key']")
+                )
+                self.assertLess(
+                    list(inbound).index(inbound.find("./choose")), list(inbound).index(jwt)
+                )
+                self.assertNotIn("subscription_mapping", render(path))
+        reservation = render("fragments/reserve.xml.tftpl")
+        self.assertIn(
+            'new JProperty("subscription_id", (string)context.Variables["subscription-id"])',
+            reservation,
+        )
+        self.assertNotIn("context.Subscription == null ? null", reservation)
+
+    def test_native_burst_denials_attribute_subscriptions_without_key_or_user_data(self) -> None:
+        xml = render("fragments/identity.xml.tftpl")
+        fragment = ET.fromstring(xml)
+        digest = fragment.find("./set-variable[@name='caller-ref']").get("value")
+        self.assertIn(
+            '(string)context.Variables["tenant-id"] + "\\n" + (string)context.Variables["subscription-id"]',
+            digest,
+        )
+        self.assertIn(
+            "SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(identity))", digest
+        )
+        self.assertIn('Replace("-", "").ToLowerInvariant()', digest)
+        trace = fragment.find("./trace")
+        self.assertEqual(trace.find("message").text, "gateway_caller")
+        metadata = {item.get("name") for item in trace.findall("metadata")}
+        self.assertEqual(
+            metadata,
+            {
+                "correlation_id",
+                "caller_ref",
+                "subscription_id",
+                "application_name",
+                "product_id",
+                "api_id",
+                "operation_id",
+            },
+        )
+        self.assertNotIn('Variables["tenant-id"]', ET.tostring(trace, encoding="unicode"))
+        self.assertNotIn('Variables["principal-id"]', ET.tostring(trace, encoding="unicode"))
+        burst_key = fragment.find("./rate-limit-by-key").get("counter-key")
+        self.assertIn('Variables["subscription-id"]', burst_key)
+        self.assertNotIn("principal-id", burst_key)
+        for secret_property in (
+            "Subscription.Key",
+            "Subscription.PrimaryKey",
+            "Subscription.SecondaryKey",
+        ):
+            self.assertNotIn(secret_property, xml)
+        self.assertLess(xml.index('name="caller-ref"'), xml.index("<trace"))
+        self.assertLess(xml.index("<trace"), xml.index("<rate-limit-by-key"))
+        self.assertLess(xml.index("<validate-jwt"), xml.index("<trace"))
 
     def test_streaming_branch_never_reads_response_body(self) -> None:
         xml = render("policies/foundry-settlement.xml.tftpl")
@@ -209,7 +399,9 @@ class GatewayPolicyTests(unittest.TestCase):
             "<fragment>" + render("policies/anthropic-admission.xml.tftpl") + "</fragment>"
         )
         usage = policy.find("./set-variable[@name='usage']").get("value")
-        self.assertIn('new JProperty("input_tokens", 200000)', usage)
+        self.assertIn(
+            'new JProperty("input_tokens", (int)context.Variables["model-max-input-tokens"])', usage
+        )
         self.assertNotIn("UTF8", usage)
         validation = policy.find("./set-variable[@name='admission-error']").get("value")
         self.assertIn('"cache_control"', validation)
@@ -349,10 +541,111 @@ class GatewayPolicyTests(unittest.TestCase):
                 policy.find(f"./inbound/set-header[@name='{name}']").get("exists-action"), "delete"
             )
         self.assertEqual(
-            policy.find("./inbound/set-header[@name='anthropic-version']/value").text, "2023-06-01"
+            policy.find(".//otherwise/set-header[@name='anthropic-version']/value").text,
+            "2023-06-01",
         )
-        self.assertEqual(policy.find("./inbound/rewrite-uri").get("copy-unmatched-params"), "false")
+        for rewrite in policy.findall(".//rewrite-uri"):
+            self.assertEqual(rewrite.get("copy-unmatched-params"), "false")
         self.assertIsNone(policy.find("./inbound/set-query-parameter[@name='api-version']"))
+
+    def test_stream_body_is_pinned_before_hash_and_reservation(self) -> None:
+        xml = render(
+            "policies/ai.xml.tftpl",
+            admission=render("policies/foundry-admission.xml.tftpl"),
+            settlement=render("policies/foundry-settlement.xml.tftpl"),
+        )
+        policy = ET.fromstring(xml)
+        digest = policy.find(".//set-variable[@name='payload-sha256']").get("value")
+        self.assertIn("Encoding.UTF8.GetBytes", digest)
+        self.assertIn("SHA256.Create().ComputeHash(bytes)", digest)
+        self.assertIn('Replace("-", "").ToLowerInvariant()', digest)
+        self.assertLess(xml.index('body["model"] ='), xml.index('name="payload-sha256"'))
+        self.assertLess(xml.index('new JProperty("include_usage", true)'), xml.index("ComputeHash"))
+        self.assertLess(xml.index("ComputeHash"), xml.index('fragment-id="limiter-reserve"'))
+        self.assertLess(
+            xml.index('fragment-id="limiter-reserve"'), xml.index("<set-backend-service")
+        )
+        reserve = ET.fromstring(render("fragments/reserve.xml.tftpl"))
+        body = reserve.find(".//set-body").text
+        self.assertIn('GetValueOrDefault<bool>("streaming", false)', body)
+        self.assertIn(
+            'request["payload_sha256"] = (string)context.Variables["payload-sha256"]', body
+        )
+
+    def test_stream_relay_uses_api_identity_and_never_provider_credentials(self) -> None:
+        policy = ET.fromstring(
+            render(
+                "policies/ai.xml.tftpl",
+                admission=render("policies/foundry-admission.xml.tftpl"),
+                settlement=render("policies/foundry-settlement.xml.tftpl"),
+                version_policy='<set-query-parameter name="api-version" exists-action="override"><value>v1</value></set-query-parameter>',
+            )
+        )
+        relay = next(
+            branch
+            for branch in policy.findall("./inbound/choose/when")
+            if branch.find("./rewrite-uri[@template='/api/stream']") is not None
+        )
+        self.assertIn("true &&", relay.get("condition"))
+        self.assertEqual(
+            relay.find("set-backend-service").get("base-url"), PARAMETERS["stream_url"]
+        )
+        self.assertEqual(
+            relay.find("authentication-managed-identity").get("resource"),
+            PARAMETERS["api_audience"],
+        )
+        self.assertEqual(
+            relay.find("authentication-managed-identity").get("client-id"),
+            PARAMETERS["gateway_client_id"],
+        )
+        self.assertEqual(relay.find("set-query-parameter").get("exists-action"), "delete")
+        self.assertEqual(
+            relay.find("./set-header[@name='X-RateLimit-Reservation']").get("exists-action"),
+            "override",
+        )
+        self.assertIn(
+            "context.RequestId", relay.find("./set-header[@name='X-Correlation-ID']/value").text
+        )
+        for name in ("Authorization", "api-key", "x-api-key", "X-RateLimit-Reservation"):
+            self.assertEqual(
+                policy.find(f"./inbound/set-header[@name='{name}']").get("exists-action"), "delete"
+            )
+        direct = policy.find(
+            ".//set-backend-service[@base-url='@((string)context.Variables[\"model-endpoint\"])']"
+        )
+        self.assertIsNotNone(direct)
+        identities = policy.findall(".//authentication-managed-identity")
+        self.assertIn(
+            '@((string)context.Variables["model-audience"])',
+            [identity.get("resource") for identity in identities],
+        )
+        self.assertEqual(policy.find("./backend/forward-request").get("buffer-response"), "false")
+        outbound = policy.find("outbound")
+        self.assertEqual(
+            outbound.find("./set-header[@name='X-RateLimit-Estimated']/value").text, "true"
+        )
+        self.assertEqual(
+            outbound.find(".//set-header[@name='X-RateLimit-Admission']/value").text,
+            "conservative",
+        )
+        self.assertEqual(
+            outbound.find(".//set-header[@name='X-RateLimit-Accounting']/value").text,
+            "provider-stream",
+        )
+
+    def test_chat_stream_options_accept_only_boolean_usage_and_force_true(self) -> None:
+        policy = ET.fromstring(
+            "<fragment>" + render("policies/foundry-admission.xml.tftpl") + "</fragment>"
+        )
+        admission = policy.find("./set-variable[@name='admission-error']").get("value")
+        self.assertIn('"stream_options"', admission)
+        self.assertIn('field.Name != "include_usage"', admission)
+        self.assertIn('options["include_usage"].Type != JTokenType.Boolean', admission)
+        self.assertIn("options == null", admission)
+        xml = render("policies/ai.xml.tftpl", admission="", settlement="")
+        self.assertIn(
+            'body["stream_options"] = new JObject(new JProperty("include_usage", true))', xml
+        )
 
     def test_document_poll_checks_owner_before_backend_and_settles_without_reserving(self) -> None:
         xml = render("policies/document-poll.xml.tftpl")
@@ -360,10 +653,12 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertLess(xml.index("/api/operations/check"), xml.index("<set-backend-service"))
         self.assertIn('"tenant_id"', xml)
         self.assertIn('"principal_id"', xml)
+        self.assertIn('"subscription_id"', xml)
         self.assertNotIn("limiter-reserve", xml)
         self.assertIn("limiter-settle", xml)
         submit = render("policies/document-submit.xml.tftpl")
         ET.fromstring(f"<fragment>{submit}</fragment>")
+        self.assertIn('"subscription_id"', submit)
         self.assertLess(
             submit.index("/api/operations/bind"),
             submit.index('<set-header name="Operation-Location"'),

@@ -34,3 +34,8 @@ variable "azure_cloud" {
     error_message = "azure_cloud must be commercial or government."
   }
 }
+
+variable "dashboard_reader_principal_id" {
+  description = "Function workload identity allowed to read dashboard definitions and query their workspace."
+  type        = string
+}

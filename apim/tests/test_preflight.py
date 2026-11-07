@@ -59,6 +59,25 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Preflight passed", result.stdout)
 
+    def test_foundry_services_origin_respects_selected_cloud(self) -> None:
+        for cloud, arm, suffix in [
+            ("AzureCloud", "public", "com"),
+            ("AzureUSGovernment", "usgovernment", "us"),
+        ]:
+            for endpoint_suffix in ["com", "us"]:
+                with self.subTest(cloud=cloud, endpoint_suffix=endpoint_suffix):
+                    result = self._run(
+                        AZURE_CLOUD=cloud,
+                        ARM_ENVIRONMENT=arm,
+                        CREATE_FOUNDRY="false",
+                        FOUNDRY_RESOURCE_ID="/subscriptions/test/accounts/foundry",
+                        FOUNDRY_ENDPOINT=f"https://sample.services.ai.azure.{endpoint_suffix}",
+                        FOUNDRY_TOKEN_AUDIENCE=f"https://cognitiveservices.azure.{suffix}",
+                    )
+                    self.assertEqual(
+                        result.returncode, 0 if suffix == endpoint_suffix else 1, result.stderr
+                    )
+
     def test_government_responses_needs_separate_availability_acceptance(self) -> None:
         for verified, expected in [("false", 1), ("true", 0)]:
             with self.subTest(verified=verified):
@@ -96,6 +115,87 @@ class PreflightTests(unittest.TestCase):
         result = self._run(ENABLE_ANTHROPIC="true", ANTHROPIC_INPUT_CAP_EVIDENCE="")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("recorded backend hard-context-cap verification", result.stderr)
+
+    def test_additional_model_references_are_validated_and_checked(self) -> None:
+        model = {
+            "api_protocol": "openai-chat",
+            "resource_id": "/subscriptions/test/accounts/chat-fast",
+            "endpoint": "https://chat-fast.openai.azure.com",
+            "audience": "https://cognitiveservices.azure.com",
+            "location": "eastus2",
+            "deployment_name": "provider-fast",
+            "price_version": "sample-v1",
+            "max_input_tokens": 64000,
+            "max_output_tokens": 2048,
+            "role_definition_name": "Cognitive Services OpenAI User",
+            "capability_verified": True,
+            "government_verified": False,
+            "byte_tokenizer_verified": True,
+            "private_endpoint_verified": True,
+            "api_version": "2025-04-01-preview",
+            "anthropic_version": "",
+            "hard_input_cap_verified": False,
+            "input_cap_evidence": "",
+        }
+        result = self._run(LLM_MODELS=json.dumps({"openai-chat:fast": model}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_additional_model_rejects_bad_keys_and_nonorigin_endpoints(self) -> None:
+        model = {
+            "api_protocol": "openai-chat",
+            "resource_id": "/subscriptions/test/accounts/chat-fast",
+            "endpoint": "https://chat-fast.openai.azure.com/path?api-key=caller",
+            "audience": "https://cognitiveservices.azure.com",
+            "location": "eastus2",
+            "deployment_name": "provider-fast",
+            "price_version": "sample-v1",
+            "max_input_tokens": 64000,
+            "max_output_tokens": 2048,
+            "role_definition_name": "Cognitive Services OpenAI User",
+            "capability_verified": True,
+            "government_verified": False,
+            "byte_tokenizer_verified": True,
+            "private_endpoint_verified": True,
+            "api_version": "2024-10-21",
+            "anthropic_version": "",
+            "hard_input_cap_verified": False,
+            "input_cap_evidence": "",
+        }
+        result = self._run(LLM_MODELS=json.dumps({"openai-chat:fast": model}))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("endpoint must be an HTTPS origin", result.stderr)
+
+    def test_additional_model_requires_verified_private_connectivity(self) -> None:
+        model = {
+            "api_protocol": "openai-chat",
+            "resource_id": "/subscriptions/test/accounts/chat-fast",
+            "endpoint": "https://chat-fast.openai.azure.com",
+            "audience": "https://cognitiveservices.azure.com",
+            "location": "eastus2",
+            "deployment_name": "provider-fast",
+            "price_version": "sample-v1",
+            "max_input_tokens": 64000,
+            "max_output_tokens": 2048,
+            "role_definition_name": "Cognitive Services OpenAI User",
+            "capability_verified": True,
+            "government_verified": False,
+            "byte_tokenizer_verified": True,
+            "private_endpoint_verified": False,
+            "api_version": "2024-10-21",
+            "anthropic_version": "",
+            "hard_input_cap_verified": False,
+            "input_cap_evidence": "",
+        }
+        result = self._run(
+            LLM_MODELS=json.dumps({"openai-chat:fast": model}),
+            PUBLIC_NETWORK_ACCESS_ENABLED="false",
+            PRIVATE_ENDPOINT_SUBNET_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/private-endpoints",
+            FUNCTIONS_SUBNET_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/functions",
+            WEB_SUBNET_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/web",
+            APIM_SUBNET_ID="/subscriptions/test/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet/subnets/apim",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("private endpoint and DNS verification is required", result.stderr)
 
 
 if __name__ == "__main__":

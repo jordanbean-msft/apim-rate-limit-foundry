@@ -1,0 +1,13 @@
+// Stable subscription IDs are not primary/secondary keys. Deduplicate custom decisions.
+AppTraces
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "rate_decision"
+| where isnotempty(tostring(Properties.subscription_id))
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_min(TimeGenerated, *) by ReservationId
+| where tobool(Properties.allowed) == false and isnotempty(tostring(Properties.caller_ref))
+| summarize DeniedRequests = count()
+    by SubscriptionId = tostring(Properties.subscription_id),
+    ServiceModel = strcat(tostring(Properties.service), " / ", tostring(Properties.model))
+| top 20 by DeniedRequests desc
+| render columnchart with (kind=stacked)

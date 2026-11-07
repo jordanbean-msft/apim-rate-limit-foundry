@@ -68,24 +68,27 @@ locals {
     api_client_id           = trimprefix(var.api_audience, "api://")
     gateway_client_id       = var.identity.client_id
     function_url            = var.function_url
+    stream_url              = var.stream_url
+    streaming_enabled       = var.streaming_enabled
     web_url                 = var.web_url
     burst_calls             = var.config.burst_calls
     burst_seconds           = var.config.burst_seconds
     send_request_timeout    = var.config.send_request_timeout
     audiences               = join("", [for audience in var.config.client_audiences : "<audience>${audience}</audience>"])
-    subscription_mapping    = replace(jsonencode(var.config.subscription_tenant_mapping), "\"", "\\\"")
     max_body_bytes          = var.config.max_body_bytes
     max_output_tokens       = var.config.max_output_tokens
     max_document_pages      = var.config.max_document_pages
     max_language_characters = var.config.max_language_characters
     llm_tokens_per_minute   = var.config.llm_tokens_per_minute
     max_input_tokens        = var.max_input_tokens
+    model_registry          = replace(jsonencode(var.model_registry), "\"", "\\\"")
   }
+  route_backends = merge(var.ai, var.route_backends)
   api_backends = merge(
-    { for key, backend in var.ai : key => backend if key != "responses" },
-    contains(keys(var.ai), "responses") && !contains(keys(var.ai), "foundry") ? { foundry = var.ai["responses"] } : {}
+    { for key, backend in local.route_backends : key => backend if key != "responses" },
+    contains(keys(local.route_backends), "responses") && !contains(keys(local.route_backends), "foundry") ? { foundry = local.route_backends["responses"] } : {}
   )
-  fragments = toset(["identity", "reserve", "settle"])
+  fragments = toset(["identity", "model-lookup", "reserve", "settle"])
   ai_paths = {
     foundry               = "/chat/completions"
     responses             = "/responses"
@@ -94,7 +97,7 @@ locals {
     language              = "/sentiment"
   }
   backend_paths = {
-    foundry               = "/openai/deployments/${try(var.ai["foundry"].model, "")}/chat/completions"
+    foundry               = "/openai/deployments/${try(local.route_backends["foundry"].model, "")}/chat/completions"
     responses             = "/openai/v1/responses"
     anthropic             = "/anthropic/v1/messages"
     document-intelligence = "/documentintelligence/documentModels/${try(var.ai["document-intelligence"].model, "")}:analyze"
@@ -102,8 +105,8 @@ locals {
   }
   admission = {
     foundry               = templatefile("${local.policy_root}/policies/foundry-admission.xml.tftpl", local.shared)
-    responses             = templatefile("${local.policy_root}/policies/responses-admission.xml.tftpl", merge(local.shared, { model = try(var.ai["responses"].model, "") }))
-    anthropic             = templatefile("${local.policy_root}/policies/anthropic-admission.xml.tftpl", merge(local.shared, { context_input_tokens = try(var.ai["anthropic"].context_input_tokens, 0), model = try(var.ai["anthropic"].model, "") }))
+    responses             = templatefile("${local.policy_root}/policies/responses-admission.xml.tftpl", local.shared)
+    anthropic             = templatefile("${local.policy_root}/policies/anthropic-admission.xml.tftpl", local.shared)
     document-intelligence = templatefile("${local.policy_root}/policies/document-admission.xml.tftpl", local.shared)
     language              = templatefile("${local.policy_root}/policies/language-admission.xml.tftpl", local.shared)
   }
@@ -114,7 +117,7 @@ locals {
     document-intelligence = templatefile("${local.policy_root}/policies/document-submit.xml.tftpl", local.shared)
     language              = templatefile("${local.policy_root}/policies/language-settlement.xml.tftpl", local.shared)
   }
-  portal_reads = { for collection in ["health", "policies", "prices", "assignments", "usage", "audit", "reconciliation"] :
+  portal_reads = { for collection in ["health", "dashboard", "models", "subscriptions", "policies", "prices", "assignments", "usage", "audit", "reconciliation"] :
     "get-${collection}" => { method = "GET", path = "/${collection}", parameter = false }
   }
   portal_writes = merge([
@@ -126,6 +129,7 @@ locals {
   portal_operations = merge(local.portal_reads, local.portal_writes, {
     recover       = { method = "POST", path = "/reconciliation/recover", parameter = false }
     usage-summary = { method = "GET", path = "/usage/summary", parameter = false }
+    usage-callers = { method = "GET", path = "/usage/callers", parameter = false }
   })
 }
 resource "azurerm_api_management_policy_fragment" "this" {
@@ -144,11 +148,11 @@ resource "azurerm_api_management_api" "ai" {
   display_name          = each.key
   path                  = each.key
   protocols             = ["https"]
-  subscription_required = false
+  subscription_required = true
   service_url           = each.value.endpoint
 }
 resource "azurerm_api_management_api_operation" "submit" {
-  for_each            = var.ai
+  for_each            = local.route_backends
   operation_id        = "${each.key}-submit"
   api_name            = azurerm_api_management_api.ai[each.key == "responses" ? "foundry" : each.key].name
   api_management_name = azapi_resource.this.name
@@ -158,26 +162,28 @@ resource "azurerm_api_management_api_operation" "submit" {
   url_template        = local.ai_paths[each.key]
 }
 resource "azurerm_api_management_api_operation_policy" "submit" {
-  for_each            = var.ai
+  for_each            = local.route_backends
   api_name            = azurerm_api_management_api.ai[each.key == "responses" ? "foundry" : each.key].name
   api_management_name = azapi_resource.this.name
   resource_group_name = var.resource_group_name
   operation_id        = azurerm_api_management_api_operation.submit[each.key].operation_id
   xml_content = templatefile("${local.policy_root}/policies/ai.xml.tftpl", merge(local.shared, {
-    service          = contains(["foundry", "responses", "anthropic"], each.key) ? "foundry" : each.key
-    api_protocol     = each.value.api_protocol
-    model            = each.value.model
-    endpoint         = each.value.endpoint
-    ai_audience      = each.value.audience
-    api_version      = each.value.api_version
-    price_version    = each.value.price_version
-    backend_path     = local.backend_paths[each.key]
-    version_policy   = each.key == "anthropic" ? "" : "<set-query-parameter name=\"api-version\" exists-action=\"override\"><value>${each.value.api_version}</value></set-query-parameter>"
-    provider_headers = each.key == "anthropic" ? "<set-header name=\"anthropic-version\" exists-action=\"override\"><value>${each.value.anthropic_version}</value></set-header>" : ""
-    backend_query    = each.key == "document-intelligence" ? "<set-query-parameter name=\"pages\" exists-action=\"override\"><value>@((string)context.Variables[\"document-pages\"])</value></set-query-parameter>" : (each.key == "language" ? "<set-query-parameter name=\"showStats\" exists-action=\"override\"><value>true</value></set-query-parameter>" : "")
-    admission        = local.admission[each.key]
-    settlement       = local.settlement[each.key]
-    llm_policy       = each.key == "foundry" && var.config.enable_optional_llm_policy ? templatefile("${local.policy_root}/policies/llm-limit.xml.tftpl", local.shared) : ""
+    service              = contains(["foundry", "responses", "anthropic"], each.key) ? "foundry" : each.key
+    api_protocol         = each.value.api_protocol
+    model                = each.value.model
+    model_lookup         = each.value.api_protocol == "" ? "" : "<include-fragment fragment-id=\"limiter-model-lookup\" />"
+    legacy_default_alias = try(var.legacy_defaults[each.key], "")
+    endpoint             = each.value.endpoint
+    ai_audience          = each.value.audience
+    api_version          = each.value.api_version
+    price_version        = each.value.price_version
+    backend_path         = local.backend_paths[each.key]
+    version_policy       = each.key == "anthropic" ? "" : "<set-query-parameter name=\"api-version\" exists-action=\"override\"><value>${each.value.api_version}</value></set-query-parameter>"
+    provider_headers     = each.key == "anthropic" ? "<set-header name=\"anthropic-version\" exists-action=\"override\"><value>${each.value.anthropic_version}</value></set-header>" : ""
+    backend_query        = each.key == "document-intelligence" ? "<set-query-parameter name=\"pages\" exists-action=\"override\"><value>@((string)context.Variables[\"document-pages\"])</value></set-query-parameter>" : (each.key == "language" ? "<set-query-parameter name=\"showStats\" exists-action=\"override\"><value>true</value></set-query-parameter>" : "")
+    admission            = local.admission[each.key]
+    settlement           = local.settlement[each.key]
+    llm_policy           = each.key == "foundry" && var.config.enable_optional_llm_policy ? templatefile("${local.policy_root}/policies/llm-limit.xml.tftpl", local.shared) : ""
   }))
   depends_on = [azurerm_api_management_policy_fragment.this]
 }
@@ -218,8 +224,50 @@ resource "azurerm_api_management_api" "portal" {
   display_name          = "Limiter control plane"
   path                  = "portal"
   protocols             = ["https"]
-  subscription_required = false
+  subscription_required = true
   service_url           = "${var.function_url}/api"
+}
+resource "azurerm_api_management_product" "this" {
+  for_each              = toset(["inference", "portal"])
+  product_id            = each.key
+  api_management_name   = azapi_resource.this.name
+  resource_group_name   = var.resource_group_name
+  display_name          = each.key == "inference" ? "AI inference applications" : "Server-side portal"
+  subscription_required = true
+  approval_required     = false
+  published             = true
+}
+resource "azurerm_api_management_product_api" "inference" {
+  for_each            = local.api_backends
+  api_name            = azurerm_api_management_api.ai[each.key].name
+  product_id          = azurerm_api_management_product.this["inference"].product_id
+  api_management_name = azapi_resource.this.name
+  resource_group_name = var.resource_group_name
+}
+resource "azurerm_api_management_product_api" "portal" {
+  api_name            = azurerm_api_management_api.portal.name
+  product_id          = azurerm_api_management_product.this["portal"].product_id
+  api_management_name = azapi_resource.this.name
+  resource_group_name = var.resource_group_name
+}
+resource "azurerm_api_management_subscription" "application" {
+  for_each            = var.applications.inference
+  subscription_id     = each.key
+  display_name        = each.value.display_name
+  api_management_name = azapi_resource.this.name
+  resource_group_name = var.resource_group_name
+  product_id          = azurerm_api_management_product.this["inference"].id
+  state               = "active"
+  allow_tracing       = false
+}
+resource "azurerm_api_management_subscription" "portal" {
+  subscription_id     = var.applications.portal.subscription_id
+  display_name        = var.applications.portal.display_name
+  api_management_name = azapi_resource.this.name
+  resource_group_name = var.resource_group_name
+  product_id          = azurerm_api_management_product.this["portal"].id
+  state               = "active"
+  allow_tracing       = false
 }
 resource "azurerm_api_management_api_operation" "portal" {
   for_each            = local.portal_operations
@@ -263,7 +311,7 @@ resource "azurerm_api_management_api_diagnostic" "this" {
   }
   frontend_response {
     body_bytes     = 0
-    headers_to_log = ["X-Correlation-ID", "X-RateLimit-Reservation", "X-RateLimit-Estimated"]
+    headers_to_log = ["X-Correlation-ID", "X-RateLimit-Reservation", "X-RateLimit-Estimated", "X-RateLimit-Admission", "X-RateLimit-Accounting"]
   }
   backend_request {
     body_bytes     = 0

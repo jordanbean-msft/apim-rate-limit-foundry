@@ -19,11 +19,12 @@ mock_provider "azurecaf" {
 }
 
 variables {
-  resource_token      = "sample"
-  resource_group_name = "sample-rg"
-  location            = "eastus2"
-  tags                = { SecurityControl = "Ignore", environment = "test" }
-  config              = { sku = "PerGB2018", retention_in_days = 30 }
+  dashboard_reader_principal_id = "00000000-0000-0000-0000-000000000004"
+  resource_token                = "sample"
+  resource_group_name           = "sample-rg"
+  location                      = "eastus2"
+  tags                          = { SecurityControl = "Ignore", environment = "test" }
+  config                        = { sku = "PerGB2018", retention_in_days = 30 }
 }
 
 run "commercial_dashboard_query_binding" {
@@ -36,10 +37,25 @@ run "commercial_dashboard_query_binding" {
   }
 
   assert {
+    condition = (
+      azurerm_role_assignment.dashboard_reader.role_definition_name == "Reader" &&
+      azurerm_role_assignment.dashboard_reader.scope == azurerm_portal_dashboard.rate_limiter.id &&
+      azurerm_role_assignment.workspace_reader.role_definition_name == "Log Analytics Reader" &&
+      azurerm_role_assignment.workspace_reader.scope == azurerm_log_analytics_workspace.law.id &&
+      azurerm_role_assignment.workspace_reader.principal_id == var.dashboard_reader_principal_id
+    )
+    error_message = "The Function must receive only dashboard-scoped Reader and workspace-scoped Logs read access."
+  }
+
+  assert {
     condition = alltrue([
       for index, name in [
-        "admissions", "denials", "gateway-429", "policy-pressure", "cost-liability",
-        "cache-service-units", "latency", "dependency-failures"
+        "admissions", "decision-outcomes", "throttling-trend", "cost-trend",
+        "policy-denials", "token-composition", "latency-trend",
+        "caller-denials", "caller-costs", "gateway-caller-429",
+        "streaming-outcomes", "streaming-economics", "streaming-cache", "denials",
+        "gateway-429", "policy-pressure", "cost-liability", "cache-service-units",
+        "latency", "dependency-failures", "callers", "streaming-status"
       ] :
       one([
         for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
@@ -84,14 +100,50 @@ run "commercial_dashboard_query_binding" {
   }
 
   assert {
-    condition = one([
-      for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts["1"].metadata.inputs :
-      input.value.xAxis.name if input.name == "Dimensions"
-      ]) == "TimeGenerated" && one([
-      for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts["1"].metadata.inputs :
-      input.value.yAxis[0].name if input.name == "Dimensions"
-    ]) == "Reservations"
-    error_message = "The admissions chart must bind the actual datetime and count columns returned by its query."
+    condition = alltrue([
+      for index, expected in [
+        ["Line", "TimeGenerated", "datetime", "Reservations", "long", "Series"],
+        ["Pie", "Outcome", "string", "Reservations", "long", ""],
+        ["StackedColumn", "TimeGenerated", "datetime", "DeniedRequests", "long", "Service"],
+        ["Line", "TimeGenerated", "datetime", "EffectiveUSD", "real", "Accounting"],
+        ["Column", "Policy", "string", "DeniedRequests", "long", "Metric"],
+        ["StackedColumn", "TimeGenerated", "datetime", "Tokens", "long", "Series"],
+        ["Line", "TimeGenerated", "datetime", "Milliseconds", "real", "Series"],
+        ["StackedColumn", "SubscriptionId", "string", "DeniedRequests", "long", "ServiceModel"],
+        ["StackedColumn", "SubscriptionId", "string", "EffectiveUSD", "real", "ServiceModel"],
+        ["StackedColumn", "SubscriptionId", "string", "Responses", "long", "Origin"],
+        ["StackedColumn", "TimeGenerated", "datetime", "Reservations", "long", "Accounting"],
+        ["Line", "TimeGenerated", "datetime", "USD", "real", "Series"],
+        ["StackedColumn", "TimeGenerated", "datetime", "Tokens", "long", "Series"],
+      ] :
+      one([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+        input.value if input.name == "SpecificChart"
+        ]) == expected[0] && one([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+        input.value if input.name == "ControlType"
+        ]) == "FrameControlChart" && one([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+        [input.value.xAxis.name, input.value.xAxis.type, input.value.yAxis[0].name,
+        input.value.yAxis[0].type, try(input.value.splitBy[0].name, "")]
+        if input.name == "Dimensions"
+      ]) == slice(expected, 1, 6)
+    ])
+    error_message = "Every chart must bind its actual category/time/value/series columns and numeric types, not reuse admissions axes."
+  }
+
+  assert {
+    condition = length(jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts) == 23 && alltrue([
+      for index in range(14, 23) :
+      one([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index)].metadata.inputs :
+        input.value if input.name == "ControlType"
+        ]) == "AnalyticsGrid" && !anytrue([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index)].metadata.inputs :
+        input.name == "SpecificChart" || input.name == "Dimensions"
+      ])
+    ])
+    error_message = "Thirteen charts must retain nine detail tables, without accidental chart axes on grids."
   }
 }
 

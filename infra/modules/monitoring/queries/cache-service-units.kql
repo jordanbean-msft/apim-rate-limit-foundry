@@ -1,6 +1,7 @@
 // Settlement-time cohort: latest settlement per reservation, not one row per retry or policy.
 AppTraces
-| where AppRoleName == "rate-limiter" and Message == "settlement_recorded"
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "settlement_recorded"
+| where isnotempty(tostring(Properties.subscription_id))
 | extend ReservationId = tostring(Properties.reservation_id)
 | where isnotempty(ReservationId)
 | summarize arg_max(TimeGenerated, *) by ReservationId

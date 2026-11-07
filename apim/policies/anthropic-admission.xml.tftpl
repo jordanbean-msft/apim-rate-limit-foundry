@@ -8,7 +8,7 @@
   }
   var max = body["max_tokens"];
   if (max == null || max.Type != JTokenType.Integer || !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
-      (int)max &gt; ${max_output_tokens}) { return "bounded max_tokens is required"; }
+      (int)max &gt; (int)context.Variables["model-max-output-tokens"]) { return "bounded max_tokens is required"; }
   if (body["stream"] != null &amp;&amp; body["stream"].Type != JTokenType.Boolean) { return "stream must be boolean"; }
   foreach (var name in new [] {"temperature","top_p"}) {
     if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Integer &amp;&amp; body[name].Type != JTokenType.Float) { return name + " must be numeric"; }
@@ -110,6 +110,6 @@
 <set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />
 <set-variable name="usage" value='@{
   var body = JObject.Parse((string)context.Variables["request-body"]);
-  return new JObject(new JProperty("input_tokens", ${context_input_tokens}),
+  return new JObject(new JProperty("input_tokens", (int)context.Variables["model-max-input-tokens"]),
     new JProperty("output_tokens", (int)body["max_tokens"]), new JProperty("cached_input_tokens", 0), new JProperty("requests", 1)).ToString();
 }' />

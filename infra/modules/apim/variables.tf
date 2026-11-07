@@ -33,7 +33,6 @@ variable "config" {
     publisher_name                 = string
     publisher_email                = string
     client_audiences               = list(string)
-    subscription_tenant_mapping    = map(string)
     burst_calls                    = number
     burst_seconds                  = number
     max_body_bytes                 = number
@@ -87,6 +86,40 @@ variable "ai" {
     anthropic_version    = string
   }))
 }
+variable "route_backends" {
+  description = "Protocol API sentinels required by the effective registry; never used as implicit model defaults."
+  type = map(object({
+    id                   = string
+    endpoint             = string
+    audience             = string
+    model                = string
+    api_version          = string
+    price_version        = string
+    created              = bool
+    api_protocol         = string
+    context_input_tokens = number
+    anthropic_version    = string
+  }))
+}
+variable "model_registry" {
+  description = "Effective protocol:alias allowlist shared by APIM and both Function hosts."
+  type = map(object({
+    api_protocol      = string
+    endpoint          = string
+    path              = string
+    model             = string
+    audience          = string
+    api_version       = string
+    anthropic_version = string
+    price_version     = string
+    max_input_tokens  = number
+    max_output_tokens = number
+  }))
+}
+variable "legacy_defaults" {
+  description = "Explicit legacy default aliases only; additional model entries never become implicit defaults."
+  type        = map(string)
+}
 variable "max_input_tokens" {
   description = "Shared Function input admission bound, not a universal tokenizer assumption."
   type        = number
@@ -99,4 +132,25 @@ variable "instrumentation_key" {
   description = "APIM logger credential."
   type        = string
   sensitive   = true
+}
+variable "streaming_enabled" {
+  description = "Relay admitted streaming requests through the trusted observer."
+  type        = bool
+}
+variable "stream_url" {
+  description = "Fixed dedicated HTTP streams Function origin."
+  type        = string
+}
+variable "applications" {
+  description = "Stable product-scoped subscriptions and safe inference application metadata."
+  type = object({
+    inference = map(object({
+      tenant_id    = string
+      display_name = string
+    }))
+    portal = object({
+      subscription_id = string
+      display_name    = string
+    })
+  })
 }

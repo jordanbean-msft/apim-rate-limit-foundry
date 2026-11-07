@@ -67,6 +67,16 @@ resource "azuread_application" "web" {
   single_page_application {
     redirect_uris = ["${trimsuffix(var.portal_redirect_uri, "/")}/"]
   }
+  web {
+    redirect_uris = [
+      "${trimsuffix(var.portal_redirect_uri, "/")}/.auth/login/aad/callback",
+      "${trimsuffix(var.portal_redirect_uri, "/")}/.auth/logout"
+    ]
+    implicit_grant {
+      id_token_issuance_enabled     = true
+      access_token_issuance_enabled = false
+    }
+  }
   required_resource_access {
     resource_app_id = azuread_application.api.client_id
     resource_access {
@@ -74,6 +84,29 @@ resource "azuread_application" "web" {
       type = "Scope"
     }
   }
+  required_resource_access {
+    resource_app_id = data.azuread_service_principal.graph.client_id
+    resource_access {
+      id   = data.azuread_service_principal.graph.oauth2_permission_scope_ids["User.Read"]
+      type = "Scope"
+    }
+  }
+}
+data "azuread_service_principal" "graph" {
+  client_id = "00000003-0000-0000-c000-000000000000"
+}
+resource "azuread_service_principal_delegated_permission_grant" "graph_profile" {
+  service_principal_object_id          = azuread_service_principal.web.object_id
+  resource_service_principal_object_id = data.azuread_service_principal.graph.object_id
+  claim_values                         = ["User.Read"]
+}
+resource "azuread_application_federated_identity_credential" "web" {
+  application_id = azuread_application.web.id
+  display_name   = "portal-app-service"
+  description    = "Secretless App Service sign-in using only the dedicated portal identity."
+  audiences      = [var.authority == "https://login.microsoftonline.us" ? "api://AzureADTokenExchangeUSGov" : "api://AzureADTokenExchange"]
+  issuer         = "${var.authority}/${var.tenant_id}/v2.0"
+  subject        = azurerm_user_assigned_identity.workload["web"].principal_id
 }
 resource "azuread_service_principal" "web" {
   client_id = azuread_application.web.client_id

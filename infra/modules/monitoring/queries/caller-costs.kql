@@ -1,0 +1,22 @@
+let Settlements = AppTraces
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "settlement_recorded"
+| where isnotempty(tostring(Properties.subscription_id))
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_max(TimeGenerated, *) by ReservationId
+| project ReservationId, SettledCost = tolong(Properties.cost_micro_usd);
+AppTraces
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "rate_decision"
+| where isnotempty(tostring(Properties.subscription_id))
+| extend ReservationId = tostring(Properties.reservation_id)
+| where isnotempty(ReservationId)
+| summarize arg_min(TimeGenerated, *) by ReservationId
+| where tobool(Properties.allowed) == true and isnotempty(tostring(Properties.caller_ref))
+| extend ReservedCost = coalesce(tolong(Properties.reserved_cost_micro_usd), tolong(Properties.cost_micro_usd))
+| join kind=leftouter Settlements on ReservationId
+| extend EffectiveCost = coalesce(SettledCost, ReservedCost)
+| summarize EffectiveUSD = sum(EffectiveCost) / 1000000.0
+    by SubscriptionId = tostring(Properties.subscription_id),
+    ServiceModel = strcat(tostring(Properties.service), " / ", tostring(Properties.model))
+| top 20 by EffectiveUSD desc
+| render columnchart with (kind=stacked)

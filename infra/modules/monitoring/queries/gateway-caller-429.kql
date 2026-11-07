@@ -1,0 +1,24 @@
+// Physical APIM responses, not custom reservations. Missing decisions do not prove native throttling.
+let Callers = AppTraces
+| where Message in ("gateway_caller", "rate_decision")
+| extend Correlation = tolower(tostring(Properties.correlation_id)),
+    SubscriptionId = tostring(Properties.subscription_id)
+| where isnotempty(Correlation) and isnotempty(SubscriptionId)
+| summarize arg_min(TimeGenerated, SubscriptionId) by Correlation;
+let Decisions = AppTraces
+| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "rate_decision"
+| where isnotempty(tostring(Properties.subscription_id))
+| extend Correlation = tolower(tostring(Properties.correlation_id))
+| summarize CustomDenied = countif(tobool(Properties.allowed) == false), CustomDecisions = count() by Correlation;
+ApiManagementGatewayLogs
+| where ResponseCode == 429
+| extend Correlation = tolower(tostring(CorrelationId)), GatewaySubscriptionId = tostring(ApimSubscriptionId)
+| summarize arg_max(TimeGenerated, *) by _ResourceId, Correlation
+| join kind=leftouter Callers on Correlation
+| join kind=leftouter Decisions on Correlation
+| extend SubscriptionId = coalesce(SubscriptionId, GatewaySubscriptionId, "unattributed"),
+    Origin = case(CustomDenied > 0, "Custom limiter", BackendResponseCode == 429, "Backend",
+    CustomDecisions > 0, "Gateway after custom allow", "Gateway/native or missing decision")
+| summarize Responses = count() by SubscriptionId, Origin
+| top 20 by Responses desc
+| render columnchart with (kind=stacked)

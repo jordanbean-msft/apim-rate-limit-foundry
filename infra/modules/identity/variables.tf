@@ -18,6 +18,14 @@ variable "tenant_id" {
   description = "Entra tenant."
   type        = string
 }
+variable "authority" {
+  description = "Cloud-specific Entra authority for portal workload federation."
+  type        = string
+  validation {
+    condition     = contains(["https://login.microsoftonline.com", "https://login.microsoftonline.us"], var.authority)
+    error_message = "Use the explicitly selected Commercial or Government Entra authority."
+  }
+}
 variable "deployer_object_id" {
   description = "Initial administrator principal."
   type        = string

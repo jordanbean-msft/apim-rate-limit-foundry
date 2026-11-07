@@ -32,6 +32,9 @@ variable "config" {
     web_sku                     = string
     python_version              = string
     node_version                = string
+    function_always_on          = bool
+    web_always_on               = bool
+    stream_always_on            = bool
     function_workers            = number
     web_workers                 = number
     minimum_tls_version         = string
@@ -42,6 +45,10 @@ variable "config" {
     log_retention_days          = number
     log_disk_quota_mb           = number
   })
+  validation {
+    condition     = var.config.node_version == "24-lts"
+    error_message = "Use the verified Node 24 LTS App Service runtime."
+  }
 }
 variable "function_identity" {
   description = "Function workload identity."
@@ -73,6 +80,10 @@ variable "api_client_id" {
   description = "Easy Auth app registration."
   type        = string
 }
+variable "web_client_id" {
+  description = "Single-tenant portal registration shared by browser PKCE and native web sign-in."
+  type        = string
+}
 variable "api_audience" {
   description = "Easy Auth API URI audience."
   type        = string
@@ -84,4 +95,12 @@ variable "authority" {
 variable "tenant_id" {
   description = "Single Entra tenant."
   type        = string
+}
+variable "streaming_enabled" {
+  description = "Deploy the separate HTTP streams host on the existing Function plan."
+  type        = bool
+}
+variable "stream_settings" {
+  description = "Fixed backend map and bounded stream observer settings."
+  type        = map(string)
 }

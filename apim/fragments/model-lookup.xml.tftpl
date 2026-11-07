@@ -1,0 +1,30 @@
+<fragment>
+  <set-variable name="model-alias" value='@{
+    var body = JObject.Parse((string)context.Variables["request-body"]);
+    var requested = body["model"];
+    if (requested == null) { return (string)context.Variables["legacy-default-alias"]; }
+    return requested.Type == JTokenType.String ? (string)requested : "";
+  }' />
+  <set-variable name="model-key" value='@((string)context.Variables["api-protocol"] + ":" + (string)context.Variables["model-alias"])' />
+  <set-variable name="model-entry" value='@{
+    var registry = JObject.Parse("${model_registry}");
+    var entry = registry[(string)context.Variables["model-key"]] as JObject;
+    if (entry == null || (string)entry["api_protocol"] != (string)context.Variables["api-protocol"]) { return ""; }
+    return entry.ToString(Newtonsoft.Json.Formatting.None);
+  }' />
+  <choose>
+    <when condition='@(String.IsNullOrEmpty((string)context.Variables["model-alias"]) || String.IsNullOrEmpty((string)context.Variables["model-entry"]))'>
+      <return-response><set-status code="400" reason="Unknown or incompatible model" /><set-body>{"error":"unknown_model"}</set-body></return-response>
+    </when>
+  </choose>
+  <set-variable name="model" value='@((string)context.Variables["model-alias"])' />
+  <set-variable name="model-provider" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["model"])' />
+  <set-variable name="model-endpoint" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["endpoint"])' />
+  <set-variable name="model-path" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["path"])' />
+  <set-variable name="model-audience" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["audience"])' />
+  <set-variable name="model-api-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["api_version"])' />
+  <set-variable name="model-anthropic-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["anthropic_version"])' />
+  <set-variable name="price-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["price_version"])' />
+  <set-variable name="model-max-input-tokens" value='@((int)JObject.Parse((string)context.Variables["model-entry"])["max_input_tokens"])' />
+  <set-variable name="model-max-output-tokens" value='@((int)JObject.Parse((string)context.Variables["model-entry"])["max_output_tokens"])' />
+</fragment>

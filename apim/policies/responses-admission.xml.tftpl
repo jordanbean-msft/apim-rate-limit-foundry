@@ -8,7 +8,7 @@
   }
   var max = body["max_output_tokens"];
   if (max == null || max.Type != JTokenType.Integer || !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
-      (int)max &gt; ${max_output_tokens}) { return "bounded max_output_tokens is required"; }
+      (int)max &gt; (int)context.Variables["model-max-output-tokens"]) { return "bounded max_output_tokens is required"; }
   foreach (var name in new [] {"stream","store","background","parallel_tool_calls"}) {
     if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Boolean) { return name + " must be boolean"; }
   }
@@ -91,7 +91,7 @@
     }
   }
   var estimate = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + 128 * 64 + 128;
-  if (estimate &gt; ${max_input_tokens}) { return "conservative input bound exceeds Function MAX_INPUT_TOKENS"; }
+  if (estimate &gt; (int)context.Variables["model-max-input-tokens"]) { return "conservative input bound exceeds the selected model bound"; }
   return "";
   } catch { return "malformed Responses request fields"; }
 }' />
