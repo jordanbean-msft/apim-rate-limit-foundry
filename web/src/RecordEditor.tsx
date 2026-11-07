@@ -12,7 +12,15 @@ import {
   Select,
   Spinner,
 } from '@fluentui/react-components';
-import type { EditableCollection, EditableRecord, Metric, Policy, Service } from './contracts';
+import type {
+  EditableCollection,
+  EditableRecord,
+  Metric,
+  Model,
+  Policy,
+  Service,
+  ApplicationSubscription,
+} from './contracts';
 import { services } from './format';
 import { track } from './telemetry';
 
@@ -46,6 +54,9 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
     return {
       ...record,
       ...('policy_ids' in record ? { policy_ids: record.policy_ids.join(', ') } : {}),
+      ...('reader_principal_ids' in record
+        ? { reader_principal_ids: record.reader_principal_ids.join(', ') }
+        : {}),
     } as unknown as Draft;
   const common = { id: '', service: 'foundry', model: '*' };
   if (collection === 'policies')
@@ -53,7 +64,7 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
       ...common,
       name: '',
       tenant_id: '*',
-      principal_id: '*',
+      subscription_id: '*',
       limit: '',
       period: 'month',
       metric: 'cost',
@@ -61,7 +72,14 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
       priority: '10',
     };
   if (collection === 'assignments')
-    return { id: '', tenant_id: '', principal_id: '', policy_ids: '' };
+    return {
+      id: '',
+      tenant_id: '',
+      subscription_id: '',
+      policy_ids: '',
+      reader_principal_ids: '',
+      display_label: '',
+    };
   return {
     ...common,
     model: '',
@@ -71,7 +89,11 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
   };
 }
 
-function parseDraft(collection: EditableCollection, draft: Draft): EditableRecord {
+function parseDraft(
+  collection: EditableCollection,
+  draft: Draft,
+  subscriptions: ApplicationSubscription[],
+): EditableRecord {
   const str = (key: string) => String(draft[key] ?? '').trim();
   const required = (key: string, label: string) => {
     const value = str(key);
@@ -89,11 +111,30 @@ function parseDraft(collection: EditableCollection, draft: Draft): EditableRecor
       .filter(Boolean);
     if (!policy_ids.length || new Set(policy_ids).size !== policy_ids.length)
       throw new Error('Choose at least one policy ID, with no duplicates.');
-    const tenant_id = required('tenant_id', 'Tenant ID');
-    const principal_id = required('principal_id', 'Principal ID');
-    if (tenant_id === '*' || principal_id === '*')
-      throw new Error('Assignments require explicit tenant and principal IDs, not wildcards.');
-    return { id, tenant_id, principal_id, policy_ids };
+    const subscription_id = required('subscription_id', 'Application subscription');
+    const subscription = subscriptions.find((item) => item.id === subscription_id);
+    if (!subscription)
+      throw new Error('Choose an application subscription registered for this tenant.');
+    const reader_principal_ids = str('reader_principal_ids')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (
+      new Set(reader_principal_ids).size !== reader_principal_ids.length ||
+      reader_principal_ids.some((value) => value.length > 256)
+    )
+      throw new Error('Reader IDs must be unique and at most 256 characters each.');
+    const display_label = str('display_label');
+    if (display_label.length > 128)
+      throw new Error('Display label must be at most 128 characters.');
+    return {
+      id,
+      tenant_id: subscription.tenant_id,
+      subscription_id,
+      policy_ids,
+      reader_principal_ids,
+      display_label: display_label || null,
+    };
   }
   const service = str('service') as Service;
   const model = required('model', 'Model');
@@ -134,13 +175,19 @@ function parseDraft(collection: EditableCollection, draft: Draft): EditableRecor
   const metric = str('metric') as Metric;
   if (!metricChoices[service].includes(metric))
     throw new Error('Choose a unit supported by this service.');
+  const subscription_id = required('subscription_id', 'Application subscription');
+  const subscription =
+    subscription_id === '*' ? undefined : subscriptions.find((item) => item.id === subscription_id);
+  if (subscription_id !== '*' && !subscription)
+    throw new Error('Choose an application subscription registered for this tenant.');
+  const tenant_id = subscription?.tenant_id ?? (str('tenant_id') || '*');
   return {
     id,
     service,
     model,
     name: required('name', 'Name'),
-    tenant_id: str('tenant_id') || '*',
-    principal_id: required('principal_id', 'Principal ID'),
+    tenant_id,
+    subscription_id,
     limit: integer('limit', 'Limit', 1),
     priority: integer('priority', 'Priority', 0),
     metric,
@@ -153,12 +200,16 @@ export function RecordEditor({
   collection,
   record,
   policies,
+  subscriptions = [],
+  models = [],
   onSave,
   onClose,
 }: {
   collection: EditableCollection;
   record?: EditableRecord;
   policies: Policy[];
+  subscriptions?: ApplicationSubscription[];
+  models?: Model[];
   onSave: (record: EditableRecord) => Promise<void>;
   onClose: () => void;
 }) {
@@ -168,6 +219,11 @@ export function RecordEditor({
   const update = (key: string, value: string | boolean) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
   const service = draft.service as Service;
+  const aliases = [...new Set(models.map((model) => model.model))].sort();
+  const subscriptionChoices: [string, string][] = subscriptions.map((subscription) => [
+    subscription.id,
+    `${subscription.display_name} · ${subscription.id}`,
+  ]);
   const input = (key: string, label: string, hint?: string, disabled = false, required = true) => (
     <Field key={key} label={label} hint={hint} required={required}>
       <Input
@@ -204,7 +260,7 @@ export function RecordEditor({
     setError('');
     let errorCategory = 'validation';
     try {
-      const parsed = parseDraft(collection, draft);
+      const parsed = parseDraft(collection, draft, subscriptions);
       if (
         'policy_ids' in parsed &&
         parsed.policy_ids.some((id) => !policies.some((policy) => policy.id === id))
@@ -289,26 +345,50 @@ export function RecordEditor({
                         ...(collection === 'policies' ? { metric: 'cost' } : {}),
                       }));
                     })}
-                    {input(
-                      'model',
-                      'Model or deployment',
-                      collection === 'policies'
-                        ? 'Use * to match all models.'
-                        : 'Exact model/deployment ID; matching is enforced by the API.',
-                    )}
+                    <Field
+                      label="Model or deployment"
+                      required
+                      hint={
+                        collection === 'policies'
+                          ? 'Use * to pool all models, or select an alias. Manual entry remains available.'
+                          : 'Use the registered alias for Foundry; manual entry supports other services and legacy records.'
+                      }
+                    >
+                      <Input
+                        value={String(draft.model ?? '')}
+                        disabled={saving}
+                        list="model-suggestions"
+                        autoComplete="off"
+                        onChange={(_, data) => update('model', data.value)}
+                      />
+                    </Field>
+                    <datalist id="model-suggestions">
+                      {collection === 'policies' && <option value="*" label="All models" />}
+                      {service === 'foundry' &&
+                        aliases.map((alias) => (
+                          <option
+                            key={alias}
+                            value={alias}
+                            label={models
+                              .filter((model) => model.model === alias)
+                              .map((model) => model.api_protocol)
+                              .join(', ')}
+                          />
+                        ))}
+                    </datalist>
                   </>
                 )}
                 {collection === 'policies' && (
                   <>
+                    {select('subscription_id', 'Application subscription scope', [
+                      ['*', 'All application subscriptions'],
+                      ...subscriptionChoices,
+                    ])}
                     {input(
                       'tenant_id',
                       'Tenant scope',
-                      '* means all tenants; prefer an explicit tenant.',
-                    )}
-                    {input(
-                      'principal_id',
-                      'Principal scope',
-                      '* matches assigned principals; identity is tenant-bound.',
+                      '* applies across tenants; an explicit tenant can be paired with the shared application-subscription scope.',
+                      String(draft.subscription_id) !== '*',
                     )}
                     {select(
                       'metric',
@@ -360,8 +440,8 @@ export function RecordEditor({
                       but leave optional cache-write rates blank when unknown or not configured.
                       Unknown is not free: potentially billable cache writes without a known rate
                       fail closed. Sample prices are not live Azure quotes. When more than one
-                      version exists for the same service/model, configure the gateway to send
-                      price_version; ambiguous versions fail closed.
+                      version exists for the same service/model, pin the desired price_version in
+                      the deployed registry; ambiguous versions fail closed.
                     </div>
                     {priceFields.map(([key, label]) =>
                       input(key, label, 'Exact decimal USD string; never microUSD.'),
@@ -379,18 +459,33 @@ export function RecordEditor({
                 )}
                 {collection === 'assignments' && (
                   <>
-                    {input('tenant_id', 'Tenant ID', 'Tenant boundary of the assigned identity.')}
-                    {input(
-                      'principal_id',
-                      'Principal ID',
-                      'The server canonical principal key, not an email address.',
-                    )}
+                    {select('subscription_id', 'Application subscription', [
+                      ['', 'Choose a registered application subscription'],
+                      ...subscriptionChoices,
+                    ])}
                     {input('policy_ids', 'Policy IDs', 'Comma-separated existing policy IDs.')}
+                    {input(
+                      'reader_principal_ids',
+                      'Reader principal IDs (optional)',
+                      'Comma-separated Entra object IDs allowed to read this subscription’s data.',
+                      false,
+                      false,
+                    )}
+                    {input(
+                      'display_label',
+                      'Display label (optional)',
+                      'Administrator label for application-subscription reports only; never telemetry.',
+                      false,
+                      false,
+                    )}
                     <div className="form-note">
-                      Available:{' '}
-                      {policies.length
-                        ? policies.map((policy) => policy.id).join(', ')
-                        : 'No policies. Create a policy first.'}
+                      {subscriptions.length
+                        ? `Tenant is derived from the selected application subscription. Available policies: ${
+                            policies.length
+                              ? policies.map((policy) => policy.id).join(', ')
+                              : 'none; create a policy first.'
+                          }`
+                        : 'No registered application subscriptions are available. Register an application before creating an assignment.'}
                     </div>
                   </>
                 )}

@@ -1,4 +1,4 @@
-import { PublicClientApplication } from '@azure/msal-browser';
+import { EventType, PublicClientApplication, type AuthenticationResult } from '@azure/msal-browser';
 import type { Role, RuntimeConfig } from './contracts';
 
 const hosts = {
@@ -9,17 +9,25 @@ const hosts = {
 export function createMsal(config: RuntimeConfig): PublicClientApplication {
   if (!Object.hasOwn(hosts, config.cloud)) throw new Error('Unsupported Azure cloud');
   const host = hosts[config.cloud];
-  return new PublicClientApplication({
+  const instance = new PublicClientApplication({
     auth: {
       clientId: config.clientId,
       authority: `https://${host}/${config.tenantId}`,
       knownAuthorities: [host],
       redirectUri: window.location.origin,
-      postLogoutRedirectUri: window.location.origin,
+      postLogoutRedirectUri: config.platformAuthEnabled
+        ? `${window.location.origin}/.auth/logout`
+        : window.location.origin,
       navigateToLoginRequestUrl: false,
     },
-    cache: { cacheLocation: 'sessionStorage' },
+    cache: { cacheLocation: 'localStorage' },
   });
+  instance.addEventCallback((event) => {
+    if (event.eventType === EventType.LOGIN_SUCCESS) {
+      instance.setActiveAccount((event.payload as AuthenticationResult).account);
+    }
+  });
+  return instance;
 }
 
 /** Navigation hints only. The API independently validates the token and enforces authorization. */

@@ -106,6 +106,7 @@ describe('optional cache-write prices', () => {
         collection="prices"
         records={[{ ...legacyPrice, cache_write_1h_per_million: null }]}
         admin={false}
+        subscriptions={[]}
         onEdit={vi.fn()}
         onDelete={vi.fn()}
       />,
@@ -181,7 +182,7 @@ describe('protocol-aware event accounting', () => {
       const record: LedgerRecord = {
         id: 'incomplete-message',
         tenant_id: 'tenant',
-        principal_id: 'principal',
+        subscription_id: 'application-research',
         kind: 'reservation',
         timestamp: '2026-01-14T11:24:00Z',
         data: {
@@ -219,7 +220,7 @@ describe('protocol-aware event accounting', () => {
     const record: LedgerRecord = {
       id: 'unknown',
       tenant_id: 'tenant',
-      principal_id: 'principal',
+      subscription_id: 'application-research',
       kind: 'reservation',
       timestamp: '2026-01-14T11:24:00Z',
       data: { request: { service: 'foundry', api_protocol: 'future-format' }, estimated: true },

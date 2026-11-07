@@ -6,7 +6,7 @@ import {
   WarningRegular,
 } from '@fluentui/react-icons';
 import { isDenial, isEstimated } from '../accounting';
-import type { Collection, LedgerRecord, Policy } from '../contracts';
+import type { ApplicationSubscription, Collection, LedgerRecord, Policy } from '../contracts';
 import { objectValue, services } from '../format';
 import { LedgerTable } from './LedgerTable';
 import { PolicyLimit } from './PolicyLimit';
@@ -73,12 +73,14 @@ function ServiceActivity({ usage, unavailable }: { usage: LedgerRecord[]; unavai
 export function Overview({
   policies,
   usage,
+  subscriptions = [],
   errors,
   loading,
   navigate,
 }: {
   policies: Policy[];
   usage: LedgerRecord[];
+  subscriptions?: ApplicationSubscription[];
   errors: Partial<Record<Collection, string>>;
   loading: boolean;
   navigate: (page: 'policies' | 'usage' | 'reconciliation') => void;
@@ -130,6 +132,13 @@ export function Overview({
                   <p>
                     {services[policy.service]} · {policy.model}
                   </p>
+                  <p>
+                    Application subscription:{' '}
+                    {policy.subscription_id === '*'
+                      ? 'All subscriptions'
+                      : subscriptions.find((item) => item.id === policy.subscription_id)
+                          ?.display_name || policy.subscription_id}
+                  </p>
                 </div>
                 <div className="budget-limit">
                   <PolicyLimit policy={policy} />
@@ -140,8 +149,7 @@ export function Overview({
             <p className="empty-inline">No authorized policies to display.</p>
           )}
           <p className="fine-print panel-footnote">
-            Configured limits, not live balances. Remaining values below are last-decision snapshots
-            and may change with concurrent requests.
+            Configured policy limits only. Live remaining balances are not available in this view.
           </p>
         </section>
         <section className="surface">

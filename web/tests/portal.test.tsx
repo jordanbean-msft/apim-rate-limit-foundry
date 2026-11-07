@@ -15,7 +15,7 @@ const policy: Policy = {
   service: 'foundry',
   model: '*',
   tenant_id: '*',
-  principal_id: '*',
+  subscription_id: '*',
   limit: 25_000_000,
   period: 'month',
   metric: 'cost',
@@ -43,7 +43,7 @@ describe('portal telemetry outcomes', () => {
       expect(log).toHaveBeenCalledWith(
         'portal_refresh',
         { outcome: 'success' },
-        expect.objectContaining({ collectionCount: 6, failureCount: 0 }),
+        expect.objectContaining({ collectionCount: 8, failureCount: 0 }),
       ),
     );
     expect(log).toHaveBeenCalledWith('portal_page', { page: 'overview', outcome: 'success' });
@@ -111,6 +111,44 @@ function wrap(children: React.ReactNode) {
 }
 
 describe('policy and price workflows', () => {
+  it('binds a policy to a registered application subscription and derives its tenant', async () => {
+    const user = userEvent.setup();
+    const save = vi.fn().mockResolvedValue(undefined);
+    wrap(
+      <RecordEditor
+        collection="policies"
+        policies={[]}
+        subscriptions={[
+          {
+            id: 'application-research',
+            tenant_id: 'tenant-1',
+            display_name: 'Research application',
+          },
+        ]}
+        onSave={save}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.type(screen.getByLabelText(/^ID/), 'research-budget');
+    await user.type(screen.getByLabelText(/^Name/), 'Research budget');
+    await user.selectOptions(
+      screen.getByLabelText(/Application subscription scope/),
+      'application-research',
+    );
+    await user.type(screen.getByLabelText(/Limit \(integer microUSD\)/), '1000000');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subscription_id: 'application-research',
+          tenant_id: 'tenant-1',
+          limit: 1_000_000,
+        }),
+      ),
+    );
+    expect(save.mock.calls[0][0]).not.toHaveProperty('principal_id');
+  });
+
   it('rejects fractional microUSD and saves an integer budget with a UTC period', async () => {
     const log = vi.spyOn(telemetry, 'track');
     const user = userEvent.setup();
@@ -229,11 +267,18 @@ describe('policy and price workflows', () => {
     const user = userEvent.setup();
     const save = vi.fn();
     wrap(
-      <RecordEditor collection="assignments" policies={[policy]} onSave={save} onClose={vi.fn()} />,
+      <RecordEditor
+        collection="assignments"
+        policies={[policy]}
+        subscriptions={[
+          { id: 'application-1', tenant_id: 'tenant-1', display_name: 'Application one' },
+        ]}
+        onSave={save}
+        onClose={vi.fn()}
+      />,
     );
     await user.type(screen.getByLabelText(/^ID/), 'assignment-1');
-    await user.type(screen.getByLabelText(/^Tenant ID/), 'tenant-1');
-    await user.type(screen.getByLabelText(/^Principal ID/), 'principal-1');
+    await user.selectOptions(screen.getByLabelText(/^Application subscription/), 'application-1');
     await user.type(screen.getByLabelText(/^Policy IDs/), 'does-not-exist');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Every policy ID must exist');
@@ -242,6 +287,26 @@ describe('policy and price workflows', () => {
 });
 
 describe('authorization and reporting', () => {
+  it('displays the read-only application subscription registry without gateway keys', async () => {
+    const user = userEvent.setup();
+    wrap(
+      <Portal
+        api={createDemoApi()}
+        roles={['RateLimit.Reader']}
+        identity="Reader"
+        cloud="commercial"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Application subscriptions' }));
+    const table = await screen.findByRole('table', {
+      name: 'Registered application subscriptions',
+    });
+    expect(within(table).getByText('Research application')).toBeInTheDocument();
+    expect(within(table).getByText('application-research')).toBeInTheDocument();
+    expect(within(table).queryByText(/APIM|Ocp-Apim-Subscription-Key/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create subscription' })).not.toBeInTheDocument();
+  });
+
   it('lets a reader inspect policies and estimated usage but never mutate configuration', async () => {
     const user = userEvent.setup();
     const api = createDemoApi();
@@ -255,7 +320,7 @@ describe('authorization and reporting', () => {
     expect(screen.queryByRole('button', { name: /Delete / })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Service usage' }));
     expect(screen.getByText('Estimated / conservative')).toBeInTheDocument();
-    expect(screen.getByText(/Last-decision remaining: 182300000/)).toBeInTheDocument();
+    expect(screen.queryByText(/Last-decision remaining:/)).not.toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
   });
 
@@ -300,7 +365,7 @@ describe('authorization and reporting', () => {
     expect(screen.queryByText('Research · monthly AI budget')).not.toBeInTheDocument();
     expect(screen.getByText('Policies are unavailable. Refresh to retry.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(12));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(16));
   });
 
   it('does not call reporting APIs for gateway-only identities', () => {

@@ -111,7 +111,9 @@ export function LedgerTable({ records, mode }: { records: LedgerRecord[]; mode: 
                   {audit
                     ? text(record.data.action)
                     : services[service] || text(record.data.status, record.kind)}
-                  <div className="fine-print">{text(request.model, record.principal_id)}</div>
+                  <div className="fine-print">
+                    {text(request.model, record.subscription_id || 'Application subscription')}
+                  </div>
                   {!audit && protocol && <div className="fine-print">{protocol}</div>}
                   {isDenial(record) && (
                     <Badge appearance="tint" color="danger">

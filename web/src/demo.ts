@@ -1,7 +1,76 @@
-import type { Collections, Collection, EditableCollection, PortalApi } from './contracts';
+import type {
+  Collections,
+  Collection,
+  DashboardTile,
+  EditableCollection,
+  PortalApi,
+} from './contracts';
 
 export function createDemoApi(): PortalApi {
   const data: { [K in Collection]: Collections[K][] } = {
+    models: [
+      {
+        id: 'openai-chat:sample-model',
+        model: 'sample-model',
+        api_protocol: 'openai-chat',
+        deployment_name: 'provider-chat-standard',
+        price_version: 'sample-v1',
+        max_input_tokens: 32000,
+        max_output_tokens: 4000,
+      },
+      {
+        id: 'openai-chat:sample-fast',
+        model: 'sample-fast',
+        api_protocol: 'openai-chat',
+        deployment_name: 'provider-fast-deployment',
+        price_version: 'sample-v1',
+        max_input_tokens: 16000,
+        max_output_tokens: 2000,
+      },
+      {
+        id: 'openai-responses:sample-model',
+        model: 'sample-model',
+        api_protocol: 'openai-responses',
+        deployment_name: 'provider-responses-standard',
+        price_version: 'sample-v1',
+        max_input_tokens: 32000,
+        max_output_tokens: 4000,
+      },
+      {
+        id: 'openai-responses:sample-responses-model',
+        model: 'sample-responses-model',
+        api_protocol: 'openai-responses',
+        deployment_name: 'provider-responses-fast',
+        price_version: 'sample-v1',
+        max_input_tokens: 16000,
+        max_output_tokens: 2000,
+      },
+      {
+        id: 'anthropic-messages:sample-claude-model',
+        model: 'sample-claude-model',
+        api_protocol: 'anthropic-messages',
+        deployment_name: 'provider-claude-standard',
+        price_version: 'sample-v1',
+        max_input_tokens: 32000,
+        max_output_tokens: 4000,
+      },
+      {
+        id: 'anthropic-messages:sample-claude-fast',
+        model: 'sample-claude-fast',
+        api_protocol: 'anthropic-messages',
+        deployment_name: 'provider-claude-fast',
+        price_version: 'sample-v1',
+        max_input_tokens: 16000,
+        max_output_tokens: 2000,
+      },
+    ],
+    subscriptions: [
+      {
+        id: 'application-research',
+        tenant_id: 'demo-tenant',
+        display_name: 'Research application',
+      },
+    ],
     policies: [
       {
         id: 'foundry-monthly',
@@ -9,7 +78,7 @@ export function createDemoApi(): PortalApi {
         service: 'foundry',
         model: '*',
         tenant_id: 'demo-tenant',
-        principal_id: '*',
+        subscription_id: 'application-research',
         limit: 250_000_000,
         period: 'month',
         metric: 'cost',
@@ -22,7 +91,7 @@ export function createDemoApi(): PortalApi {
         service: 'foundry',
         model: '*',
         tenant_id: 'demo-tenant',
-        principal_id: '*',
+        subscription_id: 'application-research',
         limit: 25_000_000,
         period: 'day',
         metric: 'cost',
@@ -35,7 +104,7 @@ export function createDemoApi(): PortalApi {
         service: 'document-intelligence',
         model: '*',
         tenant_id: 'demo-tenant',
-        principal_id: '*',
+        subscription_id: 'application-research',
         limit: 2000,
         period: 'day',
         metric: 'pages',
@@ -48,7 +117,7 @@ export function createDemoApi(): PortalApi {
         service: 'language',
         model: '*',
         tenant_id: 'demo-tenant',
-        principal_id: '*',
+        subscription_id: 'application-research',
         limit: 10000,
         period: 'hour',
         metric: 'text_records',
@@ -65,6 +134,32 @@ export function createDemoApi(): PortalApi {
         input_per_million: '2.50',
         output_per_million: '10.00',
         cached_input_per_million: '1.25',
+        per_page: '0',
+        per_text_record: '0',
+        per_request: '0',
+      },
+      {
+        id: 'sample-fast-price-v1',
+        service: 'foundry',
+        model: 'sample-fast',
+        version: 'sample-v1',
+        input_per_million: '0.50',
+        output_per_million: '2.00',
+        cached_input_per_million: '0.25',
+        per_page: '0',
+        per_text_record: '0',
+        per_request: '0',
+      },
+      {
+        id: 'sample-claude-fast-price-v1',
+        service: 'foundry',
+        model: 'sample-claude-fast',
+        version: 'sample-v1',
+        input_per_million: '1.00',
+        output_per_million: '5.00',
+        cached_input_per_million: '0.10',
+        cache_write_5m_per_million: '1.25',
+        cache_write_1h_per_million: '2.00',
         per_page: '0',
         per_text_record: '0',
         per_request: '0',
@@ -100,15 +195,16 @@ export function createDemoApi(): PortalApi {
       {
         id: 'research',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         policy_ids: ['foundry-monthly', 'foundry-daily', 'document-daily', 'language-hourly'],
+        reader_principal_ids: ['demo-reader'],
       },
     ],
     usage: [
       {
         id: 'sample-reservation-1',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'reservation',
         timestamp: '2026-01-14T11:24:00Z',
         data: {
@@ -131,7 +227,6 @@ export function createDemoApi(): PortalApi {
               reset_at: '2026-02-01T00:00:00Z',
             },
           ],
-          remaining: 182300000,
           cost_micro_usd: 70000,
           estimated: true,
           status: 'conservative',
@@ -140,7 +235,7 @@ export function createDemoApi(): PortalApi {
       {
         id: 'sample-responses-actual',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'reservation',
         timestamp: '2026-01-14T11:23:00Z',
         data: {
@@ -167,7 +262,7 @@ export function createDemoApi(): PortalApi {
       {
         id: 'sample-messages-actual',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'reservation',
         timestamp: '2026-01-14T11:22:00Z',
         data: {
@@ -220,7 +315,7 @@ export function createDemoApi(): PortalApi {
       {
         id: 'sample-chat-actual',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'reservation',
         timestamp: '2026-01-14T11:21:00Z',
         data: {
@@ -247,7 +342,7 @@ export function createDemoApi(): PortalApi {
       {
         id: 'sample-denial-1',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'denial',
         timestamp: '2026-01-14T11:20:00Z',
         data: {
@@ -257,14 +352,13 @@ export function createDemoApi(): PortalApi {
           },
           allowed: false,
           reason: 'Daily page limit exceeded',
-          remaining: 0,
           estimated: false,
         },
       },
       {
         id: 'sample-actual-1',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'settlement',
         timestamp: '2026-01-14T11:18:00Z',
         data: {
@@ -273,7 +367,6 @@ export function createDemoApi(): PortalApi {
             model: 'sentiment',
             usage: { text_records: 42, requests: 1 },
           },
-          remaining: 9958,
           estimated: false,
           status: 'actual',
         },
@@ -298,7 +391,7 @@ export function createDemoApi(): PortalApi {
       {
         id: 'sample-reconcile-1',
         tenant_id: 'demo-tenant',
-        principal_id: 'demo-research-team',
+        subscription_id: 'application-research',
         kind: 'reconciliation',
         timestamp: '2026-01-14T11:24:00Z',
         data: {
@@ -310,6 +403,13 @@ export function createDemoApi(): PortalApi {
     ],
   };
   return {
+    async callers() {
+      // The local fixtures do not represent a complete admission/settlement ledger.
+      return [];
+    },
+    async dashboard() {
+      return structuredClone(dashboardFixtures);
+    },
     async list<K extends Collection>(collection: K): Promise<Collections[K][]> {
       return structuredClone(data[collection]);
     },
@@ -326,3 +426,42 @@ export function createDemoApi(): PortalApi {
     },
   };
 }
+
+const dashboardFixtures: DashboardTile[] = [
+  {
+    id: 'fixture-requests',
+    title: 'Requests over time (fixture)',
+    chart: 'Line',
+    x_axis: 'Time (UTC)',
+    y_axis: 'Requests',
+    split_by: null,
+    columns: [
+      { name: 'Time', type: 'datetime' },
+      { name: 'Requests', type: 'long' },
+    ],
+    rows: [
+      ['2026-01-14T10:00:00Z', 12],
+      ['2026-01-14T11:00:00Z', 18],
+    ],
+    error: null,
+    truncated: false,
+  },
+  {
+    id: 'fixture-outcomes',
+    title: 'Request outcomes (fixture)',
+    chart: 'Pie',
+    x_axis: 'Outcome',
+    y_axis: 'Requests',
+    split_by: null,
+    columns: [
+      { name: 'Outcome', type: 'string' },
+      { name: 'Requests', type: 'long' },
+    ],
+    rows: [
+      ['Allowed', 27],
+      ['Denied', 3],
+    ],
+    error: null,
+    truncated: false,
+  },
+];

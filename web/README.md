@@ -1,7 +1,12 @@
 # AI Budget Control portal
 
 Accessible React + TypeScript + Fluent UI v9 portal, hosted by a framework-free Node
-server. Use Node **22.13+ LTS** or **24 LTS**.
+server. Use Node **24 LTS**.
+
+The managed inference account is Microsoft Foundry (`AIServices`). The model
+inventory labels Chat, Responses and Messages by wire protocol; an OpenAI label
+does not imply an OpenAI-kind Azure resource. Account upgrades preserve existing
+inference origins, aliases and pinned prices.
 
 ```bash
 npm ci
@@ -28,30 +33,92 @@ or export settings in the shell for both servers. Never place secrets in Vite va
 | `WEB_CLIENT_ID`                         | SPA application registration client GUID                                                                                                                         |
 | `API_AUDIENCE`                          | Backend application ID URI, e.g. `api://<backend-app-id>`                                                                                                        |
 | `API_SCOPE`                             | Full delegated scope under that audience, e.g. `api://<backend-app-id>/access_as_user`                                                                           |
-| `API_BASE_URL`                          | HTTPS collection root without trailing slash: `https://<apim>/portal` or `https://<function>/api`                                                                |
+| `API_BASE_URL`                          | HTTPS APIM `/portal` upstream in proxy mode; direct API collection root is used only for non-proxy local development                                             |
 | `PORT`                                  | Optional Node listening port; default `8080`                                                                                                                     |
 | `WEB_DEMO_MODE`                         | Optional; defaults off. Only exact `true` enables an in-memory local demo                                                                                        |
+| `WEB_PLATFORM_AUTH_ENABLED`             | Terraform sets `true` for App Service; logout clears its session after MSAL sign-out. Defaults off for local development.                                        |
+| `WEB_API_PROXY_ENABLED`                 | Terraform sets `true` in production. Enables the same-origin `/api/*` proxy; `false` retains direct local development.                                           |
+| `PORTAL_APIM_SUBSCRIPTION_KEY`          | Server-only Key Vault reference for the APIM product key; required by the proxy and never sent to or exposed in the browser.                                     |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Optional workspace-based Application Insights connection string with explicit cloud-specific `IngestionEndpoint`; enables privacy-filtered browser custom events |
 
 `/config.json` is generated at server startup from these **public** settings;
 it contains no client secret, Function key or APIM subscription key. When configured,
 its optional `appInsights` field contains **public instrumentation routing only**:
 `{connectionString, ingestionOrigin}`. See the privacy contract below.
+In proxy mode it publishes `apiBaseUrl: "/api"` and `apiProxyEnabled: true`,
+never the APIM key or upstream URL. The proxy accepts only allowlisted portal
+routes and methods, requires the browser's `X-Portal-Access-Token`, forwards that
+delegated token as upstream `Authorization`, and adds the server-side APIM key.
+It never forwards cookies, App Service identity headers, client-supplied keys, or
+arbitrary headers. Proxy upstream redirects, oversized bodies and missing or
+unresolved Key Vault references fail closed. Browser API calls use the native
+same-origin sign-in cookie and do not send an Authorization header to the web
+audience.
+
+An HTTP 401 does not necessarily mean the user's token expired: APIM also
+returns it for missing or invalid subscription keys. After a deployment that
+changes routing, reload the browser page to fetch current `/config.json`;
+the in-app Refresh button only retries data using the already-loaded config.
+Production calls must target same-origin `/api/*`, not APIM directly. Operators
+should check APIM `LastErrorReason` and the server's Key Vault reference status
+before changing Entra settings. Never put a product key in browser configuration.
+
 The browser build is cloud-independent. Only the two supported Microsoft
 authorities are accepted. API URLs may use HTTP only for loopback development.
 All browser requests use access tokens for `API_SCOPE`, never ID tokens.
 
 Register the deployed portal **origin** (and `http://localhost:5173` or
 `http://127.0.0.1:5173` for development) as SPA redirect URIs.
-Grant consent for the delegated API scope and assign API app roles:
+Grant consent for the delegated API scope and Graph `User.Read`, and assign API app roles:
 `RateLimit.Admin` or `RateLimit.Reader`. The UI reads role hints from the API
-access token; the backend must independently validate audience, tenant and roles,
-and scope consumer reads by tenant and principal. `RateLimit.Gateway` alone
-cannot open portal data. Configure API/APIM CORS for exact portal origins,
-`Authorization`, `Content-Type` and `X-Correlation-ID`, and GET/PUT/DELETE/OPTIONS.
+access token; the backend independently validates audience, tenant and roles,
+and scopes data by tenant and application subscription. Reader access requires
+an explicit assignment. `RateLimit.Gateway` alone cannot open portal data.
+The production same-origin proxy does not require browser-to-APIM CORS. Direct
+local development uses the delegated API token and requires exact portal origins.
 Expose `X-Correlation-ID` if operators need to inspect backend correlation responses.
-Do not enable App Service middleware that redirects anonymous static/config
-requests to a different login flow; MSAL owns browser authentication.
+Terraform also protects the deployed website, assets and `/config.json` with native
+App Service Entra authentication. The same single-tenant registration has a
+**Web** redirect URI at `https://<portal>/.auth/login/aad/callback` and a **SPA**
+redirect URI at the portal origin. App Service uses the dedicated web managed
+identity and a federated credential instead of a client secret; it does not store
+provider tokens. Do not copy the identity's federation setting into browser config.
+The Web platform enables ID-token issuance for App Service's native hybrid
+`code id_token` response; implicit **access-token** issuance remains disabled.
+MSAL still uses authorization code + PKCE for delegated **API access tokens**.
+The App Service sign-in cookie does not grant API roles or replace these tokens.
+Sign-out clears MSAL/Entra and then the native App Service session. Local Vite/demo
+development does not depend on App Service middleware.
+
+### Remembered sign-in and SSO
+
+The website's encrypted, Secure/HttpOnly App Service session cookie remains
+platform-managed. MSAL uses `localStorage` so the API account/cache is shared
+across tabs rather than discarded when a tab closes. MSAL v4 manages its cache
+encryption and `msal.cache.encryption` session cookie; the portal does not put
+passwords, access tokens or user profiles in a custom cookie, and does not use
+the deprecated `storeAuthStateInCookie` option.
+
+A remembered account obtains API tokens silently. If native App Service login
+has succeeded but no API account is cached, the portal starts one top-level
+MSAL redirect to reuse Entra's existing session, without forcing a fresh login
+or using a hidden iframe. A per-tab non-secret attempt flag prevents failed
+redirect loops; explicit sign-in remains available. Local development never
+auto-redirects. Logout still clears MSAL/Entra and the native website session.
+
+Persistence across browser restarts depends on Entra **Keep me signed in** and
+your tenant's session/Conditional Access policies. Session expiry, cleared
+browser data, denied consent and MFA can require interaction; this feature
+does not extend or bypass them. See Microsoft's
+[cache behavior](https://learn.microsoft.com/entra/msal/javascript/browser/caching)
+and [SSO guidance](https://learn.microsoft.com/entra/msal/javascript/browser/single-sign-on).
+
+The portal requests a separate delegated Microsoft Graph `User.Read` token for
+the signed-in user's `/me` profile and photo only. Commercial uses
+`graph.microsoft.com`; Government uses `graph.microsoft.us`. The profile image is
+held in a revocable in-memory blob URL; denied consent, missing photos and Graph
+errors fall back to initials. Profile names and photo data are never sent to
+telemetry or persisted by the portal.
 
 For intentional local demonstration:
 
@@ -66,89 +133,62 @@ Azure prices and changes disappear on reload. Auth/config/API failure **never**
 silently switches to demo mode. Never enable the demo flag on a shared production
 deployment.
 
-## API contract
+## Screens and server contracts
 
-GET `/policies`, `/prices`, `/assignments`, `/usage`, `/audit`, and
-`/reconciliation` return JSON **arrays**, not `{items: [...]}` wrappers.
-PUT `/{collection}/{id}` accepts the full typed record; DELETE removes it
-and supports either `200` with `{deleted:id}` JSON or `204` with no body.
-Writes are admin-only and the API remains authoritative.
+The [configuration reference](../docs/configuration-reference.md#api-contracts)
+owns API routes, payloads, units and selection semantics. The browser types in
+[`src/contracts.ts`](src/contracts.ts) mirror the server; do not treat them as an
+independent accounting implementation.
 
-- Policy: `{id,name,service,model,tenant_id?,principal_id,limit,period,metric,enabled,priority}`.
-  `service`: `foundry|document-intelligence|language`; `model` and `principal_id`
-  can be `*`; tenant scope defaults to `*`. `limit` is a positive safe integer.
-  Cost limits use **integer microUSD** (1 USD = 1,000,000 microUSD).
-  Other metrics: `tokens|requests|pages|text_records`, restricted by service.
-  Periods: UTC calendar `minute|hour|day|month`, not sliding windows.
-- Price: `{id,service,model,version,input_per_million,output_per_million,cached_input_per_million,cache_write_5m_per_million?,cache_write_1h_per_million?,per_page,per_text_record,per_request}`.
-  The original six rate fields remain required non-negative **decimal USD strings**.
-  Both cache-write fields are optional/nullable decimal strings; blank editor fields
-  save `null`, never an assumed zero. Legacy OpenAI records need no new rates.
-  Anthropic requires explicitly configured uncached/read/write-5m/write-1h prices:
-  unknown potentially billable rates fail closed, even if a request expects no writes.
-  Token rates are USD per million tokens; others are USD per single unit, not microUSD.
-  The editor uses the existing non-negative decimal validator (up to 12 decimal places)
-  for nonblank write rates. Explicit `"0"` remains distinct from unknown `null`.
-- Assignment: `{id,tenant_id,principal_id,policy_ids:string[]}`.
-- Usage/audit/reconciliation:
-  `{id,tenant_id,principal_id,kind,timestamp,data:{...}}`.
-  Usage `data` contains `{request:{service,model,api_protocol?,usage:{input_tokens,output_tokens,cached_input_tokens,cache_write_input_tokens_5m,cache_write_input_tokens_1h,pages,text_records,requests},streaming},debits:[{policy_id,metric,amount,limit,reset_at,key}],remaining,estimated,status}`.
-  Additive `data.api_protocol`, `data.cost_micro_usd`, `data.usage`,
-  `data.cached_input_reported`, and `data.cache_write_input_reported` are supported.
-  Settled `data.usage` takes precedence over admission estimates in `request.usage`.
-  A single reported event cost is shown independently of per-policy impacts:
-  matching multiple budgets does **not** make their cost debits additive.
-  Audit `data` includes `{action,collection?,record_id?,actor_id?,...}`.
-  Reconciliation `data` includes `{status,reservation_id,estimated,usage?}`.
-  Each event is inspectable as JSON for additional server fields.
+| Screen                                      | Purpose                                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Overview, Service usage, Limit violations   | Display returned usage and decision observations                                                  |
+| Azure dashboard (Admin only)                | Render the deployed Azure dashboard charts and tables from server-returned tile metadata and rows |
+| Application subscriptions                   | Read-only tenant-scoped `GET /subscriptions` collection                                           |
+| Application subscription spend & denials    | Fetch `/usage/callers` rollups by application subscription; filter hour/day and service           |
+| Budget policies, Price catalog, Assignments | Admin editing; policies and assignments bind application subscriptions                            |
+| Model inventory                             | Read-only protocol/alias, provider deployment, pinned price and readiness, token bounds           |
+| Reconciliation, Audit history               | Inspect returned history, not an independently maintained balance                                 |
 
-The browser never sends an arbitrary principal query. Readers see only the
-collections the API authorizes. GET failures remain visible and retryable; failed
-saves retain the editor and delete failures retain the confirmation.
+The Azure dashboard is visible only to RateLimit.Admin because it contains workspace-wide telemetry. It requests `/dashboard?period=1h|24h|7d`; production maps this through the same-origin proxy, while direct local development uses the configured API root. The browser never sends KQL or workspace identifiers. The tile titles, axes, chart definitions and tabular values come from the deployed Azure dashboard. Per-tile query failures, empty results and server truncation are shown independently; request-level failures remain retryable. Each chart exposes a detail table. In local demo mode the dashboard uses clearly labeled fixtures and does not represent live Azure data.
 
-## Accounting and operational limits
+Readers never send an arbitrary subscription selector to change authorization; the backend
+scopes access and requires explicit assignment readers.
+`/usage/callers` remains the compatible report route, but its rollups are keyed by
+application subscription rather than a person.
+GET failures remain visible and retryable. Failed saves retain the editor; failed
+deletes retain confirmation. Filters/search are local display operations.
+The [operator walkthrough](../docs/rate-limiting-walkthrough.md) demonstrates a
+real configuration/allow/deny workflow.
+Aliases are suggested in the policy and price editors, while manual entry and
+wildcard policies remain available. Registry changes and price pins are
+deployment-managed; see the [model registry](../docs/model-registry.md).
 
-All three LLM protocols use service `foundry`: `openai-chat` (Chat Completions),
-`openai-responses` (Responses), and `anthropic-messages` (Messages). Omitted protocol
-means Chat only for legacy Foundry records; Document Intelligence and Language
-do not acquire a chat label. Unknown protocols are shown as unrecognized, not
-silently treated as Chat. The demo contains legacy chat plus representative
-usage-only provider metadata for all three formats; it contains no prompts.
+![Live Budget policies screen showing per-model budgets, request limits and service-unit limits](../docs/images/portal-policies.png)
 
-Normalized `input_tokens` is **total input**, including cache reads and both
-write subsets. `cached_input_tokens` means cache reads; write subsets are
-`cache_write_input_tokens_5m` and `cache_write_input_tokens_1h`. Their sum must
-not exceed total input (validated by the backend). Do not add subsets to total
-again. The browser displays server-normalized counters rather than attempting
-to normalize provider payloads or reprice consumption.
+This is the deployed Commercial app with account identity hidden; rates and limits
+are illustrative. See [capture provenance and the illustrated workflow](../docs/rate-limiting-walkthrough.md#screenshot-provenance).
+The table configures limits, not live balances or protocol enablement.
 
-Chat reports prompt/completion tokens and cached prompt details; Responses
-reports input/output tokens and cached input details. Anthropic raw `input_tokens`
-excludes reads/writes: the backend adds cache reads and the validated creation
-TTL breakdown to obtain normalized total. Read pricing is the cache-read discount;
-write pricing is the full rate **including** the surcharge, replacing uncached
-pricing for that subset rather than adding a second charge to total input.
+## Accounting display and UI limits
 
-Conservative admission uses the highest applicable known input/cache rate plus
-maximum output, not an assumed discounted cache hit. Anthropic requires an
-operator-verified context input ceiling, not a universal byte-to-token bound.
-Missing or ambiguous usage retains conservative confidence and does not imply
-zero cached tokens. API `estimated`/`status` flags drive confidence badges; missing
-write counters display “Not reported” for Anthropic, never an invented zero.
-Streaming remains conservative until trusted reconciliation; expiry is not a refund.
-The portal does not execute inference, buffer streams, certify provider/model
-availability in Government, or configure gateway routes and backend capabilities.
+The browser displays server-normalized usage and confidence flags; it does not
+reprice provider payloads. Unknown protocols display as unrecognized. Missing
+Anthropic cache-write counts display “Not reported”, not an invented zero.
+See [reservation mechanics](../docs/reservation-system.md) for all pricing,
+cache-subset and conservative-settlement semantics.
 
-The overview shows configured policy limits and last-decision remaining
-snapshots, **not live balances or invoices**. Returned event counts are not
-deduplicated reservation balances. Refresh is manual; there is no websocket,
-automatic polling, pagination or price-feed integration. The API must bound
-collection sizes and enforce validation, reference integrity and authorization.
-Editing old price versions is possible for administrators; prefer new ID/version
-records, and enforce immutability of referenced prices server-side if required.
-Multiple catalog versions for one service/model require the gateway to send an
-explicit `price_version` in reservations; ambiguous selection fails closed.
-No live Azure deployment or cross-cloud tenant consent is verified by unit tests.
+The overview shows configured policy limits, not live Redis balances or invoices.
+Refresh is manual: there is no websocket, automatic polling, pagination or live
+price feed. The sample API also scans collections without pagination; large-history
+retention/partitioning is production work, not a guarantee supplied by the UI.
+Prefer new catalog versions over editing old versions. Settlement still uses its
+original price snapshot.
+
+The portal does not execute inference, configure gateway capabilities, or establish
+Government model availability. Its demo metadata and local unit tests do not prove
+live cloud access or interactive sign-in. Source navigation and extension boundaries
+are in the [code guide](../docs/code-guide.md).
 
 ## Privacy-safe observability
 
@@ -162,11 +202,12 @@ loaded from a CDN and not required by the static server.
 Server code writes one JSON `portal_request` outcome per request, including
 HEAD, rejected requests and premature response closure. Fields are `timestamp`,
 `event`, generated UUID-v4 `correlationId`, allowlisted `method` (`OTHER` for
-unknown methods), safe `route` (`runtime_config|page|asset|other`), numeric
+unknown methods), safe `route` (`runtime_config|page|asset|api_proxy|other`), numeric
 `status` (`0` when aborted), `durationMs`, `outcome`
 (`success|failure|aborted`) and fixed `errorCategory`
-(`none|method_not_allowed|invalid_path|not_found|serve_error|connection_closed`).
-The server generates `X-Correlation-ID`; caller-supplied IDs are ignored.
+(`none|method_not_allowed|invalid_path|not_found|serve_error|connection_closed|proxy_disabled`
+plus fixed `api_*` categories). Node logs its generated `X-Correlation-ID`; valid
+browser correlation IDs are separately forwarded to APIM by the proxy.
 `portal_started` includes port, cloud, demoMode and browserTelemetry.
 `portal_server_error` includes only `startup_configuration|listen_error`.
 These **console logs are not custom App Insights traces**: enable App Service
@@ -218,8 +259,8 @@ works and omits the correlation header/property rather than inventing an ID.
 Pages and collections come from fixed UI/API enums, never browser locations.
 The API sends its generated `X-Correlation-ID` to the backend so operators can
 join an API outcome to backend logs. It does not reuse server static-request IDs
-or arbitrary backend/header IDs. Form values (including policy limit, price,
-record ID, model, tenant and principal), identity/account/roles, searches,
+or arbitrary backend/header IDs. Form values (including policy limit, price, record ID, model, tenant, subscription
+and reader IDs), identity/account/roles, Graph profile names/photos, searches,
 headers, authorization, URLs/queries, bodies, response data, exception messages
 and stacks are **never event properties**. Invalid or oversized measurements
 are omitted. A final SDK initializer reconstructs allowed event data and strips
@@ -287,7 +328,7 @@ Navigation: `getByRole('button', {name: 'Budget policies', exact: true})`.
 Wait for `Refresh` to be enabled before editing; click `Create policy`.
 In `getByRole('dialog', {name: 'Create policy'})` (or `Edit policy`), use
 `getByLabel(/^ID/)`, `/^Name/`, `/^Service/`, `/^Model or deployment/`,
-`/^Tenant scope/`, `/^Principal scope/`, `/^Accounting unit/`,
+`/^Tenant scope/`, `/^Application subscription scope/`, `/^Accounting unit/`,
 `/^Limit \(integer microUSD\)/` or `/^Limit \(whole units\)/`,
 `/^UTC period/`, `/^Priority/`, and `getByRole('checkbox', {name: 'Policy enabled'})`.
 Use `selectOption` values `foundry|document-intelligence|language`,

@@ -1,10 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApi } from '../src/api';
-import { tokenRoles } from '../src/auth';
+import { createMsal, tokenRoles } from '../src/auth';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('authenticated API', () => {
+  it.each([true, false])(
+    'clears native sign-in only when App Service authentication is enabled: %s',
+    (platformAuthEnabled) => {
+      const instance = createMsal({
+        cloud: 'government',
+        tenantId: '11111111-1111-1111-1111-111111111111',
+        clientId: '22222222-2222-2222-2222-222222222222',
+        apiAudience: 'api://api',
+        apiScope: 'api://api/access_as_user',
+        apiBaseUrl: 'https://gateway.example.us/portal',
+        apiProxyEnabled: false,
+        demoMode: false,
+        platformAuthEnabled,
+      });
+      expect(instance.getConfiguration().auth.postLogoutRedirectUri).toBe(
+        window.location.origin + (platformAuthEnabled ? '/.auth/logout' : ''),
+      );
+      expect(instance.getConfiguration().auth.authority).toBe(
+        'https://login.microsoftonline.us/11111111-1111-1111-1111-111111111111',
+      );
+    },
+  );
   it('sends an access token and never an arbitrary consumer principal filter', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('[]'));
     vi.stubGlobal('fetch', fetch);
@@ -24,6 +46,44 @@ describe('authenticated API', () => {
     expect(getToken).toHaveBeenCalledOnce();
   });
 
+  it('requests only the selected dashboard period through the configured API root', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('[]'));
+    vi.stubGlobal('fetch', fetch);
+    const api = createApi('/api', async () => 'api-access-token', undefined, true);
+    await expect(api.dashboard('7d')).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/dashboard?period=7d',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'X-Portal-Access-Token': 'api-access-token' }),
+        credentials: 'same-origin',
+      }),
+    );
+  });
+
+  it('surfaces dashboard service failures for the page retry state', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 503 })));
+    await expect(createApi('/api', async () => 'token').dashboard('24h')).rejects.toMatchObject({
+      status: 503,
+    });
+  });
+
+  it('uses the native same-origin proxy header without sending the token as Authorization', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('[]'));
+    vi.stubGlobal('fetch', fetch);
+    await createApi('/api', async () => 'api-access-token', undefined, true).list('subscriptions');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/subscriptions',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'X-Portal-Access-Token': 'api-access-token',
+        }),
+        credentials: 'same-origin',
+      }),
+    );
+    expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+    expect(fetch.mock.calls[0][1].credentials).not.toBe('omit');
+  });
+
   it.each([401, 403, 500])(
     'surfaces HTTP %i failures instead of returning demo records',
     async (status) => {
@@ -31,6 +91,23 @@ describe('authenticated API', () => {
       await expect(
         createApi('https://api.example/api', async () => 'token').list('policies'),
       ).rejects.toMatchObject({ status });
+    },
+  );
+
+  it.each([true, false])(
+    'does not misdiagnose HTTP 401 as session expiry (proxy: %s)',
+    async (proxyEnabled) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response('{"message":"Access denied due to missing subscription key."}', {
+            status: 401,
+          }),
+        ),
+      );
+      await expect(
+        createApi('/api', async () => 'token', undefined, proxyEnabled).list('models'),
+      ).rejects.toThrow('Reload this browser page to refresh sign-in and configuration.');
     },
   );
 

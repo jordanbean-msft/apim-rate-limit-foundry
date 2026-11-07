@@ -1,4 +1,12 @@
-import type { Collection, Collections, EditableCollection, PortalApi } from './contracts';
+import type {
+  CallerUsage,
+  Collection,
+  DashboardPeriod,
+  DashboardTile,
+  Collections,
+  EditableCollection,
+  PortalApi,
+} from './contracts';
 import { track, type Telemetry } from './telemetry';
 
 export class ApiError extends Error {
@@ -15,12 +23,14 @@ export function createApi(
   baseUrl: string,
   getAccessToken: () => Promise<string>,
   telemetry: Telemetry = track,
+  proxyEnabled = false,
 ): PortalApi {
   async function request(
-    collection: Collection,
+    collection: Collection | 'callers' | 'dashboard',
     method = 'GET',
     recordId?: string,
     body?: unknown,
+    period?: 'hour' | 'day' | DashboardPeriod,
   ): Promise<unknown> {
     const start = performance.now();
     let correlationId: string | undefined;
@@ -37,17 +47,25 @@ export function createApi(
       const token = await getAccessToken();
       errorCategory = 'network';
       const path =
-        recordId === undefined ? collection : `${collection}/${encodeURIComponent(recordId)}`;
+        collection === 'dashboard'
+          ? `dashboard?period=${period || '24h'}`
+          : collection === 'callers'
+            ? `usage/callers?period=${period || 'day'}`
+            : recordId === undefined
+              ? collection
+              : `${collection}/${encodeURIComponent(recordId)}`;
       requestCount = 1;
       const response = await fetch(`${baseUrl}/${path}`, {
         method,
         headers: {
-          Authorization: `Bearer ${token}`,
+          ...(proxyEnabled
+            ? { 'X-Portal-Access-Token': token }
+            : { Authorization: `Bearer ${token}` }),
           ...(correlationId ? { 'X-Correlation-ID': correlationId } : {}),
           ...(body ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
-        credentials: 'omit',
+        credentials: proxyEnabled ? 'same-origin' : 'omit',
         cache: 'no-store',
       });
       status = response.status;
@@ -55,7 +73,7 @@ export function createApi(
         errorCategory = 'http';
         const message =
           response.status === 401
-            ? 'Your API session has expired. Sign in again.'
+            ? 'The API rejected authentication. Reload this browser page to refresh sign-in and configuration. If it persists, contact your administrator.'
             : response.status === 403
               ? 'The API denied access. Check your assigned application role.'
               : `The API could not complete this request (HTTP ${response.status}). Retry or contact your administrator.`;
@@ -81,6 +99,12 @@ export function createApi(
     }
   }
   return {
+    async callers(period): Promise<CallerUsage[]> {
+      return (await request('callers', 'GET', undefined, undefined, period)) as CallerUsage[];
+    },
+    async dashboard(period): Promise<DashboardTile[]> {
+      return (await request('dashboard', 'GET', undefined, undefined, period)) as DashboardTile[];
+    },
     async list<K extends Collection>(collection: K): Promise<Collections[K][]> {
       return (await request(collection)) as Collections[K][];
     },

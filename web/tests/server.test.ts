@@ -76,6 +76,17 @@ describe('public runtime configuration', () => {
     expect(() => buildConfig({ WEB_DEMO_MODE: 'yes' })).toThrow();
     expect(() => buildConfig({ ...valid, WEB_CLIENT_ID: '' })).toThrow();
   });
+  it('publishes the native logout mode without exposing its federation setting', () => {
+    expect(buildConfig(valid).platformAuthEnabled).toBe(false);
+    const config = buildConfig({
+      ...valid,
+      WEB_PLATFORM_AUTH_ENABLED: 'true',
+      OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID: 'private-workload-setting',
+    });
+    expect(config.platformAuthEnabled).toBe(true);
+    expect(JSON.stringify(config)).not.toContain('private-workload-setting');
+    expect(() => buildConfig({ ...valid, WEB_PLATFORM_AUTH_ENABLED: 'yes' })).toThrow();
+  });
 
   it('publishes only instrumentation routing, never authentication or unrelated connection fields', () => {
     const config = buildConfig({
@@ -120,11 +131,29 @@ describe('public runtime configuration', () => {
       buildConfig({ ...valid, APPLICATIONINSIGHTS_CONNECTION_STRING: commercial }).appInsights,
     ).toBeUndefined();
   });
+  it('publishes the same-origin proxy route and never publishes its server-only key', () => {
+    const config = buildConfig({
+      ...valid,
+      WEB_API_PROXY_ENABLED: 'true',
+      PORTAL_APIM_SUBSCRIPTION_KEY: 'must-not-be-published',
+    });
+    expect(config.apiBaseUrl).toBe('/api');
+    expect(config.apiProxyEnabled).toBe(true);
+    expect(JSON.stringify(config)).not.toContain('must-not-be-published');
+    expect(() => buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'sometimes' })).toThrow(
+      'WEB_API_PROXY_ENABLED',
+    );
+  });
 });
 
 describe('production server', () => {
-  async function start(config = buildConfig(valid), logger = vi.fn(), root = resolve('.')) {
-    const server = createPortalServer(config, root, logger);
+  async function start(
+    config = buildConfig(valid),
+    logger = vi.fn(),
+    root = resolve('.'),
+    proxyOptions = {},
+  ) {
+    const server = createPortalServer(config, root, logger, proxyOptions);
     running.push(server);
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -142,6 +171,8 @@ describe('production server', () => {
       'login.microsoftonline.com',
     );
     expect(response.headers.get('content-security-policy')).toContain('https://gateway.example.us');
+    expect(response.headers.get('content-security-policy')).toContain('https://graph.microsoft.us');
+    expect(response.headers.get('content-security-policy')).toContain('blob:');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect((await response.json()).apiScope).toBe(valid.API_SCOPE);
   });
@@ -228,5 +259,180 @@ describe('production server', () => {
     expect(
       (await fetch(`http://127.0.0.1:${healthyPort}/config.json`, { method: 'HEAD' })).status,
     ).toBe(200);
+  });
+
+  it('forwards only allowlisted API requests with the user token and server key', async () => {
+    const config = buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'true' });
+    const upstream = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('[{"id":"policy-1"}]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const logger = vi.fn();
+    const port = await start(config, logger, resolve('.'), {
+      upstreamUrl: valid.API_BASE_URL,
+      subscriptionKey: 'server-private-key',
+      fetchImpl: upstream,
+    });
+    const correlationId = '55555555-5555-5555-5555-555555555555';
+    const response = await fetch(`http://127.0.0.1:${port}/api/policies`, {
+      headers: {
+        'X-Portal-Access-Token': 'header.payload.signature',
+        Authorization: 'Bearer platform-or-client-token',
+        Cookie: 'AppServiceAuthSession=private-cookie',
+        'X-MS-CLIENT-PRINCIPAL': 'private-platform-identity',
+        'Ocp-Apim-Subscription-Key': 'client-supplied-key',
+        'X-Correlation-ID': correlationId,
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([{ id: 'policy-1' }]);
+    expect(upstream).toHaveBeenCalledOnce();
+    const [target, init] = upstream.mock.calls[0];
+    expect(target.href).toBe('https://gateway.example.us/portal/policies');
+    expect(init).toMatchObject({ method: 'GET', redirect: 'manual' });
+    expect(init.headers).toEqual({
+      Authorization: 'Bearer header.payload.signature',
+      'Ocp-Apim-Subscription-Key': 'server-private-key',
+      'X-Correlation-ID': correlationId,
+    });
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(
+      /private|signature|platform-or-client-token|client-supplied-key/,
+    );
+    const mutation = await fetch(`http://127.0.0.1:${port}/api/policies/policy-1`, {
+      method: 'PUT',
+      headers: {
+        'X-Portal-Access-Token': 'header.payload.signature',
+        'Content-Type': 'application/json',
+        'X-Correlation-ID': correlationId,
+        'Ocp-Apim-Subscription-Key': 'another-client-key',
+      },
+      body: '{"id":"policy-1"}',
+    });
+    expect(mutation.status).toBe(204);
+    const [mutationTarget, mutationInit] = upstream.mock.calls[1];
+    expect(mutationTarget.href).toBe('https://gateway.example.us/portal/policies/policy-1');
+    expect(mutationInit).toMatchObject({
+      method: 'PUT',
+      body: '{"id":"policy-1"}',
+      redirect: 'manual',
+    });
+    expect(mutationInit.headers).toEqual({
+      Authorization: 'Bearer header.payload.signature',
+      'Ocp-Apim-Subscription-Key': 'server-private-key',
+      'Content-Type': 'application/json',
+      'X-Correlation-ID': correlationId,
+    });
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(/private|signature|another-client-key/);
+    const publicResponse = await fetch(`http://127.0.0.1:${port}/config.json`);
+    expect(await publicResponse.text()).not.toContain('server-private-key');
+  });
+
+  it('allows only dashboard period queries and bounds dashboard responses separately', async () => {
+    const config = buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'true' });
+    const oversizedForCollections = JSON.stringify([{ title: 'x'.repeat(2_500_000) }]);
+    const upstream = vi.fn().mockResolvedValue(
+      new Response(oversizedForCollections, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(oversizedForCollections)),
+        },
+      }),
+    );
+    const port = await start(config, vi.fn(), resolve('.'), {
+      upstreamUrl: valid.API_BASE_URL,
+      subscriptionKey: 'server-private-key',
+      fetchImpl: upstream,
+    });
+    const headers = { 'X-Portal-Access-Token': 'header.payload.signature' };
+    for (const suffix of [
+      '',
+      '?period=24h&extra=x',
+      '?period=all',
+      '?period=1h&period=7d',
+      '?workspace=attacker',
+    ]) {
+      expect(
+        (await fetch(`http://127.0.0.1:${port}/api/dashboard${suffix}`, { headers })).status,
+      ).toBe(404);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const response = await fetch(`http://127.0.0.1:${port}/api/dashboard?period=7d`, { headers });
+    expect(response.status).toBe(200);
+    expect((await response.text()).length).toBeGreaterThan(2_500_000);
+    expect(upstream).toHaveBeenCalledOnce();
+    const [target, init] = upstream.mock.calls[0];
+    expect(target.href).toBe('https://gateway.example.us/portal/dashboard?period=7d');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(timeout).toHaveBeenLastCalledWith(45_000);
+  });
+
+  it('fails closed for missing tokens, unsupported routes and missing or unresolved keys', async () => {
+    const config = buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'true' });
+    const upstream = vi.fn();
+    const port = await start(config, vi.fn(), resolve('.'), {
+      upstreamUrl: valid.API_BASE_URL,
+      subscriptionKey: 'server-private-key',
+      fetchImpl: upstream,
+    });
+    expect((await fetch(`http://127.0.0.1:${port}/api/policies`)).status).toBe(401);
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${port}/api/policies`, {
+          headers: { 'X-Portal-Access-Token': 'not-a-bearer-token' },
+        })
+      ).status,
+    ).toBe(401);
+    expect((await fetch(`http://127.0.0.1:${port}/api/unsupported`)).status).toBe(404);
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${port}/api/assignments`, {
+          method: 'PUT',
+          headers: {
+            'X-Portal-Access-Token': 'header.payload.signature',
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(() =>
+      createPortalServer(config, resolve('.'), vi.fn(), { upstreamUrl: valid.API_BASE_URL }),
+    ).toThrow('subscription key is unavailable');
+    expect(() =>
+      createPortalServer(config, resolve('.'), vi.fn(), {
+        upstreamUrl: valid.API_BASE_URL,
+        subscriptionKey: '@Microsoft.KeyVault(SecretUri=unresolved)',
+      }),
+    ).toThrow('subscription key is unavailable');
+  });
+
+  it('blocks upstream redirects and does not return their Location header', async () => {
+    const config = buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'true' });
+    const upstream = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: 'https://evil.example/' } }),
+      );
+    const port = await start(config, vi.fn(), resolve('.'), {
+      upstreamUrl: valid.API_BASE_URL,
+      subscriptionKey: 'server-private-key',
+      fetchImpl: upstream,
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/api/subscriptions`, {
+      headers: { 'X-Portal-Access-Token': 'header.payload.signature' },
+    });
+    expect(response.status).toBe(502);
+    expect(response.headers.get('location')).toBeNull();
+    expect(await response.json()).toEqual({
+      error: 'The API returned an unsupported redirect.',
+    });
   });
 });

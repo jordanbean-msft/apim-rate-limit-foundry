@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": "^22.13.0 || >=24.0.0"
+    "node": "^24.0.0"
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -19,6 +19,7 @@
     "@microsoft/applicationinsights-web": "^3.3.10",
     "@azure/msal-browser": "^4.26.0",
     "@azure/msal-react": "^3.0.22",
+    "@fluentui/react-charts": "^9.3.29",
     "@fluentui/react-components": "^9.70.0",
     "@fluentui/react-icons": "^2.0.310",
     "react": "^19.2.0",

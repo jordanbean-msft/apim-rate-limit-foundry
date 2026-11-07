@@ -1,5 +1,12 @@
 import { Badge, Button } from '@fluentui/react-components';
-import type { Assignment, EditableCollection, EditableRecord, Policy, Price } from '../contracts';
+import type {
+  ApplicationSubscription,
+  Assignment,
+  EditableCollection,
+  EditableRecord,
+  Policy,
+  Price,
+} from '../contracts';
 import { services } from '../format';
 import { PolicyLimit } from './PolicyLimit';
 
@@ -49,10 +56,14 @@ function PriceDetails({ price }: { price: Price }) {
 function RecordCells({
   collection,
   record,
+  subscriptions,
 }: {
   collection: EditableCollection;
   record: EditableRecord;
+  subscriptions: ApplicationSubscription[];
 }) {
+  const subscriptionName = (id: string) =>
+    subscriptions.find((subscription) => subscription.id === id)?.display_name || id;
   if (collection === 'policies') {
     const policy = record as Policy;
     return (
@@ -63,7 +74,8 @@ function RecordCells({
             {policy.id} · priority {policy.priority}
           </div>
           <div className="fine-print">
-            Tenant {policy.tenant_id || '*'} · principal {policy.principal_id}
+            Tenant {policy.tenant_id || '*'} · application subscription{' '}
+            {subscriptionName(policy.subscription_id)}
           </div>
         </td>
         <td>
@@ -103,10 +115,15 @@ function RecordCells({
     <>
       <td>
         <strong>{assignment.id}</strong>
+        {assignment.display_label && <div className="fine-print">{assignment.display_label}</div>}
       </td>
       <td>
-        {assignment.tenant_id}
-        <div className="fine-print">{assignment.principal_id}</div>
+        {subscriptionName(assignment.subscription_id)}
+        <div className="fine-print">{assignment.subscription_id}</div>
+        <div className="fine-print">Tenant: {assignment.tenant_id}</div>
+        <div className="fine-print">
+          Explicit readers: {assignment.reader_principal_ids?.length ?? 0}
+        </div>
       </td>
       <td>{assignment.policy_ids.join(', ')}</td>
     </>
@@ -117,19 +134,21 @@ export function ConfigurationTable({
   collection,
   records,
   admin,
+  subscriptions,
   onEdit,
   onDelete,
 }: {
   collection: EditableCollection;
   records: EditableRecord[];
   admin: boolean;
+  subscriptions: ApplicationSubscription[];
   onEdit: (record: EditableRecord) => void;
   onDelete: (id: string) => void;
 }) {
   const headings = {
     policies: ['Policy / scope', 'Service / model', 'Limit', 'Status'],
     prices: ['Model / version', 'Service', 'USD rates'],
-    assignments: ['Assignment', 'Tenant / principal', 'Policy IDs'],
+    assignments: ['Assignment', 'Application subscription / tenant', 'Policy IDs'],
   };
   return (
     <>
@@ -149,7 +168,11 @@ export function ConfigurationTable({
           <tbody>
             {records.map((record) => (
               <tr key={record.id}>
-                <RecordCells collection={collection} record={record} />
+                <RecordCells
+                  collection={collection}
+                  record={record}
+                  subscriptions={subscriptions}
+                />
                 {admin && (
                   <td>
                     <div className="row-actions">

@@ -20,14 +20,16 @@ import {
   DataTrendingRegular,
   GridRegular,
   HistoryRegular,
-  PeopleRegular,
   ReceiptMoneyRegular,
   ShieldCheckmarkRegular,
   WarningRegular,
 } from '@fluentui/react-icons';
 import { isDenial } from './accounting';
 import { ConfigurationTable } from './components/ConfigurationTable';
+import { Dashboard } from './components/Dashboard';
+import { CallerReport } from './components/CallerReport';
 import { LedgerTable } from './components/LedgerTable';
+import { ModelInventory } from './components/ModelInventory';
 import { Overview } from './components/Overview';
 import type {
   Collection,
@@ -42,9 +44,11 @@ import { objectValue, services, utcTime } from './format';
 import { RecordEditor } from './RecordEditor';
 import { track } from './telemetry';
 
-type Page = 'overview' | Collection | 'denials';
+type Page = 'overview' | Collection | 'denials' | 'callers' | 'dashboard';
 type Data = { [K in Collection]: Collections[K][] };
 const emptyData: Data = {
+  models: [],
+  subscriptions: [],
   policies: [],
   prices: [],
   assignments: [],
@@ -53,6 +57,8 @@ const emptyData: Data = {
   reconciliation: [],
 };
 const collections: Collection[] = [
+  'models',
+  'subscriptions',
   'policies',
   'prices',
   'assignments',
@@ -62,23 +68,33 @@ const collections: Collection[] = [
 ];
 const pages = [
   { id: 'overview', label: 'Overview', icon: <GridRegular /> },
+  { id: 'dashboard', label: 'Azure dashboard', icon: <DataTrendingRegular /> },
   { id: 'usage', label: 'Service usage', icon: <DataTrendingRegular /> },
   { id: 'denials', label: 'Limit violations', icon: <WarningRegular /> },
+  { id: 'callers', label: 'Application subscription spend & denials', icon: <GridRegular /> },
   { id: 'reconciliation', label: 'Reconciliation', icon: <ArrowClockwiseRegular /> },
   { id: 'policies', label: 'Budget policies', icon: <ShieldCheckmarkRegular /> },
-  { id: 'assignments', label: 'Assignments', icon: <PeopleRegular /> },
+  { id: 'assignments', label: 'Assignments', icon: <GridRegular /> },
   { id: 'prices', label: 'Price catalog', icon: <ReceiptMoneyRegular /> },
+  { id: 'models', label: 'Model inventory', icon: <GridRegular /> },
+  { id: 'subscriptions', label: 'Application subscriptions', icon: <GridRegular /> },
   { id: 'audit', label: 'Audit history', icon: <HistoryRegular /> },
 ] as const;
 const descriptions: Record<Page, string> = {
   overview: 'A clear view of your AI service limits and accounting activity.',
+  dashboard: 'Charts and tables from the deployed Azure dashboard, using its configured queries.',
   policies: 'Service-aware limits with UTC calendar periods and explicit accounting units.',
   prices: 'Versioned decimal USD prices. Separate input, output, cached input, and service units.',
-  assignments: 'Bind tenant-scoped principals to the policies that govern their usage.',
+  models: 'Read-only deployed model aliases, provider deployments, limits and pinned prices.',
+  assignments:
+    'Bind tenant-scoped application subscriptions to policies and assign explicit data readers.',
   usage: 'Server-scoped usage events. Estimated reservations are not actual invoices.',
   denials: 'Requests denied by a budget or unit limit. Denials do not debit budgets.',
   reconciliation: 'Track conservative streaming reservations and trusted actual usage.',
-  audit: 'Read-only configuration and decision history, scoped by the API to your identity.',
+  audit: 'Read-only configuration and decision history, scoped by API authorization.',
+  subscriptions: 'Read-only application subscriptions registered for this tenant.',
+  callers:
+    'Application-subscription denials, dashboard correlation and effective spend by service and model.',
 };
 const editable = (page: Page): page is EditableCollection =>
   ['policies', 'prices', 'assignments'].includes(page);
@@ -89,25 +105,31 @@ function RecordBrowser({
   error,
   loading,
   admin,
+  subscriptions,
   onEdit,
   onDelete,
 }: {
-  page: Exclude<Page, 'overview'>;
+  page: Exclude<Page, 'overview' | 'callers' | 'models'>;
   records: Collections[Collection][];
   error?: string;
   loading: boolean;
   admin: boolean;
+  subscriptions: Collections['subscriptions'][];
   onEdit: (collection: EditableCollection, record: EditableRecord) => void;
   onDelete: (collection: EditableCollection, id: string) => void;
 }) {
   const [search, setSearch] = useState('');
   const [serviceFilter, setServiceFilter] = useState('all');
+  const [subscriptionFilter, setSubscriptionFilter] = useState('all');
   const filtered = records.filter((record) => {
     const request = 'data' in record ? objectValue(record.data.request) : {};
     const service = 'service' in record ? record.service : request.service;
     return (
       JSON.stringify(record).toLowerCase().includes(search.toLowerCase()) &&
-      (serviceFilter === 'all' || service === serviceFilter)
+      (serviceFilter === 'all' || service === serviceFilter) &&
+      (!('subscription_id' in record) ||
+        subscriptionFilter === 'all' ||
+        record.subscription_id === subscriptionFilter)
     );
   });
   return (
@@ -133,14 +155,56 @@ function RecordBrowser({
             ))}
           </Select>
         )}
+        {['policies', 'assignments'].includes(page) && (
+          <Select
+            aria-label="Filter by application subscription"
+            value={subscriptionFilter}
+            onChange={(_, value) => setSubscriptionFilter(value.value)}
+          >
+            <option value="all">All application subscriptions</option>
+            {page === 'policies' && <option value="*">Shared policy templates</option>}
+            {subscriptions.map((subscription) => (
+              <option value={subscription.id} key={subscription.id}>
+                {subscription.display_name} · {subscription.id}
+              </option>
+            ))}
+          </Select>
+        )}
         <span className="muted">{filtered.length} records</span>
       </div>
       {error ? (
         <p className="empty-inline">This collection is unavailable. Use Refresh to retry.</p>
+      ) : page === 'subscriptions' ? (
+        <div className="table-scroll">
+          <table>
+            <caption className="visually-hidden">Registered application subscriptions</caption>
+            <thead>
+              <tr>
+                <th>Application subscription</th>
+                <th>Subscription ID</th>
+                <th>Tenant ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(filtered as Collections['subscriptions'][]).map((subscription) => (
+                <tr key={subscription.id}>
+                  <td>{subscription.display_name}</td>
+                  <td>
+                    <code>{subscription.id}</code>
+                  </td>
+                  <td>
+                    <code>{subscription.tenant_id}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : editable(page) ? (
         <ConfigurationTable
           collection={page}
           records={filtered as EditableRecord[]}
+          subscriptions={subscriptions}
           admin={admin}
           onEdit={(record) => onEdit(page, record)}
           onDelete={(id) => onDelete(page, id)}
@@ -165,6 +229,7 @@ export function Portal({
   identity,
   cloud,
   demo = false,
+  profileGreeting,
   onSignOut,
 }: {
   api: PortalApi;
@@ -172,6 +237,7 @@ export function Portal({
   identity: string;
   cloud: string;
   demo?: boolean;
+  profileGreeting?: React.ReactNode;
   onSignOut?: () => void;
 }) {
   const [page, setPage] = useState<Page>('overview');
@@ -280,7 +346,12 @@ export function Portal({
     });
     setDeleting(null);
   }
-  const currentCollection = page === 'denials' ? 'usage' : page === 'overview' ? null : page;
+  const currentCollection =
+    page === 'denials'
+      ? 'usage'
+      : page === 'overview' || page === 'callers' || page === 'dashboard'
+        ? null
+        : page;
 
   return (
     <div className="app-shell">
@@ -298,20 +369,22 @@ export function Portal({
         </a>
         <div className="workspace-label">WORKSPACE</div>
         <nav aria-label="Primary navigation">
-          {pages.map((item) => (
-            <button
-              key={item.id}
-              className={`nav-item ${page === item.id ? 'active' : ''}`}
-              aria-current={page === item.id ? 'page' : undefined}
-              onClick={() => {
-                setPage(item.id);
-                setNotice('');
-              }}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
+          {pages
+            .filter((item) => item.id !== 'dashboard' || admin)
+            .map((item) => (
+              <button
+                key={item.id}
+                className={`nav-item ${page === item.id ? 'active' : ''}`}
+                aria-current={page === item.id ? 'page' : undefined}
+                onClick={() => {
+                  setPage(item.id);
+                  setNotice('');
+                }}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
         </nav>
         <div className="sidebar-bottom">
           <span className="status-dot" />
@@ -330,7 +403,7 @@ export function Portal({
             <Badge appearance="tint" color={admin ? 'brand' : 'informative'}>
               {admin ? 'Administrator' : canRead ? 'Reader' : 'Unassigned'}
             </Badge>
-            <span className="identity">{identity}</span>
+            {profileGreeting ?? <span className="profile-greeting">Howdy {identity}!</span>}
             {onSignOut && (
               <Button
                 icon={<ArrowExitRegular />}
@@ -370,36 +443,38 @@ export function Portal({
                   <h1>{pages.find((item) => item.id === page)?.label}</h1>
                   <p>{descriptions[page]}</p>
                 </div>
-                <div className="heading-actions">
-                  <Button
-                    icon={<ArrowClockwiseRegular />}
-                    disabled={loading}
-                    onClick={() => {
-                      void refresh();
-                    }}
-                  >
-                    Refresh
-                  </Button>
-                  {admin && editable(page) && (
+                {page !== 'dashboard' && (
+                  <div className="heading-actions">
                     <Button
-                      appearance="primary"
+                      icon={<ArrowClockwiseRegular />}
                       disabled={loading}
-                      onClick={() => setEditor({ collection: page })}
+                      onClick={() => {
+                        void refresh();
+                      }}
                     >
-                      Create{' '}
-                      {page === 'prices'
-                        ? 'price version'
-                        : page === 'policies'
-                          ? 'policy'
-                          : 'assignment'}
+                      Refresh
                     </Button>
-                  )}
-                </div>
+                    {admin && editable(page) && (
+                      <Button
+                        appearance="primary"
+                        disabled={loading}
+                        onClick={() => setEditor({ collection: page })}
+                      >
+                        Create{' '}
+                        {page === 'prices'
+                          ? 'price version'
+                          : page === 'policies'
+                            ? 'policy'
+                            : 'assignment'}
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
               {!admin && (
                 <div className="read-only-note">
-                  <ShieldCheckmarkRegular /> Read-only workspace. The API scopes all records to your
-                  tenant and principal; the browser never chooses another consumer identity.
+                  <ShieldCheckmarkRegular /> Read-only workspace. The API scopes records to your
+                  tenant and assigned application subscriptions.
                 </div>
               )}
               {Object.entries(errors).map(([collection, message]) => (
@@ -420,13 +495,40 @@ export function Portal({
                   <Spinner size="tiny" label="Loading authorized records…" />
                 </div>
               )}
-              {page === 'overview' ? (
+              {page === 'dashboard' && !admin ? (
+                <section className="surface empty-state" aria-label="Dashboard access denied">
+                  <ShieldCheckmarkRegular />
+                  <h2>Administrator access required</h2>
+                  <p role="alert">
+                    The Azure dashboard includes workspace-wide telemetry and is available only to
+                    RateLimit.Admin. No dashboard request was made.
+                  </p>
+                </section>
+              ) : page === 'dashboard' ? (
+                <Dashboard api={api} fixtureMode={demo} />
+              ) : page === 'overview' ? (
                 <Overview
                   policies={data.policies}
                   usage={data.usage}
+                  subscriptions={data.subscriptions}
                   errors={errors}
                   loading={loading}
                   navigate={setPage}
+                />
+              ) : page === 'callers' ? (
+                <CallerReport
+                  api={api}
+                  refreshKey={loadedAt}
+                  policies={data.policies}
+                  subscriptions={data.subscriptions}
+                />
+              ) : page === 'models' ? (
+                <ModelInventory
+                  models={data.models}
+                  prices={data.prices}
+                  modelsError={errors.models}
+                  pricesError={errors.prices}
+                  loading={loading}
                 />
               ) : (
                 <RecordBrowser
@@ -436,6 +538,7 @@ export function Portal({
                   error={currentCollection ? errors[currentCollection] : undefined}
                   loading={loading}
                   admin={admin}
+                  subscriptions={data.subscriptions}
                   onEdit={(collection, record) => setEditor({ collection, record })}
                   onDelete={(collection, id) => {
                     setMutationError('');
@@ -449,7 +552,7 @@ export function Portal({
                     ? `Last refresh attempt ${utcTime(loadedAt)}`
                     : 'Awaiting first refresh'}
                 </span>
-                <span>USD · UTC periods · API-enforced identity</span>
+                <span>USD · UTC periods · API-enforced subscription scope</span>
               </footer>
             </>
           )}
@@ -460,6 +563,7 @@ export function Portal({
           collection={editor.collection}
           record={editor.record}
           policies={data.policies}
+          models={data.models}
           onSave={save}
           onClose={() => setEditor(null)}
         />

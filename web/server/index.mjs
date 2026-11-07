@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { authorityFor, buildConfig } from './runtime-config.mjs';
+import { createApiProxy } from './api-proxy.mjs';
 import { observeRequest, writeLog } from './logging.mjs';
 import { publicAppInsights } from './telemetry-config.mjs';
 
@@ -16,19 +17,29 @@ const mime = {
   '.woff2': 'font/woff2',
 };
 
-export function createPortalServer(config, root = resolve('dist'), logger = writeLog) {
+export function createPortalServer(
+  config,
+  root = resolve('dist'),
+  logger = writeLog,
+  proxyOptions = {},
+) {
   root = resolve(root);
-  const apiOrigin = config.apiBaseUrl ? new URL(config.apiBaseUrl).origin : '';
+  const apiOrigin = config.apiBaseUrl?.startsWith('https://')
+    ? new URL(config.apiBaseUrl).origin
+    : '';
   const authority = authorityFor(config.cloud);
+  const graphOrigin =
+    config.cloud === 'government' ? 'https://graph.microsoft.us' : 'https://graph.microsoft.com';
+  const apiProxy = config.apiProxyEnabled ? createApiProxy(proxyOptions) : null;
   const ingestionOrigin =
     publicAppInsights(config.appInsights?.connectionString, config.cloud)?.ingestionOrigin || '';
   const csp = [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    `connect-src 'self' ${authority} ${apiOrigin} ${ingestionOrigin}`,
+    `connect-src 'self' ${authority} ${graphOrigin} ${apiOrigin} ${ingestionOrigin}`,
     `frame-src 'self' ${authority}`,
     "object-src 'none'",
     "base-uri 'self'",
@@ -42,14 +53,30 @@ export function createPortalServer(config, root = resolve('dist'), logger = writ
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    let pathname;
+    try {
+      pathname = decodeURIComponent((req.url || '/').split('?')[0]);
+    } catch {
+      outcome.errorCategory = 'invalid_path';
+      res.writeHead(400).end('Invalid path');
+      return;
+    }
+    if (pathname.startsWith('/api/')) {
+      outcome.route = 'api_proxy';
+      if (!apiProxy) {
+        outcome.errorCategory = 'proxy_disabled';
+        res.writeHead(404).end('Not found');
+        return;
+      }
+      await apiProxy(req, res, outcome);
+      return;
+    }
     if (!['GET', 'HEAD'].includes(req.method || '')) {
       outcome.errorCategory = 'method_not_allowed';
       res.writeHead(405, { Allow: 'GET, HEAD' }).end();
       return;
     }
     try {
-      const rawPath = (req.url || '/').split('?')[0];
-      const pathname = decodeURIComponent(rawPath);
       if (pathname === '/config.json') {
         outcome.route = 'runtime_config';
         res.writeHead(200, {
@@ -110,7 +137,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   try {
     const config = buildConfig();
     const port = Number(process.env.PORT || 8080);
-    const server = createPortalServer(config);
+    const server = createPortalServer(config, resolve('dist'), writeLog, {
+      upstreamUrl: process.env.API_BASE_URL,
+      subscriptionKey: process.env.PORTAL_APIM_SUBSCRIPTION_KEY,
+    });
     server.on('error', () => {
       writeLog({ event: 'portal_server_error', errorCategory: 'listen_error' });
       process.exitCode = 1;

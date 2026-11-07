@@ -14,6 +14,13 @@ export function buildConfig(env = process.env) {
   if (env.WEB_DEMO_MODE && !['true', 'false'].includes(env.WEB_DEMO_MODE)) {
     throw new Error('WEB_DEMO_MODE must be true or false');
   }
+  if (env.WEB_PLATFORM_AUTH_ENABLED && !['true', 'false'].includes(env.WEB_PLATFORM_AUTH_ENABLED)) {
+    throw new Error('WEB_PLATFORM_AUTH_ENABLED must be true or false');
+  }
+  if (env.WEB_API_PROXY_ENABLED && !['true', 'false'].includes(env.WEB_API_PROXY_ENABLED)) {
+    throw new Error('WEB_API_PROXY_ENABLED must be true or false');
+  }
+  const apiProxyEnabled = env.WEB_API_PROXY_ENABLED === 'true';
   const tenantId = env.AZURE_TENANT_ID || '';
   const clientId = env.WEB_CLIENT_ID || '';
   const apiAudience = env.API_AUDIENCE || '';
@@ -36,6 +43,12 @@ export function buildConfig(env = process.env) {
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
       throw new Error('API_BASE_URL must use HTTPS (except loopback development)');
     }
+    if (
+      apiProxyEnabled &&
+      (url.protocol !== 'https:' || url.pathname.replace(/\/+$/, '') !== '/portal')
+    ) {
+      throw new Error('Proxied API_BASE_URL must be an HTTPS APIM /portal endpoint');
+    }
   }
   return {
     cloud,
@@ -43,8 +56,10 @@ export function buildConfig(env = process.env) {
     clientId,
     apiAudience,
     apiScope,
-    apiBaseUrl,
+    apiBaseUrl: apiProxyEnabled ? '/api' : apiBaseUrl,
+    apiProxyEnabled,
     demoMode,
+    platformAuthEnabled: env.WEB_PLATFORM_AUTH_ENABLED === 'true',
     appInsights: publicAppInsights(env.APPLICATIONINSIGHTS_CONNECTION_STRING, cloud),
   };
 }

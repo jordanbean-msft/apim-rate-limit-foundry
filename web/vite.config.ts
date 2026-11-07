@@ -38,6 +38,12 @@ export default defineConfig(({ mode }) => ({
       output: {
         manualChunks(id) {
           if (id.includes('/node_modules/@azure/')) return 'identity';
+          if (
+            id.includes('/node_modules/@fluentui/react-charts/') ||
+            id.includes('/node_modules/@fluentui/chart-utilities/') ||
+            id.includes('/node_modules/d3-')
+          )
+            return 'charts';
           if (id.includes('/node_modules/@fluentui/') || id.includes('/node_modules/@griffel/'))
             return 'fluent';
           if (

@@ -29,6 +29,7 @@ const config: RuntimeConfig = {
   apiAudience: '',
   apiScope: '',
   apiBaseUrl: '',
+  apiProxyEnabled: false,
   demoMode: true,
   appInsights: {
     connectionString:
@@ -123,6 +124,22 @@ describe('private manual browser telemetry', () => {
       measurements: {},
     });
     expect(JSON.stringify(mocks.track.mock.calls)).not.toContain('private');
+  });
+
+  it('retains subscription registry telemetry and the eight-collection refresh count', () => {
+    initializeTelemetry(config);
+    track('portal_api', { collection: 'subscriptions', method: 'GET', outcome: 'success' });
+    expect(mocks.track).toHaveBeenLastCalledWith({
+      name: 'portal_api',
+      properties: { collection: 'subscriptions', method: 'GET', outcome: 'success' },
+      measurements: {},
+    });
+    track('portal_refresh', { outcome: 'success' }, { collectionCount: 8 });
+    expect(mocks.track).toHaveBeenLastCalledWith({
+      name: 'portal_refresh',
+      properties: { outcome: 'success' },
+      measurements: { collectionCount: 8 },
+    });
   });
 
   it('strips SDK-enriched identity, session, operation URL, exception and custom context before export', () => {

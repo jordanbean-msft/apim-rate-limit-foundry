@@ -3,11 +3,20 @@ import type { ITelemetryItem } from '@microsoft/applicationinsights-web';
 import { publicAppInsights } from '../server/telemetry-config.mjs';
 import type { RuntimeConfig } from './contracts';
 
-const collections = ['policies', 'prices', 'assignments', 'usage', 'audit', 'reconciliation'];
+const collections = [
+  'models',
+  'subscriptions',
+  'policies',
+  'prices',
+  'assignments',
+  'usage',
+  'audit',
+  'reconciliation',
+];
 const schema = {
-  portal_page: { page: ['overview', ...collections, 'denials'], outcome: ['success'] },
+  portal_page: { page: ['overview', ...collections, 'denials', 'callers'], outcome: ['success'] },
   portal_api: {
-    collection: collections,
+    collection: [...collections, 'callers'],
     method: ['GET', 'PUT', 'DELETE'],
     outcome: ['success', 'failure'],
     errorCategory: ['none', 'authentication', 'http', 'network', 'invalid_response'],
@@ -34,7 +43,7 @@ export type Telemetry = (
 
 const measurementLimits: Partial<Record<TelemetryName, Record<string, number>>> = {
   portal_api: { status: 599, durationMs: 86_400_000, requestCount: 1 },
-  portal_refresh: { durationMs: 86_400_000, collectionCount: 6, failureCount: 6 },
+  portal_refresh: { durationMs: 86_400_000, collectionCount: 8, failureCount: 8 },
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
