@@ -1,6 +1,7 @@
 ---
-mode: agent
+name: new-api-endpoint
 description: Scaffold a new FastAPI endpoint with schemas, router, service, and tests (TDD-first).
+disable-model-invocation: true
 ---
 
 # New API Endpoint

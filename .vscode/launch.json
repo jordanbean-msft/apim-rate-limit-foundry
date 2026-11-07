@@ -20,6 +20,13 @@
       "justMyCode": true
     },
     {
+      "name": "Streaming Functions: attach Python worker",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {"host": "localhost", "port": 9092},
+      "justMyCode": true
+    },
+    {
       "name": "Portal: browser",
       "type": "pwa-chrome",
       "request": "launch",

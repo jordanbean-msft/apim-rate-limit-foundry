@@ -9,10 +9,18 @@
       "problemMatcher": []
     },
     {
+      "label": "web:runtime-check",
+      "type": "process",
+      "command": "node",
+      "args": ["-e", "if (Number(process.versions.node.split('.')[0]) !== 24) { console.error('Node 24 LTS is required.'); process.exit(1); }"],
+      "problemMatcher": []
+    },
+    {
       "label": "web:install",
       "type": "process",
       "command": "npm",
       "args": ["--prefix", "web", "ci"],
+      "dependsOn": "web:runtime-check",
       "problemMatcher": []
     },
     {
@@ -22,7 +30,7 @@
     },
     {
       "label": "build",
-      "dependsOn": ["package-python", "web:build"],
+      "dependsOn": ["package-python", "package-stream", "web:build"],
       "group": {"kind": "build", "isDefault": true},
       "problemMatcher": []
     },
@@ -33,6 +41,32 @@
       "args": ["build"],
       "group": "build",
       "problemMatcher": []
+    },
+    {
+      "label": "package-stream",
+      "type": "process",
+      "command": "${workspaceFolder}/infra/scripts/package-stream.sh",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "run-stream",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--project", "${workspaceFolder}", "func", "start", "--port", "7072"],
+      "options": {
+        "cwd": "${workspaceFolder}/stream",
+        "env": {"PYTHON_ENABLE_INIT_INDEXING": "1"}
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {"regexp": "^$"},
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(Job host started|Functions:)"
+        }
+      }
     },
     {
       "label": "run-api",
@@ -129,6 +163,7 @@
       "type": "process",
       "command": "npm",
       "args": ["--prefix", "web", "run", "build"],
+      "dependsOn": "web:runtime-check",
       "group": "build",
       "problemMatcher": []
     },
