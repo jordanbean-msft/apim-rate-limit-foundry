@@ -4,6 +4,7 @@
 local.settings.json
 .azure
 web
+stream
 infra
 tests
 coverage.xml

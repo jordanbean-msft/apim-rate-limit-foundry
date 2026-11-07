@@ -45,6 +45,7 @@ web/.env.local
 local.settings.json
 .python_packages/
 requirements.txt
+stream/wheels/
 
 # Terraform
 infra/.terraform/

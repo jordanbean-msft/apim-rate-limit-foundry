@@ -17,6 +17,8 @@ from opentelemetry.trace import SpanKind, StatusCode
 LOGGER_NAME = "apim_rate_limit_foundry"
 correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_SAFE_SUBSCRIPTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}\Z")
+_CALLER_REF = re.compile(r"[0-9a-f]{64}\Z")
 _FIELDS = frozenset(
     {
         "correlation_id",
@@ -79,9 +81,14 @@ _FIELDS = frozenset(
         "past_due",
         "replayed",
         "stage",
+        "caller_ref",
+        "subscription_id",
+        "application_name",
+        "streaming",
+        "settlement_source",
     }
 )
-_TEXT_FIELDS = frozenset({"route", "reset_at"})
+_TEXT_FIELDS = frozenset({"application_name", "route", "reset_at"})
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _LOG_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
@@ -119,6 +126,10 @@ _EVENTS = frozenset(
         "reconciliation_timer_started",
         "reconciliation_timer_completed",
         "reconciliation_timer_failed",
+        "stream_dispatch_started",
+        "stream_usage_observed",
+        "stream_settlement_completed",
+        "stream_settlement_pending",
     }
 )
 
@@ -139,6 +150,16 @@ def safe_attributes(values: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in values.items():
         if key not in _FIELDS or value is None:
+            continue
+        if key == "caller_ref" and not (isinstance(value, str) and _CALLER_REF.fullmatch(value)):
+            continue
+        if key == "subscription_id" and not (
+            isinstance(value, str) and _SAFE_SUBSCRIPTION_ID.fullmatch(value)
+        ):
+            continue
+        if key == "streaming" and not isinstance(value, bool):
+            continue
+        if key == "settlement_source" and value != "provider_stream":
             continue
         if isinstance(value, bool | int):
             result[key] = value

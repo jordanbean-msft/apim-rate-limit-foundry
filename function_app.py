@@ -8,6 +8,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.monitoring import configure_monitoring
+from apim_rate_limit_foundry.streaming.replay import replay_stream_usage
 from apim_rate_limit_foundry.telemetry import (
     LOGGER_NAME,
     correlation_id,
@@ -39,6 +40,7 @@ async def reconcile_usage(timer: func.TimerRequest, context: func.Context) -> No
         ) as span:
             emit("reconciliation_timer_started", past_due=timer.past_due)
             try:
+                await replay_stream_usage(api.state.get_engine())
                 count = await api.state.get_engine().reconcile()
             except Exception as error:
                 span.set_status(StatusCode.ERROR)

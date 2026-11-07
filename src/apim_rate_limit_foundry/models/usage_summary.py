@@ -10,7 +10,7 @@ from apim_rate_limit_foundry.models.types import ApiProtocol, Service
 class UsageSummary(Contract):
     id: str
     tenant_id: str
-    principal_id: str
+    subscription_id: str
     service: Service
     model: str
     period: Literal["hour", "day"]

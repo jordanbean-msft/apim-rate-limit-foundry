@@ -80,6 +80,7 @@ async def protocol_engine(
             "id": "tokens",
             "name": "All tokens",
             "service": "foundry",
+            "subscription_id": "*",
             "limit": 5000,
             "period": "day",
             "metric": "tokens",
@@ -443,12 +444,16 @@ async def test_legacy_price_reservation_and_settlement_fingerprints_survive(
     intent = engine.repository.records["intents", first.reservation_id]
     for data in (intent["data"], engine.repository.records["usage", first.reservation_id]["data"]):
         data["request"].pop("api_protocol", None)
+        data["request"].pop("payload_sha256", None)
         for field in ("cache_write_input_tokens_5m", "cache_write_input_tokens_1h"):
             data["request"]["usage"].pop(field, None)
         data["price"].pop("cache_write_5m_per_million", None)
         data["price"].pop("cache_write_1h_per_million", None)
-    legacy_json = json.dumps(intent["data"]["request"], separators=(",", ":"))
-    assert intent["data"]["fingerprint"] == digest(legacy_json)
+    application_request = {
+        key: value for key, value in intent["data"]["request"].items() if key != "principal_id"
+    }
+    application_json = json.dumps(application_request, separators=(",", ":"))
+    assert intent["data"]["fingerprint"] == digest(application_json)
     actual = Settle(
         reservation_id=first.reservation_id,
         status="actual",
@@ -510,6 +515,7 @@ async def test_real_redis_azurite_protocol_settlement_and_recovery(
                 "id": "tokens",
                 "name": "Tokens",
                 "service": "foundry",
+                "subscription_id": "*",
                 "limit": 5000,
                 "metric": "tokens",
                 "period": "day",

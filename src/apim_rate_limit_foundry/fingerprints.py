@@ -12,8 +12,11 @@ def _zero_write_fields(usage: Usage) -> set[str]:
 
 def reserve_fingerprint(request: Reserve) -> str:
     exclusions: dict = {"usage": _zero_write_fields(request.usage)}
+    exclusions["principal_id"] = True
     if request.api_protocol in (None, "openai-chat"):
         exclusions["api_protocol"] = True
+    if request.payload_sha256 is None:
+        exclusions["payload_sha256"] = True
     return digest(request.model_dump_json(exclude=exclusions))
 
 

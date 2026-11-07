@@ -6,12 +6,14 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SeedSettings(BaseSettings):
     seed_api_url: str = "http://127.0.0.1:8000/api"
     seed_access_token: str = ""
+    seed_apim_subscription_key: SecretStr = SecretStr("")
     seed_local_auth: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -40,6 +42,13 @@ def main() -> None:
         if settings.seed_access_token
         else {}
     )
+    subscription_key = settings.seed_apim_subscription_key.get_secret_value()
+    if parsed.scheme == "https" and parsed.path.rstrip("/").endswith("/portal"):
+        if not subscription_key:
+            raise ValueError("SEED_APIM_SUBSCRIPTION_KEY is required for the APIM portal API")
+        headers["Ocp-Apim-Subscription-Key"] = subscription_key
+    elif subscription_key:
+        raise ValueError("Use the APIM /portal endpoint when supplying its subscription key")
     if settings.seed_local_auth:
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
             raise ValueError("Local seed identity headers are permitted only on loopback HTTP")

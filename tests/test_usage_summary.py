@@ -124,14 +124,21 @@ async def test_hour_and_day_rollups_use_utc_admission_not_settlement_time(
     assert all(row.start_at.tzinfo == UTC and row.end_at.tzinfo == UTC for row in hours + days)
 
 
-async def test_summary_endpoint_scopes_tenant_principal_and_does_not_change_event_api(
+async def test_summary_endpoint_scopes_explicit_application_assignment(
     engine: Engine,
     settings: Settings,
     request_body: Reserve,
 ) -> None:
     await engine.reserve(request_body)
-    await engine.reserve(request_body.model_copy(update={"tenant_id": "other-tenant"}))
-    await engine.reserve(request_body.model_copy(update={"principal_id": "other-user"}))
+    await engine.reserve(
+        request_body.model_copy(update={"tenant_id": "other-tenant", "request_id": "other-tenant"})
+    )
+    await engine.reserve(
+        request_body.model_copy(update={"principal_id": "other-user", "request_id": "other-user"})
+    )
+    await engine.reserve(
+        request_body.model_copy(update={"subscription_id": "other-app", "request_id": "other-app"})
+    )
     reader = {
         "X-Local-Tenant-Id": "tenant-1",
         "X-Local-Principal-Id": "user-1",
@@ -146,10 +153,11 @@ async def test_summary_endpoint_scopes_tenant_principal_and_does_not_change_even
         own = (await client.get("/api/usage/summary?period=hour", headers=reader)).json()
         all_rows = (await client.get("/api/usage/summary?period=day", headers=admin)).json()
         events = (await client.get("/api/usage", headers=reader)).json()
-        assert len(own) == len(events) == 1
+        assert len(own) == 1 and len(events) == 2
         assert len(all_rows) == 3
-        assert own[0]["tenant_id"] == "tenant-1" and own[0]["principal_id"] == "user-1"
-        assert own[0]["cost_micro_usd"] == 100
+        assert own[0]["tenant_id"] == "tenant-1" and own[0]["subscription_id"] == "app-1"
+        assert own[0]["request_count"] == 2
+        assert own[0]["cost_micro_usd"] == 200
         assert events[0]["kind"] == "reservation" and "data" in events[0]
         assert (
             await client.get("/api/usage/summary?period=month", headers=reader)
@@ -173,7 +181,13 @@ async def test_rollups_separate_services_models_and_service_units(
     ):
         card = Price(id=service, service=service, model=model, version="1", per_request="0", **rate)
         rule = Policy(
-            id=service, name=service, service=service, period="day", metric="requests", limit=10
+            id=service,
+            name=service,
+            service=service,
+            subscription_id="*",
+            period="day",
+            metric="requests",
+            limit=10,
         )
         await engine.repository.create("prices", card.id, card.model_dump(mode="json"))
         await engine.repository.create("policies", rule.id, rule.model_dump(mode="json"))

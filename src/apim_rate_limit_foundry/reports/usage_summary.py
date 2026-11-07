@@ -13,9 +13,10 @@ class UsageSummaryService:
         self.repository = repository
 
     @staticmethod
-    def _contribution(
+    def contribution(
         request: Reserve, price: Price, settlement: Record | None
     ) -> tuple[Usage, int, bool]:
+        """Return effective units, one replacement charge, and its uncertainty flag."""
         if settlement is None or settlement["data"]["status"] != "actual":
             return request.usage, cost(price, request.usage, True, request.effective_protocol), True
         data = settlement["data"]
@@ -40,20 +41,32 @@ class UsageSummaryService:
     ) -> list[UsageSummary]:
         summaries: dict[str, UsageSummary] = {}
         seen: set[str] = set()
+        visible = {
+            (assignment["tenant_id"], assignment["subscription_id"])
+            for assignment in await self.repository.list("assignments")
+            if assignment.get("tenant_id") == tenant
+            and "subscription_id" in assignment
+            and principal in assignment.get("reader_principal_ids", [])
+        }
         for record in await self.repository.list("usage"):
-            if not admin and (record["tenant_id"] != tenant or record["principal_id"] != principal):
-                continue
             if record["id"] in seen:
                 continue
             seen.add(record["id"])
-            request = Reserve.model_validate(record["data"]["request"])
+            stored_request = record["data"].get("request", {})
+            subscription_id = record.get("subscription_id") or stored_request.get("subscription_id")
+            # Legacy user-scoped admissions remain immutable but are not app usage.
+            if not subscription_id:
+                continue
+            if not admin and (record["tenant_id"], subscription_id) not in visible:
+                continue
+            request = Reserve.model_validate(stored_request)
             timestamp = datetime.fromisoformat(record["timestamp"])
             if timestamp.tzinfo is None:
                 raise ValueError("Durable admission timestamp must include a timezone")
             start, end = window(period, timestamp)
             dimensions = [
                 record["tenant_id"],
-                record["principal_id"],
+                subscription_id,
                 request.service,
                 request.model,
                 period,
@@ -66,7 +79,7 @@ class UsageSummaryService:
                 summaries[summary_id] = UsageSummary(
                     id=summary_id,
                     tenant_id=record["tenant_id"],
-                    principal_id=record["principal_id"],
+                    subscription_id=subscription_id,
                     service=request.service,
                     model=request.model,
                     period=period,
@@ -81,7 +94,7 @@ class UsageSummaryService:
                 continue
             summary.admitted_requests += 1
             settlement = await self.repository.get("settlements", record["id"])
-            usage, charge, estimated = self._contribution(
+            usage, charge, estimated = self.contribution(
                 request,
                 Price.model_validate(record["data"]["price"]),
                 settlement,
@@ -97,5 +110,11 @@ class UsageSummaryService:
             summary.text_records += usage.text_records
         return sorted(
             summaries.values(),
-            key=lambda row: (row.start_at, row.tenant_id, row.principal_id, row.service, row.model),
+            key=lambda row: (
+                row.start_at,
+                row.tenant_id,
+                row.subscription_id,
+                row.service,
+                row.model,
+            ),
         )

@@ -72,15 +72,35 @@ def test_utc_window_boundaries(period: str, start: str, end: str) -> None:
     assert tuple(t.isoformat() for t in result) == (start, end)
 
 
-def test_assignments_are_tenant_principal_scoped(request_body: Reserve, policy: Policy) -> None:
+def test_assignments_are_tenant_application_scoped(request_body: Reserve, policy: Policy) -> None:
     assignment = Assignment(
-        id="a", tenant_id="other-tenant", principal_id="user-1", policy_ids=[policy.id]
+        id="a",
+        tenant_id="other-tenant",
+        subscription_id=request_body.subscription_id,
+        policy_ids=[policy.id],
+        reader_principal_ids=["user-1"],
     )
     assert matching(request_body, [policy], [assignment]) == []
     assignment.tenant_id = request_body.tenant_id
     high_priority = policy.model_copy(update={"id": "p2", "priority": 20})
     assert matching(request_body, [policy, high_priority], [assignment]) == [high_priority, policy]
     assert matching(request_body, [policy.model_copy(update={"tenant_id": "other"})], []) == []
+
+
+def test_policy_and_assignment_budget_identity_is_application_scoped(
+    request_body: Reserve, policy: Policy
+) -> None:
+    app_policy = policy.model_copy(update={"subscription_id": request_body.subscription_id})
+    assignment = Assignment(
+        id="app-policy",
+        tenant_id=request_body.tenant_id,
+        subscription_id=request_body.subscription_id,
+        policy_ids=[policy.id],
+        reader_principal_ids=["user-1"],
+    )
+    assert matching(request_body, [app_policy], [assignment]) == [app_policy]
+    other_application = request_body.model_copy(update={"subscription_id": "app-2"})
+    assert matching(other_application, [app_policy], [assignment]) == []
 
 
 def test_service_estimates_are_hard_bounded(settings: Settings, request_body: Reserve) -> None:

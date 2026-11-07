@@ -11,6 +11,7 @@ from apim_rate_limit_foundry.accounting import (
     matching,
     validate_estimate,
 )
+from apim_rate_limit_foundry.caller_reference import caller_ref
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.fingerprints import reserve_fingerprint, settlement_fingerprint
 from apim_rate_limit_foundry.models import Assignment, Decision, Policy, Price, Reserve, Settle
@@ -20,8 +21,15 @@ from apim_rate_limit_foundry.stores.contracts import Conflict, CounterStore, Rec
 from apim_rate_limit_foundry.telemetry import emit, observe_operation
 
 
-def event(kind: str, record_id: str, tenant: str, principal: str, data: Record) -> Record:
-    return {
+def event(
+    kind: str,
+    record_id: str,
+    tenant: str,
+    principal: str,
+    data: Record,
+    subscription_id: str | None = None,
+) -> Record:
+    record = {
         "id": record_id,
         "kind": kind,
         "tenant_id": tenant,
@@ -29,6 +37,9 @@ def event(kind: str, record_id: str, tenant: str, principal: str, data: Record) 
         "timestamp": datetime.now(UTC).isoformat(),
         "data": data,
     }
+    if subscription_id is not None:
+        record["subscription_id"] = subscription_id
+    return record
 
 
 class Engine:
@@ -40,34 +51,81 @@ class Engine:
     async def configuration(self, collection: str) -> list[Record]:
         return [r for r in await self.repository.list(collection) if not r.get("_deleted")]
 
+    async def policies(self) -> list[Policy]:
+        policies = []
+        for record in await self.configuration("policies"):
+            if not record.get("subscription_id") and "principal_id" in record:
+                continue
+            policies.append(Policy.model_validate(record))
+        return policies
+
+    async def assignments(self) -> list[Assignment]:
+        assignments = []
+        for record in await self.configuration("assignments"):
+            if not record.get("subscription_id") and "principal_id" in record:
+                continue
+            assignments.append(Assignment.model_validate(record))
+        return assignments
+
+    def application_context(self, request: Reserve) -> Record:
+        return {
+            "subscription_id": request.subscription_id,
+            "application_name": self.settings.application_name(
+                request.tenant_id, request.subscription_id
+            ),
+        }
+
     @observe_operation("reserve")
     async def reserve(self, request: Reserve) -> Decision:
+        application = self.application_context(request)
         emit(
             "reservation_requested",
             service=request.service,
             model=request.model,
             api_protocol=request.effective_protocol,
             estimated=True,
+            **application,
         )
         validate_estimate(request, self.settings)
-        reservation_id = digest(request.tenant_id, request.principal_id, request.request_id)
-        fingerprint = reserve_fingerprint(request)
+        reservation_id = digest(
+            "application-v1", request.tenant_id, request.subscription_id, request.request_id
+        )
         intent = await self.repository.get("intents", reservation_id)
         replayed = intent is not None
+        if intent is None and request.service == "foundry" and self.settings.model_registry:
+            deployment = self.settings.registered_model(
+                request.effective_protocol or "openai-chat", request.model
+            )
+            if (
+                request.usage.input_tokens > deployment.max_input_tokens
+                or request.usage.output_tokens > deployment.max_output_tokens
+            ):
+                raise ValueError("Request exceeds registered model token bounds")
+            if request.price_version not in (None, deployment.price_version):
+                raise ValueError("Price version does not match the registered model")
+            request = request.model_copy(update={"price_version": deployment.price_version})
+        elif intent is not None and request.price_version is None:
+            request = request.model_copy(
+                update={"price_version": intent["data"]["request"].get("price_version")}
+            )
+        fingerprint = reserve_fingerprint(request)
         if intent is None:
             policies = matching(
                 request,
-                [Policy.model_validate(p) for p in await self.configuration("policies")],
-                [Assignment.model_validate(a) for a in await self.configuration("assignments")],
+                await self.policies(),
+                await self.assignments(),
             )
             if not policies:
                 emit(
                     "rate_decision",
+                    caller_ref=caller_ref(request.tenant_id, request.subscription_id),
+                    streaming=request.streaming,
                     allowed=False,
                     reason="no_matching_policy",
                     service=request.service,
                     model=request.model,
                     api_protocol=request.effective_protocol,
+                    **application,
                 )
                 raise ValueError("No matching policy; admission denied")
             prices = [
@@ -80,11 +138,14 @@ class Engine:
             if len(prices) != 1:
                 emit(
                     "rate_decision",
+                    caller_ref=caller_ref(request.tenant_id, request.subscription_id),
+                    streaming=request.streaming,
                     allowed=False,
                     reason="price_configuration_invalid",
                     service=request.service,
                     model=request.model,
                     api_protocol=request.effective_protocol,
+                    **application,
                 )
                 raise ValueError("Exactly one matching price version is required")
             price = prices[0]
@@ -107,11 +168,13 @@ class Engine:
                 request.principal_id,
                 {
                     "request": request.model_dump(mode="json"),
+                    "accounting_version": 2,
                     "fingerprint": fingerprint,
                     "debits": charges,
                     "price": price.model_dump(mode="json"),
                     "decision": decision,
                 },
+                request.subscription_id,
             )
             # Persist the maximum liability before touching Redis. Incomplete intents replay
             # conservatively after cache loss, including crashes before the admission reply.
@@ -125,6 +188,8 @@ class Engine:
         if any(d["reset_at"] <= datetime.now(UTC).isoformat() for d in data["debits"]):
             emit(
                 "rate_decision",
+                caller_ref=caller_ref(request.tenant_id, request.subscription_id),
+                streaming=request.streaming,
                 reservation_id=reservation_id,
                 allowed=False,
                 reason="reservation_window_expired",
@@ -132,6 +197,7 @@ class Engine:
                 service=request.service,
                 model=request.model,
                 api_protocol=request.effective_protocol,
+                **application,
             )
             return Decision(
                 allowed=False,
@@ -195,10 +261,13 @@ class Engine:
                     "api_protocol": request.effective_protocol,
                     "cost_micro_usd": reserved_cost if decision["allowed"] else 0,
                 },
+                request.subscription_id,
             ),
         )
         emit(
             "rate_decision",
+            caller_ref=caller_ref(request.tenant_id, request.subscription_id),
+            streaming=request.streaming,
             reservation_id=reservation_id,
             allowed=decision["allowed"],
             service=request.service,
@@ -214,10 +283,13 @@ class Engine:
             estimated=True,
             reserved_cost_micro_usd=reserved_cost,
             cost_micro_usd=reserved_cost if decision["allowed"] else 0,
+            **application,
         )
         for charge in data["debits"]:
             emit(
                 "reservation_policy_debit",
+                caller_ref=caller_ref(request.tenant_id, request.subscription_id),
+                streaming=request.streaming,
                 reservation_id=reservation_id,
                 allowed=decision["allowed"],
                 service=request.service,
@@ -234,6 +306,7 @@ class Engine:
                 ),
                 replayed=replayed,
                 **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
+                **application,
             )
         return Decision.model_validate(decision)
 
@@ -244,7 +317,9 @@ class Engine:
         if intent is None:
             raise Conflict("Unknown reservation")
         data = intent["data"]
-        original = Reserve.model_validate(data["request"])
+        has_application_scope = bool(data["request"].get("subscription_id"))
+        original = Reserve.from_persisted(data["request"])
+        application = self.application_context(original) if has_application_scope else {}
         try:
             usage = normalize_settlement_usage(request, original)
         except IncompleteUsageError:
@@ -264,17 +339,23 @@ class Engine:
                     "reservation_id": request.reservation_id,
                     "api_protocol": original.effective_protocol,
                 },
+                original.subscription_id if has_application_scope else None,
             )
             persisted_pending = await self.repository.create("reconciliation", pending_id, pending)
             emit(
                 "settlement_pending",
                 reservation_id=request.reservation_id,
+                caller_ref=caller_ref(original.tenant_id, original.subscription_id)
+                if has_application_scope
+                else None,
+                streaming=original.streaming,
                 status="conservative",
                 estimated=True,
                 reason="incomplete_provider_usage",
                 service=original.service,
                 model=original.model,
                 api_protocol=original.effective_protocol,
+                **application,
             )
             return persisted_pending
         cached_reported = request.status == "actual" and (
@@ -324,6 +405,7 @@ class Engine:
                 "counter": counter,
                 "fingerprint": fingerprint,
             },
+            original.subscription_id if has_application_scope else None,
         )
         persisted = await self.repository.create("settlements", request.reservation_id, result)
         if persisted["data"]["fingerprint"] != fingerprint:
@@ -338,6 +420,10 @@ class Engine:
         )
         emit(
             "settlement_recorded",
+            caller_ref=caller_ref(original.tenant_id, original.subscription_id)
+            if has_application_scope
+            else None,
+            streaming=original.streaming,
             reservation_id=request.reservation_id,
             service=original.service,
             model=original.model,
@@ -352,6 +438,7 @@ class Engine:
             price_id=data["price"]["id"],
             price_version=data["price"]["version"],
             **(usage if request.status == "actual" else original.usage).model_dump(),
+            **application,
         )
         emit(
             "settlement_price",
@@ -367,6 +454,10 @@ class Engine:
         for before, charge in zip(data["debits"], charges, strict=True):
             emit(
                 "settlement_policy_debit",
+                caller_ref=caller_ref(original.tenant_id, original.subscription_id)
+                if has_application_scope
+                else None,
+                streaming=original.streaming,
                 reservation_id=request.reservation_id,
                 status=request.status,
                 estimated=estimated,
@@ -377,6 +468,7 @@ class Engine:
                 applied_amount=charge["amount"],
                 refunded_amount=max(0, before["amount"] - charge["amount"]),
                 **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
+                **application,
             )
         return persisted
 
@@ -390,7 +482,7 @@ class Engine:
         return await self.settle(
             Settle(
                 reservation_id=reservation_id,
-                usage=Reserve.model_validate(intent["data"]["request"]).usage,
+                usage=Reserve.from_persisted(intent["data"]["request"]).usage,
                 status="conservative",
             )
         )
@@ -466,13 +558,20 @@ class Engine:
         if intent is None or admitted is None or not admitted["data"]["allowed"]:
             raise Conflict("Unknown admitted reservation")
         request = intent["data"]["request"]
+        if "subscription_id" not in request:
+            raise Conflict("Legacy user-scoped reservations cannot bind operations")
         if request["service"] != "document-intelligence" or any(
-            payload[k] != request[k] for k in ("tenant_id", "principal_id", "model")
+            payload[k] != request[k] for k in ("tenant_id", "subscription_id", "model")
         ):
             raise Conflict("Operation identity does not match reservation")
-        record_id = digest(payload["operation_id"])
+        record_id = digest(
+            "application-v1",
+            payload["tenant_id"],
+            payload["subscription_id"],
+            str(payload["operation_id"]),
+        )
         old = await self.repository.create("operations", record_id, payload)
-        if old != payload:
+        if any(old.get(key) != value for key, value in payload.items() if key != "principal_id"):
             raise Conflict("Operation already bound differently")
         emit(
             "operation_ownership",
@@ -486,8 +585,16 @@ class Engine:
 
     @observe_operation("check_operation")
     async def check_operation(self, payload: dict[str, Any]) -> Record:
-        old = await self.repository.get("operations", digest(payload["operation_id"]))
-        allowed = old is not None and all(old.get(k) == v for k, v in payload.items())
+        record_id = digest(
+            "application-v1",
+            payload["tenant_id"],
+            payload["subscription_id"],
+            str(payload["operation_id"]),
+        )
+        old = await self.repository.get("operations", record_id)
+        allowed = old is not None and all(
+            old.get(k) == v for k, v in payload.items() if k != "principal_id"
+        )
         emit(
             "operation_ownership",
             operation="check",
@@ -527,14 +634,27 @@ class Engine:
                     )
         else:
             records = await self.repository.list(collection)
-        scoped = [
-            r
-            for r in records
-            if admin or (r.get("tenant_id") == tenant and r.get("principal_id") == principal)
-        ]
+        if admin:
+            scoped = records
+        else:
+            assignments = await self.configuration("assignments")
+            visible = {
+                (assignment["tenant_id"], assignment["subscription_id"])
+                for assignment in assignments
+                if assignment.get("tenant_id") == tenant
+                and "subscription_id" in assignment
+                and principal in assignment.get("reader_principal_ids", [])
+            }
+            scoped = [
+                record
+                for record in records
+                if (record.get("tenant_id"), record.get("subscription_id")) in visible
+            ]
         # Internal counter snapshots and fingerprints are not portal contracts.
         result = json.loads(json.dumps(scoped))
         for record in result:
+            if collection in ("usage", "reconciliation") and not record.get("subscription_id"):
+                record["accounting_scope"] = "legacy_user"
             for name in ("counter", "fingerprint", "price", "decision"):
                 record["data"].pop(name, None)
         return result

@@ -48,5 +48,31 @@
     "per_page": "0",
     "per_text_record": "0.001",
     "per_request": "0"
+  },
+  {
+    "id": "sample-fast-v1",
+    "service": "foundry",
+    "model": "sample-fast",
+    "version": "sample-v1",
+    "input_per_million": "0.50",
+    "output_per_million": "2.00",
+    "cached_input_per_million": "0.05",
+    "per_page": "0",
+    "per_text_record": "0",
+    "per_request": "0"
+  },
+  {
+    "id": "sample-claude-fast-v1",
+    "service": "foundry",
+    "model": "sample-claude-fast",
+    "version": "sample-v1",
+    "input_per_million": "1.00",
+    "output_per_million": "5.00",
+    "cached_input_per_million": "0.10",
+    "per_page": "0",
+    "per_text_record": "0",
+    "per_request": "0",
+    "cache_write_5m_per_million": "1.25",
+    "cache_write_1h_per_million": "2.00"
   }
 ]

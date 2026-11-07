@@ -4,8 +4,10 @@ from uuid import uuid4
 
 import pytest
 
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.accounting import digest
+from apim_rate_limit_foundry.engine import Engine, event
 from apim_rate_limit_foundry.models import Policy, Price, Reserve, Settle, Usage
+from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
 from apim_rate_limit_foundry.stores.contracts import Conflict, RecoveryRequired
 from apim_rate_limit_foundry.stores.memory import MemoryCounters
 
@@ -24,6 +26,7 @@ async def test_concurrent_idempotency_and_all_policies_atomic(
             "id": "request-cap",
             "name": "Requests",
             "service": "foundry",
+            "subscription_id": "*",
             "limit": 1,
             "period": "hour",
             "metric": "requests",
@@ -41,6 +44,114 @@ async def test_concurrent_idempotency_and_all_policies_atomic(
     assert not any(d.allowed for d in denied)
     assert engine.counters.counts == counts_before
     assert denied[0].headers["Retry-After"]
+
+
+async def test_application_budget_shares_across_actors_and_isolates_subscriptions(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+) -> None:
+    bounded = policy.model_copy(update={"limit": 150})
+    await engine.repository.mutate(
+        "policies", policy.id, bounded.model_dump(mode="json"), {"id": "app-budget"}
+    )
+    first = await engine.reserve(request_body.model_copy(update={"request_id": "first"}))
+    repeated_by_other_actor = await engine.reserve(
+        request_body.model_copy(update={"principal_id": "user-2", "request_id": "first"})
+    )
+    second_actor_request = await engine.reserve(
+        request_body.model_copy(update={"principal_id": "user-2", "request_id": "second"})
+    )
+    isolated_application = await engine.reserve(
+        request_body.model_copy(update={"request_id": "other-app", "subscription_id": "app-2"})
+    )
+
+    assert first.allowed and repeated_by_other_actor.allowed
+    assert first.reservation_id == repeated_by_other_actor.reservation_id
+    assert not second_actor_request.allowed
+    assert isolated_application.allowed
+    assert sorted(engine.counters.counts.values()) == [100, 100]
+    assert (await engine.repository.get("intents", first.reservation_id))["data"]["request"][
+        "principal_id"
+    ] == "user-1"
+
+
+async def test_legacy_user_policy_is_not_widened_to_applications(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+) -> None:
+    legacy = policy.model_dump(mode="json")
+    legacy.pop("subscription_id")
+    legacy["principal_id"] = "user-1"
+    await engine.repository.mutate("policies", policy.id, legacy, {"id": "legacy-policy"})
+
+    with pytest.raises(ValueError, match="No matching policy"):
+        await engine.reserve(request_body)
+    assert not engine.counters.counts
+
+
+async def test_legacy_liabilities_recover_outside_application_counter_and_reports(
+    engine: Engine,
+    request_body: Reserve,
+    policy: Policy,
+    price: Price,
+) -> None:
+    legacy_id = digest(request_body.tenant_id, request_body.principal_id, request_body.request_id)
+    legacy_request = request_body.model_dump(mode="json")
+    legacy_request["subscription_id"] = None
+    expired_reset = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    legacy_debit = {
+        "key": "legacy-user-counter-v1",
+        "policy_id": policy.id,
+        "metric": "cost",
+        "amount": 100,
+        "limit": 300,
+        "reset_at": expired_reset,
+    }
+    intent_data = {
+        "request": legacy_request,
+        "fingerprint": "legacy-fingerprint",
+        "debits": [legacy_debit],
+        "price": price.model_dump(mode="json"),
+        "decision": {"allowed": True, "reason": "reserved"},
+    }
+    await engine.repository.create(
+        "intents",
+        legacy_id,
+        event("intent", legacy_id, request_body.tenant_id, request_body.principal_id, intent_data),
+    )
+    await engine.repository.create(
+        "usage",
+        legacy_id,
+        event(
+            "reservation",
+            legacy_id,
+            request_body.tenant_id,
+            request_body.principal_id,
+            {
+                **intent_data,
+                "allowed": True,
+                "status": "reserved",
+            },
+        ),
+    )
+
+    await engine.recover()
+    assert engine.counters.counts == {"legacy-user-counter-v1": 100}
+    assert (await engine.reserve(request_body)).allowed
+    assert sorted(engine.counters.counts.values()) == [100, 100]
+    assert await engine.reconcile() == 1
+    legacy_settlement = await engine.repository.get("settlements", legacy_id)
+    assert legacy_settlement is not None and "subscription_id" not in legacy_settlement
+    summary = await UsageSummaryService(engine.repository).summarize(
+        "day", request_body.tenant_id, request_body.principal_id, True
+    )
+    assert len(summary) == 1 and summary[0].subscription_id == request_body.subscription_id
+    usage_report = await engine.report("usage", request_body.tenant_id, "admin", True)
+    assert next(row for row in usage_report if row["id"] == legacy_id)["accounting_scope"] == (
+        "legacy_user"
+    )
 
 
 async def test_settlement_refunds_only_known_actual_usage(
@@ -272,6 +383,7 @@ async def test_document_poll_binding_and_scope(engine: Engine, request_body: Res
             "id": "di",
             "name": "DI",
             "service": "document-intelligence",
+            "subscription_id": "*",
             "limit": 5,
             "period": "day",
             "metric": "pages",
@@ -292,15 +404,39 @@ async def test_document_poll_binding_and_scope(engine: Engine, request_body: Res
         "reservation_id": decision.reservation_id,
         "tenant_id": request_body.tenant_id,
         "principal_id": request_body.principal_id,
+        "subscription_id": request_body.subscription_id,
         "model": "read",
     }
     assert (await engine.bind_operation(binding))["allowed"]
     assert (await engine.bind_operation(binding))["allowed"]
     check = {k: v for k, v in binding.items() if k != "reservation_id"}
     assert (await engine.check_operation(check))["allowed"]
+    assert (await engine.check_operation({**check, "principal_id": "different-user"}))["allowed"]
     assert not (await engine.check_operation({**check, "tenant_id": "other"}))["allowed"]
-    with pytest.raises(Conflict):
-        await engine.bind_operation({**binding, "principal_id": "other"})
+    assert not (await engine.check_operation({**check, "subscription_id": "another-app"}))[
+        "allowed"
+    ]
+    other_application = await engine.reserve(
+        request_body.model_copy(
+            update={
+                "request_id": "document-other-app",
+                "subscription_id": "another-app",
+                "service": "document-intelligence",
+                "model": "read",
+                "usage": Usage(pages=5),
+                "document_bound_verified": True,
+            }
+        )
+    )
+    other_binding = {
+        **binding,
+        "reservation_id": other_application.reservation_id,
+        "subscription_id": "another-app",
+    }
+    assert (await engine.bind_operation(other_binding))["allowed"]
+    other_check = {key: value for key, value in other_binding.items() if key != "reservation_id"}
+    assert (await engine.check_operation(other_check))["allowed"]
+    assert (await engine.bind_operation({**binding, "principal_id": "other"}))["allowed"]
 
 
 async def test_timer_finalizes_expired_stream_without_refund(
@@ -384,6 +520,7 @@ async def test_denial_reports_blocking_policy_reset_not_shorter_unblocked_window
             "id": "minute",
             "name": "Requests",
             "service": "foundry",
+            "subscription_id": "*",
             "limit": minute_limit,
             "period": "minute",
             "metric": "requests",

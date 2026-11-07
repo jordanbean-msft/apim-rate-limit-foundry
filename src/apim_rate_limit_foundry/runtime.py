@@ -3,6 +3,7 @@ from azure.identity.aio import DefaultAzureCredential
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.reports.dashboard import DashboardService
 from apim_rate_limit_foundry.stores.memory import MemoryCounters, MemoryRepository
 from apim_rate_limit_foundry.stores.redis import RedisCounters
 from apim_rate_limit_foundry.stores.table import TableRepository
@@ -11,6 +12,7 @@ from apim_rate_limit_foundry.stores.table import TableRepository
 class Runtime:
     def __init__(self, settings: Settings) -> None:
         self.credential: DefaultAzureCredential | None = None
+        self.dashboard: DashboardService | None = None
         if settings.local_store_enabled:
             if settings.local_redis_url and settings.local_table_connection_string:
                 table = TableClient.from_connection_string(
@@ -50,8 +52,12 @@ class Runtime:
             self.engine = Engine(
                 TableRepository(table), RedisCounters(settings, self.credential), settings
             )
+            if settings.azure_dashboard_id:
+                self.dashboard = DashboardService(settings, self.credential)
 
     async def close(self) -> None:
+        if self.dashboard:
+            await self.dashboard.close()
         await self.engine.repository.close()
         await self.engine.counters.close()
         if self.credential:

@@ -5,6 +5,11 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from apim_rate_limit_foundry.models.application_registration import ApplicationRegistration
+from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
+from apim_rate_limit_foundry.models.stream_backend import StreamBackend
+from apim_rate_limit_foundry.models.types import ApiProtocol, SubscriptionIdentifier
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -35,6 +40,17 @@ class Settings(BaseSettings):
     telemetry_enabled: bool = True
     otel_service_name: str = "rate-limiter"
     otel_traces_sampler_arg: float = Field(default=1.0, ge=0, le=1)
+    stream_backends: dict[ApiProtocol, StreamBackend] = Field(default_factory=dict)
+    model_registry: dict[str, ModelDeployment] = Field(default_factory=dict)
+    application_registry: dict[SubscriptionIdentifier, ApplicationRegistration] = Field(
+        default_factory=dict
+    )
+    stream_max_event_bytes: int = Field(default=65536, ge=8192, le=1048576)
+    stream_max_body_bytes: int = Field(default=131072, ge=1024, le=1048576)
+    stream_timeout_seconds: int = Field(default=180, ge=10, le=210)
+    azure_dashboard_id: str = ""
+    log_analytics_workspace_id: str = ""
+    log_analytics_workspace_resource_id: str = ""
 
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":
@@ -52,13 +68,82 @@ class Settings(BaseSettings):
             raise ValueError("Local bypass is prohibited in Azure")
         if self.in_azure and not self.website_auth_enabled:
             raise ValueError("Platform Easy Auth must be required")
+        if self.in_azure and not self.application_registry:
+            raise ValueError("APPLICATION_REGISTRY is required in Azure")
         if has_local_redis != has_local_table:
             raise ValueError(
                 "LOCAL_REDIS_URL and LOCAL_TABLE_CONNECTION_STRING are required together"
             )
         if (has_local_redis or has_local_table) and not self.local_store_enabled:
             raise ValueError("Local persistent endpoints require LOCAL_STORE_ENABLED=true")
+        dashboard_config = (
+            self.azure_dashboard_id,
+            self.log_analytics_workspace_id,
+            self.log_analytics_workspace_resource_id,
+        )
+        if any(dashboard_config):
+            if not all(dashboard_config):
+                raise ValueError("Dashboard and both workspace IDs must be configured together")
+            uuid_pattern = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+            for resource_id, resource_type in (
+                (self.azure_dashboard_id, "Microsoft.Portal/dashboards"),
+                (
+                    self.log_analytics_workspace_resource_id,
+                    "Microsoft.OperationalInsights/workspaces",
+                ),
+            ):
+                if not re.fullmatch(
+                    rf"/subscriptions/{uuid_pattern}/resourceGroups/[^/?#]+"
+                    rf"/providers/{re.escape(resource_type)}/[^/?#]+",
+                    resource_id,
+                    re.IGNORECASE,
+                ):
+                    raise ValueError("Dashboard settings require fixed Azure resource IDs")
+            if not re.fullmatch(uuid_pattern, self.log_analytics_workspace_id, re.IGNORECASE):
+                raise ValueError("The workspace customer ID must be a UUID")
+        for key, deployment in self.model_registry.items():
+            protocol, separator, alias = key.partition(":")
+            if (
+                not separator
+                or protocol != deployment.api_protocol
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", alias) is None
+            ):
+                raise ValueError("Model registry keys must be protocol:alias with a safe alias")
+            if (
+                deployment.max_input_tokens > self.max_input_tokens
+                or deployment.max_output_tokens > self.max_output_tokens
+            ):
+                raise ValueError("Registered model limits must not exceed the Function limits")
+            if self.azure_cloud == "government":
+                if protocol == "anthropic-messages":
+                    raise ValueError("Anthropic models are not enabled in Azure Government")
+                if (
+                    not deployment.endpoint.host
+                    or not deployment.endpoint.host.endswith(
+                        (".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us")
+                    )
+                    or deployment.audience.host != "cognitiveservices.azure.us"
+                ):
+                    raise ValueError(
+                        "Government models require sovereign endpoints and Cognitive Services audience"
+                    )
         return self
+
+    def application_name(self, tenant_id: str, subscription_id: str) -> str:
+        if not self.application_registry:
+            if self.local_auth_enabled and self.local_store_enabled and not self.in_azure:
+                return subscription_id
+            raise ValueError("APPLICATION_REGISTRY is required for application accounting")
+        application = self.application_registry.get(subscription_id)
+        if application is None or application.tenant_id != tenant_id:
+            raise ValueError("Unknown application subscription or tenant")
+        return application.display_name
+
+    def registered_model(self, protocol: ApiProtocol, alias: str) -> ModelDeployment:
+        deployment = self.model_registry.get(f"{protocol}:{alias}")
+        if deployment is None:
+            raise ValueError("Unknown model alias or incompatible API protocol")
+        return deployment
 
     @property
     def in_azure(self) -> bool:
@@ -80,6 +165,22 @@ class Settings(BaseSettings):
             "https://login.microsoftonline.us"
             if self.azure_cloud == "government"
             else "https://login.microsoftonline.com"
+        )
+
+    @property
+    def management_endpoint(self) -> str:
+        return (
+            "https://management.usgovcloudapi.net"
+            if self.azure_cloud == "government"
+            else "https://management.azure.com"
+        )
+
+    @property
+    def logs_endpoint(self) -> str:
+        return (
+            "https://api.loganalytics.us"
+            if self.azure_cloud == "government"
+            else "https://api.loganalytics.io"
         )
 
     @property

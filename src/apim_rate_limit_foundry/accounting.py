@@ -107,7 +107,7 @@ def matching(
         policy_id
         for assignment in assignments
         if assignment.tenant_id == request.tenant_id
-        and assignment.principal_id == request.principal_id
+        and assignment.subscription_id == request.subscription_id
         for policy_id in assignment.policy_ids
     }
     bound = {policy_id for assignment in assignments for policy_id in assignment.policy_ids}
@@ -119,7 +119,7 @@ def matching(
             and p.service == request.service
             and p.model in ("*", request.model)
             and p.tenant_id in ("*", request.tenant_id)
-            and p.principal_id in ("*", request.principal_id)
+            and p.subscription_id in ("*", request.subscription_id)
             and (p.id not in bound or p.id in assigned)
         ],
         key=lambda p: (-p.priority, p.id),
@@ -146,8 +146,9 @@ def debits(
                     policy.id,
                     policy.metric,
                     policy.period,
+                    "application-v1",
                     request.tenant_id,
-                    request.principal_id,
+                    request.subscription_id,
                     start.isoformat(),
                 ),
                 "policy_id": policy.id,

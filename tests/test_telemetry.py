@@ -16,9 +16,11 @@ from redis.exceptions import ResponseError
 
 from apim_rate_limit_foundry import monitoring, telemetry
 from apim_rate_limit_foundry.api import create_app
+from apim_rate_limit_foundry.caller_reference import caller_ref
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
 from apim_rate_limit_foundry.models import Reserve, Settle, Usage
+from apim_rate_limit_foundry.models.application_registration import ApplicationRegistration
 from apim_rate_limit_foundry.stores.contracts import Conflict
 from apim_rate_limit_foundry.stores.redis import RedisCounters
 from apim_rate_limit_foundry.stores.table import TableRepository
@@ -152,12 +154,19 @@ async def test_decision_settlement_logs_show_accounting_without_internal_keys(
     request_body: Reserve,
     domain_logs: pytest.LogCaptureFixture,
 ) -> None:
+    engine.settings.application_registry["app-1"] = ApplicationRegistration(
+        tenant_id="tenant-1", display_name="Research app"
+    )
     decision = await engine.reserve(request_body)
     replay = await engine.reserve(request_body)
     assert replay == decision
     for index in range(3):
         await engine.reserve(request_body.model_copy(update={"request_id": f"extra-{index}"}))
     events = log_attributes(domain_logs, "rate_decision")
+    assert all(item["caller_ref"] == caller_ref("tenant-1", "app-1") for item in events)
+    assert all(item["subscription_id"] == "app-1" for item in events)
+    assert all(item["application_name"] == "Research app" for item in events)
+    assert all(item["streaming"] is False for item in events)
     assert events[0]["remaining"] == 200
     assert events[0]["estimated"] is True
     assert events[0]["reserved_cost_micro_usd"] == events[0]["cost_micro_usd"] == 100
@@ -178,6 +187,10 @@ async def test_decision_settlement_logs_show_accounting_without_internal_keys(
     await engine.settle(settlement)
     actual = log_attributes(domain_logs, "settlement_recorded")[-1]
     assert actual["cost_micro_usd"] == 18
+    assert actual["caller_ref"] == caller_ref("tenant-1", "app-1")
+    assert actual["subscription_id"] == "app-1"
+    assert actual["application_name"] == "Research app"
+    assert actual["streaming"] is False
     assert actual["cached_input_tokens"] == 4
     assert actual["cached_input_reported"] is True
     assert actual["estimated"] is False
@@ -209,12 +222,87 @@ async def test_conservative_settlement_logs_retained_maximum(
     await engine.release(decision.reservation_id)
     result = log_attributes(domain_logs, "settlement_recorded")[-1]
     assert result["status"] == "conservative"
+    for name in (
+        "rate_decision",
+        "reservation_policy_debit",
+        "settlement_recorded",
+        "settlement_policy_debit",
+    ):
+        for item in log_attributes(domain_logs, name):
+            assert item["streaming"] is True
+            assert item["caller_ref"] == caller_ref("tenant-1", "app-1")
+            assert item["subscription_id"] == "app-1"
     assert result["estimated"] is True
     assert result["cost_micro_usd"] == 100
     assert result["input_tokens"] == 10 and result["output_tokens"] == 20
     assert result["refunded_cost_micro_usd"] == 0
     assert log_attributes(domain_logs, "settlement_policy_debit")[-1]["refunded_amount"] == 0
     assert list(engine.counters.counts.values()) == [100]
+
+
+async def test_pending_settlement_retains_original_caller_and_streaming_dimensions(
+    engine: Engine,
+    request_body: Reserve,
+    domain_logs: pytest.LogCaptureFixture,
+) -> None:
+    original = request_body.model_copy(update={"streaming": True, "tenant_id": "another-tenant"})
+    decision = await engine.reserve(original)
+    await engine.settle(
+        Settle(
+            reservation_id=decision.reservation_id,
+            status="actual",
+            provider_usage={"prompt_tokens": 0},
+        )
+    )
+    pending = log_attributes(domain_logs, "settlement_pending")[-1]
+    assert pending["streaming"] is True
+    assert pending["caller_ref"] == caller_ref("another-tenant", "app-1")
+    assert pending["subscription_id"] == "app-1"
+    serialized = json.dumps([telemetry.safe_attributes(r.__dict__) for r in domain_logs.records])
+    assert "another-tenant" not in serialized and "user-1" not in serialized
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "stream_dispatch_started",
+        "stream_usage_observed",
+        "stream_settlement_completed",
+        "stream_settlement_pending",
+    ],
+)
+def test_stream_observer_allowlist_preserves_safe_dimensions_only(
+    name: str, domain_logs: pytest.LogCaptureFixture
+) -> None:
+    reference = caller_ref("private-tenant", "safe-subscription")
+    telemetry.emit(
+        name,
+        caller_ref=reference,
+        subscription_id="safe-subscription",
+        application_name="Display name",
+        streaming=True,
+        settlement_source="provider_stream",
+        tenant_id="private-tenant",
+        principal_id="private-principal",
+        display_label="private-label",
+        claims={"private": True},
+        content="private-content",
+    )
+    item = log_attributes(domain_logs, name)[-1]
+    assert item["caller_ref"] == reference and item["streaming"] is True
+    assert item["subscription_id"] == "safe-subscription"
+    assert item["settlement_source"] == "provider_stream"
+    assert "private" not in json.dumps(item)
+    assert (
+        telemetry.safe_attributes(
+            {
+                "caller_ref": "raw-principal",
+                "streaming": "true",
+                "settlement_source": "raw-identity",
+            }
+        )
+        == {}
+    )
 
 
 async def test_policy_traces_distinguish_binding_denial_from_unspent_demand(
@@ -229,6 +317,7 @@ async def test_policy_traces_distinguish_binding_denial_from_unspent_demand(
             "id": "requests-policy",
             "name": "One request",
             "service": "foundry",
+            "subscription_id": "*",
             "metric": "requests",
             "period": "day",
             "limit": 1,
@@ -329,6 +418,7 @@ async def test_service_unit_settlement_and_operation_ownership_are_observable(
             "id": "units-policy",
             "name": "Unit limit",
             "service": service,
+            "subscription_id": "*",
             "metric": metric,
             "period": "hour",
             "limit": 10,
@@ -355,17 +445,18 @@ async def test_service_unit_settlement_and_operation_ownership_are_observable(
             "operation_id": "private-operation",
             "tenant_id": request.tenant_id,
             "principal_id": request.principal_id,
+            "subscription_id": request.subscription_id,
             "model": request.model,
         }
         assert (
             await engine.bind_operation({**operation, "reservation_id": decision.reservation_id})
         )["allowed"]
         assert (await engine.check_operation(operation))["allowed"]
-        assert not (await engine.check_operation({**operation, "principal_id": "other-user"}))[
+        assert (await engine.check_operation({**operation, "principal_id": "other-user"}))[
             "allowed"
         ]
         ownership = log_attributes(domain_logs, "operation_ownership")
-        assert [item["allowed"] for item in ownership] == [True, True, False]
+        assert [item["allowed"] for item in ownership] == [True, True, True]
         assert "private-operation" not in json.dumps(ownership)
 
 
@@ -569,8 +660,9 @@ async def test_configuration_and_recovery_events_do_not_export_records_or_identi
             json={
                 "id": "private-record",
                 "tenant_id": "private-tenant",
-                "principal_id": "private-principal",
+                "subscription_id": "private-subscription",
                 "policy_ids": ["policy-1"],
+                "reader_principal_ids": ["private-principal"],
             },
         )
         assert response.status_code == 200
@@ -594,7 +686,10 @@ async def test_timer_trace_and_error_are_safe(
 ) -> None:
     monkeypatch.setattr("apim_rate_limit_foundry.config.Settings", lambda: settings)
     namespace = runpy.run_path("function_app.py")
-    engine = SimpleNamespace(reconcile=AsyncMock(return_value=2))
+    engine = SimpleNamespace(
+        reconcile=AsyncMock(return_value=2),
+        repository=SimpleNamespace(list=AsyncMock(return_value=[])),
+    )
     namespace["api"].state.get_engine = lambda: engine
     timer = SimpleNamespace(past_due=True)
     invocation = SimpleNamespace(
