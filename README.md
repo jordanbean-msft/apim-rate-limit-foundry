@@ -1,135 +1,152 @@
 # APIM granular AI rate limiting
 
-A reference sample for **Azure API Management + Microsoft Foundry + Python Azure Functions**.
-It separates infrastructure protection (requests/tokens per minute) from consumption governance
-(who may spend how much on which model or AI service).
+A reference sample for **Azure API Management + Microsoft Foundry + Python Azure
+Functions**, with a **React + Microsoft Fluent UI** administration portal.
 
-APIM authenticates callers, routes to AI backends, and enforces the decision returned by the
-Function. The Function owns pricing, granular rules, atomic reservations, and accounting.
-A **React + Microsoft Fluent UI** portal provides configuration and usage visibility.
+The deployed portal requires native **Microsoft Entra ID** sign-in, using its
+Terraform-managed registration and secretless web-identity federation. MSAL
+separately obtains user-scoped API tokens. A same-origin server proxy adds its
+server-only APIM subscription key; see [identity boundaries](docs/azure-topology.md#identity-and-token-boundaries).
 
-| LLM API | Gateway route | Accounting |
+Terraform manages a native Foundry **`AIServices`** account. Existing OpenAI
+accounts can be [upgraded without replacing their model deployments or endpoints](docs/deployment.md#upgrade-an-existing-openai-account).
+
+APIM handles authentication, native burst protection and routing. Python owns
+per-application/service/model budget decisions, versioned pricing and usage accounting.
+Redis supplies atomic hot counters; Azure Table Storage retains configuration,
+accounting evidence and audit history.
+
+**Every APIM request needs both Entra authorization and a product subscription
+key.** Budgets follow the validated APIM **subscription ID**, not a person or the
+secret key value. Primary/secondary keys and rotations share an application's
+allowance; two subscriptions have separate allowances, even for the same user.
+The [application cutover guide](docs/deployment.md#application-subscription-cutover)
+explains existing-data migration and reader access.
+
+![Logical architecture: APIM decisions, shared Python accounting, streaming, state, portal and telemetry](docs/diagrams/logical-architecture.svg)
+
+[Full-size logical view](docs/diagrams/logical-architecture.svg) |
+[Editable draw.io source](docs/diagrams/logical-architecture.drawio) |
+[Physical deployment views](docs/diagrams/README.md).
+The [architecture guide](ARCHITECTURE.md) explains the component boundaries.
+
+## What this adds to APIM
+
+Native token limits do not express a price catalog with separate input, output,
+cache-read and cache-write rates. This sample reserves a conservative allowance
+before execution, then settles trusted usage at configured prices. A separate
+streaming Function observes provider SSE usage without buffering the whole response.
+
+**Cache-aware settlement does not imply optimistic admission.** Unknown cache hits
+cannot be spent in advance; missing usage retains conservative liability. Provider
+TPM/RPM limits still apply independently.
+
+| API | Gateway route | Accounting |
 | --- | --- | --- |
-| OpenAI Chat Completions | `POST /foundry/chat/completions` | Prompt/completion tokens and cached prompt subset |
-| OpenAI Responses | `POST /foundry/responses` | Input/output tokens and cached input subset |
-| Anthropic Messages | `POST /anthropic/v1/messages` | Uncached input, cache reads, 5-minute/1-hour cache writes, output |
+| OpenAI Chat Completions | `POST /foundry/chat/completions` | Input/output and cached-input subset |
+| OpenAI Responses | `POST /foundry/responses` | Input/output and cached-input subset |
+| Anthropic Messages | `POST /anthropic/v1/messages` | Uncached input, cache reads, 5-minute/1-hour writes, output |
+| Document Intelligence | `POST /document-intelligence/analyze?pages=1-N` | Bounded pages; owned asynchronous polling |
+| AI Language | `POST /language/sentiment` | Per-document text records |
 
-These are native wire formats, not a conversion of Messages or Responses into Chat Completions.
-Supported inline text and client-executed tool flows are bounded before dispatch; opaque media,
-server-managed history and separately billed built-in tools are rejected. See
-[gateway contracts](apim/README.md) for precise supported fields and deployment capability gates.
+These are native wire protocols, not conversions to Chat Completions. Only bounded
+inline text/client-executed tools and the listed service operations are supported;
+see the [gateway contract](apim/README.md).
 
-| Component | Responsibility |
+## See it in action
+
+![Historical portal showing policy limits, service activity and accounting confidence before the application-subscription redesign](docs/images/portal-overview.png)
+
+This historical capture predates the square-edged portal and subscription-based
+reports. Current screens use application subscriptions, not user budgets.
+
+Live Commercial demo capture, with account identity hidden. Counts are returned
+events, not spend or live balances; configured Claude policies do not prove an
+enabled Claude backend. The [illustrated walkthrough](docs/rate-limiting-walkthrough.md)
+shows pricing, policy editing, an inference request and caller investigation.
+
+For Cody's original questions, start with the
+[dashboard review and example charts](docs/observability.md#review-against-codys-requirements):
+cost by service/model, differentiated cache tokens, who is denied, and why.
+These are operational observations at configured sample prices, not Azure invoices.
+
+## Documentation: choose a starting point
+
+Each guide owns a different concern. Detailed contracts and procedures are linked
+rather than repeated in component READMEs.
+
+| I want to... | Read |
 | --- | --- |
-| APIM | Identity, subscription governance, coarse native throttling, backend authentication, Function callouts |
-| Python Functions | Cost/unit decisions, reservations, settlement, rules, price catalog, usage APIs |
-| Redis-compatible store | Atomic shared hot counters; not the durable financial ledger |
-| Azure Table Storage | Configuration and accounting/audit records |
-| Fluent React portal | Admin configuration and scoped read-only consumption views |
-| Application Insights / Log Analytics | Operational diagnostics and decision telemetry |
+| Understand components, data flows and why Redis is used | [Architecture](ARCHITECTURE.md) |
+| View or edit logical, deployed public and private-reference diagrams | [Draw.io architecture diagrams](docs/diagrams/README.md) |
+| Understand holds, refunds, caching, concurrency and failure semantics | [Reservation system](docs/reservation-system.md) |
+| Configure a policy and investigate a real request, with screenshots | [Operator walkthrough](docs/rate-limiting-walkthrough.md) |
+| Understand Azure resources, networking, identities and token audiences | [Azure topology and identity](docs/azure-topology.md) |
+| Find entry points, dependency injection, storage records and extension points | [Code guide](docs/code-guide.md) |
+| Set runtime values or call the control-plane APIs | [Configuration reference](docs/configuration-reference.md) |
+| Add approved model aliases, prices and pooled policies | [Model registry](docs/model-registry.md) |
+| Check accepted inference payloads and gateway headers | [APIM contract](apim/README.md) |
+| Run locally, debug, or execute checks | [Local development](docs/local-development.md) |
+| Deploy to an explicitly selected cloud | [Deployment runbook](docs/deployment.md) |
+| Set Terraform inputs, enable a protocol, or package azd services | [Infrastructure reference](infra/README.md) |
+| Understand the React portal, runtime config, privacy or GUI testing | [Portal guide](web/README.md) |
+| Read Azure charts, correlate logs or diagnose telemetry gaps | [Observability guide](docs/observability.md) |
+| Recover counters or complete operational acceptance | [Operations](docs/operations.md) |
 
-Supports **Azure Commercial and Azure Government** with explicit cloud configuration.
-Foundry model availability, API versions, APIM tiers, networking, and Redis availability must be
-validated for the target region/subscription. This is a sample, not a financial billing system
-or a certification of GCCH/FedRAMP compliance.
-Responses and Messages are explicitly opt-in. Responses requires additional Government capability
-verification; Anthropic enablement in Government is currently rejected because sovereign Claude
-availability is not established. Protocol support does not manufacture provider availability.
+## Develop
 
-## What is different from native APIM limits?
+Use Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 24 LTS,
+and Terraform 1.9+. Start with [local setup](docs/local-development.md); it covers
+the API, portal demo, separate streaming host, Redis/Azurite, VS Code tasks and
+warning-free validation commands.
 
-APIM's native `llm-token-limit` counts prompt and completion tokens. It does not express a
-versioned model price card with separate cache-read and cache-write prices. This sample can enforce cost or
-usage rules by principal, model, service, and UTC period while retaining native APIM burst limits.
+The root `function_app.py` and `stream/function_app.py` are different deployment
+entry points. Do not combine their HTTP-hosting modes.
 
-An admitted request reserves its conservative maximum cost. A trusted non-streaming response
-settles actual usage, including cached input when reported by the provider. Streaming requests
-remain conservatively charged unless trusted actual usage arrives; they are never refunded merely
-because a timer expires. Cached input discounts do **not** bypass the provider's own TPM limits.
-Anthropic cache writes can cost more than ordinary input: admission reserves the highest relevant
-input price, and the Function normalizes provider-specific usage before settlement.
+## Deploy and cloud boundaries
 
-Document Intelligence and Language use their own units, not fictitious LLM token counts.
-See [architecture and accounting](ARCHITECTURE.md) for boundaries and limitations.
+Deployment uses **azd + Terraform**, a pre-created resource group, and explicit
+cloud, model, quota, identity, pricing and network inputs. Follow the
+[deployment runbook](docs/deployment.md), not a bare `azd up` copied into an
+unconfigured environment. Private mode requires an appropriately connected runner.
 
-## Development
+Commercial and Government are explicit configurations, not interchangeable
+endpoint suffixes. Responses and Messages are opt-in capabilities. Government
+Responses needs independent verification; Government Anthropic enablement is
+rejected because sovereign provider availability is not established.
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 22.13+ LTS (or 24 LTS),
-and Terraform 1.9+.
-Optional local service integration uses Redis and Microsoft's Azurite Storage emulator.
+Commercial uses Azure Managed Redis. The Government compatibility path uses
+Azure Cache for Redis with its documented **September 30, 2028** retirement gate;
+approve a supported migration before a production lifetime commitment.
 
-```bash
-uv sync --extra dev
-npm --prefix web ci
-uv run ruff check .
-uv run pytest -W error
-npm --prefix web run typecheck
-npm --prefix web run test -- --run
-npm --prefix web run build
-```
+This is a sample, not a financial billing system, provider-availability guarantee,
+or GCCH/FedRAMP certification. The `SecurityControl=Ignore` tag is an approved-demo
+exception, not a recommended production setting. Local tests do not certify live
+cloud access, policy compilation, private DNS or interactive client compatibility.
 
-See [local development](docs/local-development.md), [configuration](docs/configuration-reference.md),
-[deployment](docs/deployment.md), and [operations](docs/operations.md). Repository-scoped VS Code tasks cover setup, tests, builds,
-formatting, type checking, infrastructure validation, and local processes.
+## Contributor guidance and implementation history
 
-## Deploy
+[AGENTS.md](AGENTS.md), [.github/copilot-instructions.md](.github/copilot-instructions.md)
+and [language/tooling instructions](.github/instructions/) define contributor
+automation rules. They intentionally serve different tooling entry points.
 
-Use **azd + Terraform** with a pre-created resource group and, for private deployments, existing
-subnets and policy-managed private DNS. Configure the target cloud before authenticating.
-No live Azure deployment is performed by running local tests.
-
-```bash
-azd provision
-azd deploy
-```
-
-Follow the deployment guide first: cloud, state backend, identities, models, quota, network access,
-and explicit Terraform inputs are prerequisites, not inferred defaults.
-The complete input shape is in `infra/environment.example.json`; supported gateway routes and
-payload restrictions are in [apim/README.md](apim/README.md).
-
-**Redis lifecycle:** Commercial uses Azure Managed Redis. The Government compatibility path uses
-Azure Cache for Redis, whose current retirement date is September 30, 2028. Do not select that
-path for a production lifetime beyond its supported availability without an approved migration.
-
-## Rate-limit custom traces
-
-The Function exports structured `AppTraces` to workspace-based Application Insights.
-`Message` and `Properties.event_name` identify the event; `event_version=1` versions
-the allowlisted schema. `correlation_id` joins gateway requests and portal actions;
-`reservation_id` joins admission, per-policy evaluation and settlement.
-
-| Trace | Relevant custom properties |
-|---|---|
-| `rate_decision` | Service/model/protocol, allowed/reason, matched/denied policies, retry/reset, replayed, conservative `reserved_cost_micro_usd`, admitted `cost_micro_usd` (zero on denial) |
-| `reservation_policy_debit` | Policy/unit, requested `amount`, limit/remaining, `applied_amount` (zero on denial), `policy_outcome`: allowed, denied (binding policy), or blocked (another policy rejected the request) |
-| `settlement_recorded` | Actual/conservative status, estimated, usage/cache counters, price version, final cost, original reserved cost and returned liability |
-| `settlement_policy_debit` | Per-policy final amount, original `reserved_amount`, `applied_amount`, `refunded_amount` |
-| `dependency_completed`, `operation_failed` | Redis/Table operation, latency, success/error type without exception text |
-
-Deduplicate admissions by reservation and policy evaluations by reservation/policy.
-Deduplicate settlements by reservation before summing usage or cost: idempotent retries
-can emit another observation without spending again. `applied_amount` describes the
-reservation's debit, **not** an incremental write on replay. Refunds release conservative
-liability; they are not invoice credits or necessarily cache savings. Remaining values
-are per-principal policy observations, not a global live Redis balance.
-Telemetry is asynchronous operational evidence; durable usage records remain the
-accounting source of truth. Prompts, document bodies, auth headers, raw identities
-and Redis keys are excluded from application custom properties.
+[Implementation plans](.github/plans/) are historical execution records. Their
+counts, checklists and original design choices describe their respective work
+items; they are not current setup instructions or a substitute for the guides above.
 
 ## Sources
 
 - [APIM advanced request throttling](https://learn.microsoft.com/azure/api-management/api-management-sample-flexible-throttling)
-- [APIM LLM token limit policy](https://learn.microsoft.com/azure/api-management/llm-token-limit-policy)
+- [APIM LLM token limits](https://learn.microsoft.com/azure/api-management/llm-token-limit-policy)
 - [Original custom rate limiter sample](https://github.com/ThePreston/Custom-Rate-Limiter-API)
 - [Azure Government comparison](https://learn.microsoft.com/azure/azure-government/compare-azure-government-global-azure)
 - [Foundry cloud/region support](https://learn.microsoft.com/azure/foundry/reference/region-support)
-- [Azure OpenAI Responses API](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
-- [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
-- [Anthropic prompt-cache semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- [OpenAI Responses on Azure](https://learn.microsoft.com/azure/foundry/openai/how-to/responses)
+- [Claude in Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)
+- [Anthropic caching semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 
 ## Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-PURPOSE AND NONINFRINGEMENT. See [LICENSE](LICENSE).
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. See [LICENSE](LICENSE).
