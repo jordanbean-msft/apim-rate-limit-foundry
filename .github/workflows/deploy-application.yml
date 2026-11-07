@@ -30,7 +30,7 @@ jobs:
       AZD_ENV_JSON: ${{ vars.AZD_ENV_JSON }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
       - uses: astral-sh/setup-uv@v8.0.0
