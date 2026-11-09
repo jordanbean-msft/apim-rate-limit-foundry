@@ -60,6 +60,28 @@ describe('authenticated API', () => {
     );
   });
 
+  it('uses the exact monthly budget-status and chargeback API routes and supports CSV bodies', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('[]'))
+      .mockResolvedValueOnce(new Response('[]'))
+      .mockResolvedValueOnce(
+        new Response('month,cost_micro_usd\n2026-11,1200000', {
+          headers: { 'Content-Type': 'text/csv' },
+        }),
+      );
+    vi.stubGlobal('fetch', fetch);
+    const api = createApi('/api', async () => 'token', undefined, true);
+    await expect(api.budgetStatus()).resolves.toEqual([]);
+    await expect(api.chargeback('2026-11', 'json')).resolves.toEqual([]);
+    await expect(api.chargeback('2026-11', 'csv')).resolves.toContain('1200000');
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/budgets/status',
+      '/api/chargeback?month=2026-11&format=json',
+      '/api/chargeback?month=2026-11&format=csv',
+    ]);
+  });
+
   it('surfaces dashboard service failures for the page retry state', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 503 })));
     await expect(createApi('/api', async () => 'token').dashboard('24h')).rejects.toMatchObject({
@@ -70,9 +92,9 @@ describe('authenticated API', () => {
   it('uses the native same-origin proxy header without sending the token as Authorization', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('[]'));
     vi.stubGlobal('fetch', fetch);
-    await createApi('/api', async () => 'api-access-token', undefined, true).list('subscriptions');
+    await createApi('/api', async () => 'api-access-token', undefined, true).list('assignments');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/subscriptions',
+      '/api/assignments',
       expect.objectContaining({
         headers: expect.objectContaining({
           'X-Portal-Access-Token': 'api-access-token',
@@ -89,7 +111,7 @@ describe('authenticated API', () => {
     async (status) => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })));
       await expect(
-        createApi('https://api.example/api', async () => 'token').list('policies'),
+        createApi('https://api.example/api', async () => 'token').list('budgets'),
       ).rejects.toMatchObject({ status });
     },
   );
@@ -119,10 +141,10 @@ describe('authenticated API', () => {
       );
     vi.stubGlobal('fetch', fetch);
     await expect(
-      createApi('https://api.example/api', async () => 'token').remove('policies', 'policy-1'),
+      createApi('https://api.example/api', async () => 'token').remove('budgets', 'budget-1'),
     ).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledWith(
-      'https://api.example/api/policies/policy-1',
+      'https://api.example/api/budgets/budget-1',
       expect.objectContaining({ method: 'DELETE' }),
     );
   });
@@ -148,11 +170,11 @@ describe('authenticated API', () => {
         async () => 'private-token',
         telemetry,
       );
-      await expect(api.list('policies')).rejects.toThrow();
+      await expect(api.list('budgets')).rejects.toThrow();
       expect(telemetry).toHaveBeenCalledWith(
         'portal_api',
         expect.objectContaining({
-          collection: 'policies',
+          collection: 'budgets',
           outcome: 'failure',
           errorCategory: category,
         }),
@@ -193,13 +215,13 @@ describe('authenticated API', () => {
     vi.stubGlobal('fetch', fetch);
     await expect(
       createApi('https://api.example', async () => 'private-token', telemetry).remove(
-        'policies',
+        'budgets',
         'private-principal',
       ),
     ).resolves.toBeUndefined();
     expect(telemetry).toHaveBeenCalledWith(
       'portal_api',
-      expect.objectContaining({ collection: 'policies', method: 'DELETE', outcome: 'success' }),
+      expect.objectContaining({ collection: 'budgets', method: 'DELETE', outcome: 'success' }),
       expect.objectContaining({ status: 204 }),
     );
     expect(JSON.stringify(telemetry.mock.calls)).not.toContain('private');

@@ -1,15 +1,12 @@
 import { Badge, Button } from '@fluentui/react-components';
 import {
-  ArrowClockwiseRegular,
   DataTrendingRegular,
+  ReceiptMoneyRegular,
   ShieldCheckmarkRegular,
-  WarningRegular,
 } from '@fluentui/react-icons';
-import { isDenial, isEstimated } from '../accounting';
-import type { ApplicationSubscription, Collection, LedgerRecord, Policy } from '../contracts';
-import { objectValue, services } from '../format';
-import { LedgerTable } from './LedgerTable';
-import { PolicyLimit } from './PolicyLimit';
+import type { Assignment, BudgetStatus, Collection, Organization, UsageRecord } from '../contracts';
+import { BudgetStatusTable } from './BudgetStatusTable';
+import { UsageTable } from './UsageTable';
 
 function Stat({
   label,
@@ -18,7 +15,7 @@ function Stat({
   icon,
 }: {
   label: string;
-  value: React.ReactNode;
+  value: string | number;
   note: string;
   icon: React.ReactNode;
 }) {
@@ -34,163 +31,102 @@ function Stat({
   );
 }
 
-function ServiceActivity({ usage, unavailable }: { usage: LedgerRecord[]; unavailable: boolean }) {
-  return (
-    <section className="surface service-activity" aria-label="Usage events by service">
-      <div className="section-heading">
-        <h2>Service activity</h2>
-        <span className="fine-print">Returned events · including denials · not spend</span>
-      </div>
-      {unavailable ? (
-        <p className="empty-inline">Usage is unavailable. Refresh to retry.</p>
-      ) : (
-        <div className="service-bars">
-          {Object.entries(services).map(([service, label]) => {
-            const count = usage.filter(
-              (record) => objectValue(record.data.request).service === service,
-            ).length;
-            return (
-              <div key={service}>
-                <div className="service-bar-label">
-                  <span>{label}</span>
-                  <strong>{count} events</strong>
-                </div>
-                <div className="service-track" aria-hidden="true">
-                  <div
-                    className={`service-fill ${service}`}
-                    style={{ width: `${usage.length ? (count / usage.length) * 100 : 0}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function Overview({
-  policies,
+  status,
   usage,
-  subscriptions = [],
+  organizations,
+  assignments,
   errors,
   loading,
   navigate,
 }: {
-  policies: Policy[];
-  usage: LedgerRecord[];
-  subscriptions?: ApplicationSubscription[];
-  errors: Partial<Record<Collection, string>>;
+  status: BudgetStatus[];
+  usage: UsageRecord[];
+  organizations: Organization[];
+  assignments: Assignment[];
+  errors: Partial<Record<Collection | 'budgetStatus', string>>;
   loading: boolean;
-  navigate: (page: 'policies' | 'usage' | 'reconciliation') => void;
+  navigate: (page: 'budgets' | 'usage' | 'chargeback') => void;
 }) {
+  const actualCount = usage.filter((record) => record.status === 'actual').length;
+  const unknownCount = usage.filter((record) => record.status === 'usage_unknown').length;
   return (
     <>
-      <section className="stat-grid" aria-label="Activity summary">
+      <section className="stat-grid" aria-label="Monthly usage summary">
         <Stat
-          label="Active policies"
-          value={errors.policies ? '—' : policies.filter((policy) => policy.enabled).length}
-          note="Across authorized services"
+          label="Applicable monthly budgets"
+          value={errors.budgetStatus ? '—' : status.length}
+          note="User, team and department limits"
           icon={<ShieldCheckmarkRegular />}
         />
         <Stat
-          label="Usage events"
-          value={errors.usage ? '—' : usage.length}
-          note="Returned by the API"
+          label="Finalized usage records"
+          value={errors.usage ? '—' : actualCount}
+          note="Actual provider-reported usage"
           icon={<DataTrendingRegular />}
         />
         <Stat
-          label="Limit violations"
-          value={errors.usage ? '—' : usage.filter(isDenial).length}
-          note="Denied requests · no budget debit"
-          icon={<WarningRegular />}
-        />
-        <Stat
-          label="Estimated events"
-          value={errors.usage ? '—' : usage.filter(isEstimated).length}
-          note="Not equivalent to pending balance"
-          icon={<ArrowClockwiseRegular />}
+          label="Unknown stream usage"
+          value={errors.usage ? '—' : unknownCount}
+          note="Never represented as zero-cost"
+          icon={<ReceiptMoneyRegular />}
         />
       </section>
-      <ServiceActivity usage={usage} unavailable={Boolean(errors.usage)} />
-      <div className="overview-grid">
-        <section className="surface">
-          <div className="section-heading">
-            <h2>Policy limits</h2>
-            <Button appearance="subtle" size="small" onClick={() => navigate('policies')}>
-              View all
-            </Button>
-          </div>
-          {errors.policies ? (
-            <p className="empty-inline">Policies are unavailable. Refresh to retry.</p>
-          ) : policies.length ? (
-            policies.slice(0, 5).map((policy) => (
-              <div className="budget-row" key={policy.id}>
-                <div>
-                  <strong>{policy.name}</strong>
-                  <p>
-                    {services[policy.service]} · {policy.model}
-                  </p>
-                  <p>
-                    Application subscription:{' '}
-                    {policy.subscription_id === '*'
-                      ? 'All subscriptions'
-                      : subscriptions.find((item) => item.id === policy.subscription_id)
-                          ?.display_name || policy.subscription_id}
-                  </p>
-                </div>
-                <div className="budget-limit">
-                  <PolicyLimit policy={policy} />
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="empty-inline">No authorized policies to display.</p>
-          )}
-          <p className="fine-print panel-footnote">
-            Configured policy limits only. Live remaining balances are not available in this view.
-          </p>
-        </section>
-        <section className="surface">
-          <div className="section-heading">
-            <h2>Accounting confidence</h2>
-            <Badge appearance="tint" color="brand">
-              Reserve → settle
-            </Badge>
-          </div>
-          <div className="confidence-icon">
-            <ShieldCheckmarkRegular />
-          </div>
-          <h3>Streaming stays uninterrupted.</h3>
-          <p className="muted">
-            We reserve the highest applicable known input/cache rate plus maximum output before
-            admission. Anthropic uses an operator-verified input ceiling. Trusted actual usage can
-            release unused budget; otherwise the conservative debit stays final.
-          </p>
-          <div className="legend">
-            <span className="legend-dot estimated" /> Estimated / conservative{' '}
-            <span className="legend-dot actual" /> Actual
-          </div>
-          <Button appearance="subtle" onClick={() => navigate('reconciliation')}>
-            Inspect reconciliation →
-          </Button>
-        </section>
-      </div>
       <section className="surface">
         <div className="section-heading">
-          <h2>Latest authorized activity</h2>
+          <h2>Month-to-date budget status</h2>
+          <Button appearance="subtle" size="small" onClick={() => navigate('budgets')}>
+            View budgets
+          </Button>
+        </div>
+        {errors.budgetStatus ? (
+          <p className="empty-inline">Budget status is unavailable. Refresh to retry.</p>
+        ) : (
+          <BudgetStatusTable
+            status={status}
+            organizations={organizations}
+            assignments={assignments}
+            loading={loading}
+          />
+        )}
+      </section>
+      <section className="surface">
+        <div className="section-heading">
+          <div>
+            <h2>Enforcement and accounting</h2>
+            <p className="muted">
+              Monthly spend is checked before a request. Provider-reported actual cost is recorded
+              after completion; every configured level is enforced.
+            </p>
+          </div>
+          <Badge appearance="tint" color="warning">
+            Soft cap
+          </Badge>
+        </div>
+        <p>
+          Concurrent in-flight requests may overshoot a budget. Once actual spend reaches the limit,
+          subsequent requests are denied. This is not a strict no-overshoot financial control.
+        </p>
+        <div className="row-actions">
+          <Button appearance="subtle" onClick={() => navigate('usage')}>
+            View usage
+          </Button>
+          <Button appearance="subtle" onClick={() => navigate('chargeback')}>
+            Open chargeback
+          </Button>
+        </div>
+      </section>
+      <section className="surface">
+        <div className="section-heading">
+          <h2>Latest authorized usage</h2>
           <Button appearance="subtle" size="small" onClick={() => navigate('usage')}>
             Explore usage
           </Button>
         </div>
-        <LedgerTable records={usage.slice(0, 5)} mode="usage" />
-        {!usage.length && !loading && (
-          <p className="empty-inline">
-            {errors.usage
-              ? 'Usage is unavailable. Refresh to retry.'
-              : 'No authorized activity yet. Refresh after gateway requests are recorded.'}
-          </p>
+        {errors.usage ? (
+          <p className="empty-inline">Usage is unavailable. Refresh to retry.</p>
+        ) : (
+          <UsageTable records={usage.slice(0, 5)} />
         )}
       </section>
     </>

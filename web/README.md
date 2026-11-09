@@ -3,10 +3,8 @@
 Accessible React + TypeScript + Fluent UI v9 portal, hosted by a framework-free Node
 server. Use Node **24 LTS**.
 
-The managed inference account is Microsoft Foundry (`AIServices`). The model
-inventory labels Chat, Responses and Messages by wire protocol; an OpenAI label
-does not imply an OpenAI-kind Azure resource. Account upgrades preserve existing
-inference origins, aliases and pinned prices.
+The portal manages monthly USD budgets for OpenAI Chat Completions and Responses.
+Its model inventory reflects deployment-managed aliases and pinned price versions.
 
 ```bash
 npm ci
@@ -72,8 +70,8 @@ Register the deployed portal **origin** (and `http://localhost:5173` or
 Grant consent for the delegated API scope and Graph `User.Read`, and assign API app roles:
 `RateLimit.Admin` or `RateLimit.Reader`. The UI reads role hints from the API
 access token; the backend independently validates audience, tenant and roles,
-and scopes data by tenant and application subscription. Reader access requires
-an explicit assignment. `RateLimit.Gateway` alone cannot open portal data.
+and scopes Reader data to the authenticated user's explicit assignment,
+department, and team. `RateLimit.Gateway` alone cannot open portal data.
 The production same-origin proxy does not require browser-to-APIM CORS. Direct
 local development uses the delegated API token and requires exact portal origins.
 Expose `X-Correlation-ID` if operators need to inspect backend correlation responses.
@@ -140,50 +138,47 @@ owns API routes, payloads, units and selection semantics. The browser types in
 [`src/contracts.ts`](src/contracts.ts) mirror the server; do not treat them as an
 independent accounting implementation.
 
-| Screen                                      | Purpose                                                                                           |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Overview, Service usage, Limit violations   | Display returned usage and decision observations                                                  |
-| Azure dashboard (Admin only)                | Render the deployed Azure dashboard charts and tables from server-returned tile metadata and rows |
-| Application subscriptions                   | Read-only tenant-scoped `GET /subscriptions` collection                                           |
-| Application subscription spend & denials    | Fetch `/usage/callers` rollups by application subscription; filter hour/day and service           |
-| Budget policies, Price catalog, Assignments | Admin editing; policies and assignments bind application subscriptions                            |
-| Model inventory                             | Read-only protocol/alias, provider deployment, pinned price and readiness, token bounds           |
-| Reconciliation, Audit history               | Inspect returned history, not an independently maintained balance                                 |
+| Screen                               | Purpose                                                                                         |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| Overview, Monthly budgets            | Show scoped actual month-to-date spend and remaining monthly USD budgets by hierarchy level     |
+| Usage records                        | Display normalized OpenAI token usage and explicit unknown-stream outcomes                      |
+| Chargeback                           | View and export authorized monthly JSON/CSV grouped by organization and request dimensions      |
+| Organization units, User assignments | Admin-only management of departments, teams, cost centers, and explicit Entra principal mapping |
+| Monthly budgets, OpenAI price cards  | Admin-only CRUD for user/team/department monthly limits and versioned decimal USD price cards   |
+| Model inventory                      | Read-only OpenAI protocol/alias, provider deployment, pinned price and token bounds             |
+| Azure dashboard (Admin only)         | Render deployed Azure dashboard tiles and shared KQL results                                    |
+
+The portal uses these `/api` routes: `GET /budgets`, `/organizations`,
+`/assignments`, `/prices`, `/models`, and `/usage` return arrays;
+`GET /budgets/status` returns scoped monthly spend/remaining records;
+`GET /chargeback?month=YYYY-MM&format=json|csv` returns grouped monthly
+chargeback; and Admin-only `GET /dashboard?period=1h|24h|7d` returns the
+deployed dashboard. Admin-only configuration mutations use `PUT
+/{budgets|organizations|assignments|prices}/{id}` and
+`DELETE /{budgets|organizations|assignments|prices}/{id}`. Reader sessions do
+not load management collections or send writes.
 
 The Azure dashboard is visible only to RateLimit.Admin because it contains workspace-wide telemetry. It requests `/dashboard?period=1h|24h|7d`; production maps this through the same-origin proxy, while direct local development uses the configured API root. The browser never sends KQL or workspace identifiers. The tile titles, axes, chart definitions and tabular values come from the deployed Azure dashboard. Per-tile query failures, empty results and server truncation are shown independently; request-level failures remain retryable. Each chart exposes a detail table. In local demo mode the dashboard uses clearly labeled fixtures and does not represent live Azure data.
 
-Readers never send an arbitrary subscription selector to change authorization; the backend
-scopes access and requires explicit assignment readers.
-`/usage/callers` remains the compatible report route, but its rollups are keyed by
-application subscription rather than a person.
+Reader requests contain no caller-selected identity or hierarchy filter; the
+backend derives the signed-in user's access scope from explicit assignments.
+Budget status is actual month-to-date spend from the API, not an estimate or a
+portal-side calculation. Unknown stream usage remains visibly unknown and is not
+displayed as a zero-cost completed request. The browser does not reprice provider
+payloads: it sends USD values as decimal strings for price cards and displays
+budget amounts through exact integer micro-USD conversion.
+
+The monthly budget is a soft cap. The gateway checks completed month-to-date
+spend before forwarding and records actual provider cost afterward. Concurrent
+in-flight requests can overshoot a configured limit; after actual spend reaches
+the limit, later requests are denied. This is not a strict no-overshoot financial
+control or an invoice guarantee.
+
 GET failures remain visible and retryable. Failed saves retain the editor; failed
-deletes retain confirmation. Filters/search are local display operations.
-The [operator walkthrough](../docs/rate-limiting-walkthrough.md) demonstrates a
-real configuration/allow/deny workflow.
-Aliases are suggested in the policy and price editors, while manual entry and
-wildcard policies remain available. Registry changes and price pins are
-deployment-managed; see the [model registry](../docs/model-registry.md).
-
-![Live Budget policies screen showing per-model budgets, request limits and service-unit limits](../docs/images/portal-policies.png)
-
-This is the deployed Commercial app with account identity hidden; rates and limits
-are illustrative. See [capture provenance and the illustrated workflow](../docs/rate-limiting-walkthrough.md#screenshot-provenance).
-The table configures limits, not live balances or protocol enablement.
-
-## Accounting display and UI limits
-
-The browser displays server-normalized usage and confidence flags; it does not
-reprice provider payloads. Unknown protocols display as unrecognized. Missing
-Anthropic cache-write counts display “Not reported”, not an invented zero.
-See [reservation mechanics](../docs/reservation-system.md) for all pricing,
-cache-subset and conservative-settlement semantics.
-
-The overview shows configured policy limits, not live Redis balances or invoices.
-Refresh is manual: there is no websocket, automatic polling, pagination or live
-price feed. The sample API also scans collections without pagination; large-history
-retention/partitioning is production work, not a guarantee supplied by the UI.
-Prefer new catalog versions over editing old versions. Settlement still uses its
-original price snapshot.
+deletes retain confirmation. Search filters are local display operations. Model
+aliases, provider deployment routing and pinned price versions remain
+deployment-managed. Refresh is manual; there is no websocket, automatic polling,
+pagination or live price feed.
 
 The portal does not execute inference, configure gateway capabilities, or establish
 Government model availability. Its demo metadata and local unit tests do not prove
@@ -243,14 +238,15 @@ Only manually sanitized **custom events** are exported to App Insights
 `customEvents` / workspace `AppEvents`; API dependency counts are represented
 by `portal_api` events, not automatic `AppDependencies` URL records:
 
-| Event                  | Custom dimensions                                                                                                                                                      | Custom measurements                             |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `portal_page`          | allowlisted `page`, `outcome=success`                                                                                                                                  | none                                            |
-| `portal_api`           | `collection`, `method=GET/PUT/DELETE`, generated UUID-v4 `correlationId`, `outcome=success/failure`, `errorCategory=none/authentication/http/network/invalid_response` | `status`, `durationMs`, `requestCount=0/1`      |
-| `portal_configuration` | editable `collection`, `action=create/update/delete`, `outcome=success/failure/cancelled`, `errorCategory=none/validation/api`                                         | none                                            |
-| `portal_refresh`       | `outcome=success/partial_failure`                                                                                                                                      | `collectionCount`, `failureCount`, `durationMs` |
-| `portal_bootstrap`     | `action=configuration/authentication/sign_in/sign_out`, `outcome=success/failure`                                                                                      | none                                            |
-| `portal_browser_error` | `errorCategory=script/unhandled_rejection/render_error`                                                                                                                | none                                            |
+| Event                      | Custom dimensions                                                                                                                                                      | Custom measurements                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `portal_page`              | allowlisted `page`, `outcome=success`                                                                                                                                  | none                                            |
+| `portal_api`               | `collection`, `method=GET/PUT/DELETE`, generated UUID-v4 `correlationId`, `outcome=success/failure`, `errorCategory=none/authentication/http/network/invalid_response` | `status`, `durationMs`, `requestCount=0/1`      |
+| `portal_configuration`     | editable `collection`, `action=create/update/delete`, `outcome=success/failure/cancelled`, `errorCategory=none/validation/api`                                         | none                                            |
+| `portal_chargeback_export` | `format=json/csv`, `outcome=success/failure`                                                                                                                           | none                                            |
+| `portal_refresh`           | `outcome=success/partial_failure`                                                                                                                                      | `collectionCount`, `failureCount`, `durationMs` |
+| `portal_bootstrap`         | `action=configuration/authentication/sign_in/sign_out`, `outcome=success/failure`                                                                                      | none                                            |
+| `portal_browser_error`     | `errorCategory=script/unhandled_rejection/render_error`                                                                                                                | none                                            |
 
 `requestCount` is zero when token acquisition fails before an HTTP attempt and
 one once fetch is attempted. If optional UUID generation fails, the API still
@@ -259,8 +255,8 @@ works and omits the correlation header/property rather than inventing an ID.
 Pages and collections come from fixed UI/API enums, never browser locations.
 The API sends its generated `X-Correlation-ID` to the backend so operators can
 join an API outcome to backend logs. It does not reuse server static-request IDs
-or arbitrary backend/header IDs. Form values (including policy limit, price, record ID, model, tenant, subscription
-and reader IDs), identity/account/roles, Graph profile names/photos, searches,
+or arbitrary backend/header IDs. Form values (including budget limit, price, record ID, model, tenant, principal ID,
+team ID and cost center), identity/account/roles, Graph profile names/photos, searches,
 headers, authorization, URLs/queries, bodies, response data, exception messages
 and stacks are **never event properties**. Invalid or oversized measurements
 are omitted. A final SDK initializer reconstructs allowed event data and strips
@@ -324,21 +320,20 @@ opened dialogs; closing an editor or deleting its opener row restores focus to
 the stable workspace instead of leaving navigation hidden from assistive technology.
 Wait for page DOM content and specific UI readiness rather than `networkidle`
 because background telemetry may keep network activity alive.
-Navigation: `getByRole('button', {name: 'Budget policies', exact: true})`.
-Wait for `Refresh` to be enabled before editing; click `Create policy`.
-In `getByRole('dialog', {name: 'Create policy'})` (or `Edit policy`), use
-`getByLabel(/^ID/)`, `/^Name/`, `/^Service/`, `/^Model or deployment/`,
-`/^Tenant scope/`, `/^Application subscription scope/`, `/^Accounting unit/`,
-`/^Limit \(integer microUSD\)/` or `/^Limit \(whole units\)/`,
-`/^UTC period/`, `/^Priority/`, and `getByRole('checkbox', {name: 'Policy enabled'})`.
-Use `selectOption` values `foundry|document-intelligence|language`,
-`cost|tokens|requests|pages|text_records` (service-dependent), and
-`minute|hour|day|month`. Submit using `getByRole('button', {name: 'Save changes'})`.
+Navigation: `getByRole('button', {name: 'Monthly budgets', exact: true})`.
+Admins can create budgets, organization units, explicit user assignments, and
+OpenAI price cards; Readers can only view API-scoped budget status, usage and
+chargeback. Budget editor fields include tenant, level, assigned user/team/
+department, model alias or `*`, and a monthly USD amount with up to six decimal
+places. The UI converts that amount exactly to integer micro-USD. Price rates
+remain decimal strings. Team assignments derive their department from the
+enabled team's parent department. Submit using
+`getByRole('button', {name: 'Save changes'})`.
 Existing row buttons use exact names `Edit <record-id>` / `Delete <record-id>`;
 deletion requires `Confirm delete` in `Delete this record?`.
-Wait for the dialog to close and “Changes saved” / “Record deleted”; failures
-keep the dialog open and expose an alert. `Search records` and `Filter by service`
-are local filters only. Do not infer a live backend write from an optimistic UI.
+Chargeback month selection accepts `YYYY-MM`; JSON and CSV exports are served by
+the authorized API route. Failed reads and exports are retryable and never fall
+back to sample data. Do not infer a live backend write from an optimistic UI.
 
 Microsoft publishes the UI and identity libraries. Vite, React's community test
 tools, ESLint and the TypeScript ESLint integration are development tooling;

@@ -13,86 +13,101 @@ import {
   Spinner,
 } from '@fluentui/react-components';
 import type {
+  Assignment,
+  Budget,
   EditableCollection,
   EditableRecord,
-  Metric,
   Model,
-  Policy,
-  Service,
-  ApplicationSubscription,
+  Organization,
+  Price,
 } from './contracts';
-import { services } from './format';
 import { track } from './telemetry';
 
-type Draft = Record<string, string | boolean>;
-const metricChoices: Record<Service, Metric[]> = {
-  foundry: ['cost', 'tokens', 'requests'],
-  'document-intelligence': ['cost', 'pages', 'requests'],
-  language: ['cost', 'text_records', 'requests'],
+type Draft = Record<string, string | boolean | number>;
+const titles: Record<EditableCollection, string> = {
+  budgets: 'monthly budget',
+  organizations: 'organization unit',
+  assignments: 'user assignment',
+  prices: 'OpenAI price card',
 };
 const priceFields = [
-  ['input_per_million', 'Input tokens · USD per million'],
-  ['output_per_million', 'Output tokens · USD per million'],
-  ['cached_input_per_million', 'Cached input tokens · USD per million'],
-  ['per_page', 'Pages · USD per page'],
-  ['per_text_record', 'Text records · USD per text record'],
-  ['per_request', 'Requests · USD per request'],
-] as const;
-const cacheWritePriceFields = [
-  ['cache_write_5m_per_million', 'Cache write · 5 minutes (surcharge rate) · USD per million'],
-  ['cache_write_1h_per_million', 'Cache write · 1 hour (surcharge rate) · USD per million'],
+  ['input_per_million', 'Uncached input · USD per million tokens'],
+  ['cached_input_per_million', 'Cached input · USD per million tokens'],
+  ['output_per_million', 'Output · USD per million tokens'],
 ] as const;
 const decimal = /^(0|[1-9]\d*)(\.\d{1,12})?$/;
-const titles = {
-  policies: 'policy',
-  prices: 'price version',
-  assignments: 'assignment',
-};
+
+function decimalUsdFromMicros(value: number): string {
+  const micros = BigInt(value);
+  const whole = micros / 1_000_000n;
+  const fractional = (micros % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
+  return fractional ? `${whole}.${fractional}` : `${whole}`;
+}
+
+function microUsdFromDecimal(value: string): number {
+  if (!/^(0|[1-9]\d*)(\.\d{1,6})?$/.test(value))
+    throw new Error('Monthly budget must be a non-negative USD amount with up to 6 decimals.');
+  const [whole, fraction = ''] = value.split('.');
+  const micros = BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error('Monthly budget is too large to represent safely.');
+  return Number(micros);
+}
 
 function initialDraft(collection: EditableCollection, record?: EditableRecord): Draft {
-  if (record)
+  if (record) {
+    const draft: Draft = { ...record };
+    if ('limit_micro_usd' in record)
+      draft.monthly_usd = decimalUsdFromMicros(record.limit_micro_usd);
+    return draft;
+  }
+  if (collection === 'budgets')
     return {
-      ...record,
-      ...('policy_ids' in record ? { policy_ids: record.policy_ids.join(', ') } : {}),
-      ...('reader_principal_ids' in record
-        ? { reader_principal_ids: record.reader_principal_ids.join(', ') }
-        : {}),
-    } as unknown as Draft;
-  const common = { id: '', service: 'foundry', model: '*' };
-  if (collection === 'policies')
-    return {
-      ...common,
+      id: '',
+      tenant_id: '',
       name: '',
-      tenant_id: '*',
-      subscription_id: '*',
-      limit: '',
-      period: 'month',
-      metric: 'cost',
+      subject_type: 'user',
+      subject_id: '',
+      model: '*',
+      monthly_usd: '',
       enabled: true,
-      priority: '10',
+    };
+  if (collection === 'organizations')
+    return {
+      id: '',
+      tenant_id: '',
+      kind: 'department',
+      name: '',
+      department_id: '',
+      business_unit: '',
+      cost_center: '',
+      enabled: true,
     };
   if (collection === 'assignments')
     return {
       id: '',
       tenant_id: '',
-      subscription_id: '',
-      policy_ids: '',
-      reader_principal_ids: '',
+      principal_id: '',
+      team_id: '',
+      department_id: '',
       display_label: '',
+      enabled: true,
     };
   return {
-    ...common,
+    id: '',
     model: '',
     version: '',
-    ...Object.fromEntries(priceFields.map(([key]) => [key, '0'])),
-    ...Object.fromEntries(cacheWritePriceFields.map(([key]) => [key, ''])),
+    input_per_million: '0',
+    cached_input_per_million: '0',
+    output_per_million: '0',
   };
 }
 
 function parseDraft(
   collection: EditableCollection,
   draft: Draft,
-  subscriptions: ApplicationSubscription[],
+  organizations: Organization[],
+  assignments: Assignment[],
 ): EditableRecord {
   const str = (key: string) => String(draft[key] ?? '').trim();
   const required = (key: string, label: string) => {
@@ -104,112 +119,133 @@ function parseDraft(
   const id = required('id', 'ID');
   if (!/^[a-zA-Z0-9._-]+$/.test(id))
     throw new Error('ID must contain only letters, numbers, dots, underscores or hyphens.');
-  if (collection === 'assignments') {
-    const policy_ids = str('policy_ids')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (!policy_ids.length || new Set(policy_ids).size !== policy_ids.length)
-      throw new Error('Choose at least one policy ID, with no duplicates.');
-    const subscription_id = required('subscription_id', 'Application subscription');
-    const subscription = subscriptions.find((item) => item.id === subscription_id);
-    if (!subscription)
-      throw new Error('Choose an application subscription registered for this tenant.');
-    const reader_principal_ids = str('reader_principal_ids')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
+  const enabled = Boolean(draft.enabled);
+
+  if (collection === 'budgets') {
+    const subject_type = str('subject_type') as Budget['subject_type'];
+    const tenant_id = required('tenant_id', 'Tenant ID');
+    const subject_id = required('subject_id', 'Budget subject');
+    const model = required('model', 'Model');
     if (
-      new Set(reader_principal_ids).size !== reader_principal_ids.length ||
-      reader_principal_ids.some((value) => value.length > 256)
+      subject_type === 'user' &&
+      !assignments.some(
+        (assignment) =>
+          assignment.principal_id === subject_id &&
+          assignment.tenant_id === tenant_id &&
+          assignment.enabled,
+      )
     )
-      throw new Error('Reader IDs must be unique and at most 256 characters each.');
-    const display_label = str('display_label');
-    if (display_label.length > 128)
-      throw new Error('Display label must be at most 128 characters.');
+      throw new Error('Choose a user with an enabled explicit assignment.');
+    if (
+      subject_type === 'team' &&
+      !organizations.some(
+        (organization) =>
+          organization.id === subject_id &&
+          organization.tenant_id === tenant_id &&
+          organization.kind === 'team' &&
+          organization.enabled,
+      )
+    )
+      throw new Error('Choose an enabled team.');
+    if (
+      subject_type === 'department' &&
+      !organizations.some(
+        (organization) =>
+          organization.id === subject_id &&
+          organization.tenant_id === tenant_id &&
+          organization.kind === 'department' &&
+          organization.enabled,
+      )
+    )
+      throw new Error('Choose an enabled department.');
     return {
       id,
-      tenant_id: subscription.tenant_id,
-      subscription_id,
-      policy_ids,
-      reader_principal_ids,
-      display_label: display_label || null,
-    };
-  }
-  const service = str('service') as Service;
-  const model = required('model', 'Model');
-  if (collection === 'prices') {
-    const validatePrice = (key: string, label: string) => {
-      const value = str(key);
-      if (!decimal.test(value))
-        throw new Error(
-          `${label} must be a non-negative decimal USD amount (up to 12 decimal places).`,
-        );
-      return value;
-    };
-    const prices = Object.fromEntries(
-      priceFields.map(([key, label]) => [key, validatePrice(key, label)]),
-    );
-    const cacheWritePrices = Object.fromEntries(
-      cacheWritePriceFields.map(([key, label]) => [
-        key,
-        str(key) === '' ? null : validatePrice(key, label),
-      ]),
-    );
-    return {
-      id,
-      service,
+      tenant_id,
+      name: required('name', 'Name'),
+      subject_type,
+      subject_id,
       model,
-      version: required('version', 'Version'),
-      ...prices,
-      ...cacheWritePrices,
-    } as EditableRecord;
+      limit_micro_usd: microUsdFromDecimal(str('monthly_usd')),
+      enabled,
+    };
   }
-  const integer = (key: string, label: string, minimum: number) => {
-    const value = str(key);
-    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum) {
-      throw new Error(`${label} must be a safe whole number of at least ${minimum}.`);
+  if (collection === 'organizations') {
+    const kind = str('kind') as Organization['kind'];
+    const organization: Organization = {
+      id,
+      tenant_id: required('tenant_id', 'Tenant ID'),
+      kind,
+      name: required('name', 'Name'),
+      business_unit: required('business_unit', 'Business unit'),
+      cost_center: required('cost_center', 'Cost center'),
+      enabled,
+    };
+    if (kind === 'team') {
+      const department_id = required('department_id', 'Parent department');
+      if (
+        !organizations.some(
+          (item) =>
+            item.id === department_id &&
+            item.kind === 'department' &&
+            item.tenant_id === organization.tenant_id &&
+            item.enabled,
+        )
+      )
+        throw new Error('Choose an enabled department in the same tenant.');
+      organization.department_id = department_id;
     }
-    return Number(value);
+    return organization;
+  }
+  if (collection === 'assignments') {
+    const team_id = required('team_id', 'Team');
+    const team = organizations.find(
+      (organization) =>
+        organization.id === team_id &&
+        organization.tenant_id === str('tenant_id') &&
+        organization.kind === 'team' &&
+        organization.enabled,
+    );
+    if (!team?.department_id) throw new Error('Choose an enabled team with a parent department.');
+    const assignment: Assignment = {
+      id,
+      tenant_id: required('tenant_id', 'Tenant ID'),
+      principal_id: required('principal_id', 'Entra principal ID'),
+      team_id,
+      department_id: team.department_id,
+      enabled,
+    };
+    const display_label = str('display_label');
+    if (display_label) assignment.display_label = display_label;
+    return assignment;
+  }
+  const validatePrice = (key: (typeof priceFields)[number][0], label: string) => {
+    const value = str(key);
+    if (!decimal.test(value))
+      throw new Error(`${label} must be a non-negative decimal USD amount.`);
+    return value;
   };
-  const metric = str('metric') as Metric;
-  if (!metricChoices[service].includes(metric))
-    throw new Error('Choose a unit supported by this service.');
-  const subscription_id = required('subscription_id', 'Application subscription');
-  const subscription =
-    subscription_id === '*' ? undefined : subscriptions.find((item) => item.id === subscription_id);
-  if (subscription_id !== '*' && !subscription)
-    throw new Error('Choose an application subscription registered for this tenant.');
-  const tenant_id = subscription?.tenant_id ?? (str('tenant_id') || '*');
   return {
     id,
-    service,
-    model,
-    name: required('name', 'Name'),
-    tenant_id,
-    subscription_id,
-    limit: integer('limit', 'Limit', 1),
-    priority: integer('priority', 'Priority', 0),
-    metric,
-    period: str('period') as Policy['period'],
-    enabled: Boolean(draft.enabled),
-  };
+    model: required('model', 'Model'),
+    version: required('version', 'Version'),
+    ...Object.fromEntries(priceFields.map(([key, label]) => [key, validatePrice(key, label)])),
+  } as Price;
 }
 
 export function RecordEditor({
   collection,
   record,
-  policies,
-  subscriptions = [],
-  models = [],
+  organizations,
+  assignments,
+  models,
   onSave,
   onClose,
 }: {
   collection: EditableCollection;
   record?: EditableRecord;
-  policies: Policy[];
-  subscriptions?: ApplicationSubscription[];
-  models?: Model[];
+  organizations: Organization[];
+  assignments: Assignment[];
+  models: Model[];
   onSave: (record: EditableRecord) => Promise<void>;
   onClose: () => void;
 }) {
@@ -218,14 +254,8 @@ export function RecordEditor({
   const [saving, setSaving] = useState(false);
   const update = (key: string, value: string | boolean) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
-  const service = draft.service as Service;
-  const aliases = [...new Set(models.map((model) => model.model))].sort();
-  const subscriptionChoices: [string, string][] = subscriptions.map((subscription) => [
-    subscription.id,
-    `${subscription.display_name} · ${subscription.id}`,
-  ]);
-  const input = (key: string, label: string, hint?: string, disabled = false, required = true) => (
-    <Field key={key} label={label} hint={hint} required={required}>
+  const input = (key: string, label: string, hint?: string, disabled = false) => (
+    <Field key={key} label={label} hint={hint} required>
       <Input
         value={String(draft[key] ?? '')}
         disabled={disabled || saving}
@@ -234,17 +264,12 @@ export function RecordEditor({
       />
     </Field>
   );
-  const select = (
-    key: string,
-    label: string,
-    choices: [string, string][],
-    onChange?: (value: string) => void,
-  ) => (
+  const select = (key: string, label: string, choices: [string, string][]) => (
     <Field key={key} label={label} required>
       <Select
-        value={String(draft[key])}
+        value={String(draft[key] ?? '')}
         disabled={saving}
-        onChange={(_, data) => (onChange ? onChange(data.value) : update(key, data.value))}
+        onChange={(_, data) => update(key, data.value)}
       >
         {choices.map(([value, name]) => (
           <option value={value} key={value}>
@@ -260,14 +285,7 @@ export function RecordEditor({
     setError('');
     let errorCategory = 'validation';
     try {
-      const parsed = parseDraft(collection, draft, subscriptions);
-      if (
-        'policy_ids' in parsed &&
-        parsed.policy_ids.some((id) => !policies.some((policy) => policy.id === id))
-      ) {
-        throw new Error('Every policy ID must exist. Create the policies first.');
-      }
-
+      const parsed = parseDraft(collection, draft, organizations, assignments);
       setSaving(true);
       errorCategory = 'api';
       await onSave(parsed);
@@ -301,6 +319,30 @@ export function RecordEditor({
     onClose();
   }
 
+  const departments = organizations.filter(
+    (organization) => organization.kind === 'department' && organization.enabled,
+  );
+  const teams = organizations.filter(
+    (organization) => organization.kind === 'team' && organization.enabled,
+  );
+  const userAssignments = assignments.filter((assignment) => assignment.enabled);
+  const aliases = [...new Set(models.map((model) => model.model))].sort();
+  const modelChoices: [string, string][] = [
+    ['*', 'All registered models (*)'],
+    ...aliases.map((alias): [string, string] => [alias, alias]),
+    ...(draft.model && draft.model !== '*' && !aliases.includes(String(draft.model))
+      ? [[String(draft.model), `${draft.model} (current)`] as [string, string]]
+      : []),
+  ];
+  const priceModelChoices: [string, string][] = [
+    ['', 'Choose a registered model'],
+    ...aliases.map((alias): [string, string] => [alias, alias]),
+    ...(draft.model && !aliases.includes(String(draft.model))
+      ? [[String(draft.model), `${draft.model} (current)`] as [string, string]]
+      : []),
+  ];
+  const currentType = String(draft.subject_type ?? 'user');
+
   return (
     <Dialog
       open
@@ -320,9 +362,7 @@ export function RecordEditor({
               {record ? 'Edit' : 'Create'} {titles[collection]}
             </DialogTitle>
             <DialogContent>
-              <p className="muted">
-                Changes are enforced by the API. Review units and scope before saving.
-              </p>
+              <p className="muted">Changes are enforced by the API. Review scope before saving.</p>
               {error && (
                 <div role="alert" className="error">
                   {error}
@@ -335,167 +375,101 @@ export function RecordEditor({
                   'Stable, unique identifier. Cannot change after creation.',
                   Boolean(record),
                 )}
-                {collection === 'policies' && input('name', 'Name')}
-                {collection !== 'assignments' && (
+                {collection !== 'prices' &&
+                  input('tenant_id', 'Tenant ID', undefined, Boolean(record))}
+                {collection === 'budgets' && (
                   <>
-                    {select('service', 'Service', Object.entries(services), (value) => {
-                      setDraft((previous) => ({
-                        ...previous,
-                        service: value,
-                        ...(collection === 'policies' ? { metric: 'cost' } : {}),
-                      }));
-                    })}
-                    <Field
-                      label="Model or deployment"
-                      required
-                      hint={
-                        collection === 'policies'
-                          ? 'Use * to pool all models, or select an alias. Manual entry remains available.'
-                          : 'Use the registered alias for Foundry; manual entry supports other services and legacy records.'
-                      }
-                    >
-                      <Input
-                        value={String(draft.model ?? '')}
-                        disabled={saving}
-                        list="model-suggestions"
-                        autoComplete="off"
-                        onChange={(_, data) => update('model', data.value)}
-                      />
-                    </Field>
-                    <datalist id="model-suggestions">
-                      {collection === 'policies' && <option value="*" label="All models" />}
-                      {service === 'foundry' &&
-                        aliases.map((alias) => (
-                          <option
-                            key={alias}
-                            value={alias}
-                            label={models
-                              .filter((model) => model.model === alias)
-                              .map((model) => model.api_protocol)
-                              .join(', ')}
-                          />
-                        ))}
-                    </datalist>
-                  </>
-                )}
-                {collection === 'policies' && (
-                  <>
-                    {select('subscription_id', 'Application subscription scope', [
-                      ['*', 'All application subscriptions'],
-                      ...subscriptionChoices,
+                    {input('name', 'Budget name')}
+                    {select('subject_type', 'Budget level', [
+                      ['user', 'User'],
+                      ['team', 'Team'],
+                      ['department', 'Department'],
                     ])}
                     {input(
-                      'tenant_id',
-                      'Tenant scope',
-                      '* applies across tenants; an explicit tenant can be paired with the shared application-subscription scope.',
-                      String(draft.subscription_id) !== '*',
+                      'subject_id',
+                      currentType === 'user'
+                        ? 'Budget subject ID'
+                        : currentType === 'team'
+                          ? 'Team ID'
+                          : 'Department ID',
+                      currentType === 'user'
+                        ? `Must match an enabled explicit assignment: ${userAssignments.map((item) => item.principal_id).join(', ') || 'none configured'}.`
+                        : currentType === 'team'
+                          ? `Must match an enabled team: ${teams.map((item) => item.id).join(', ') || 'none configured'}.`
+                          : `Must match an enabled department: ${departments.map((item) => item.id).join(', ') || 'none configured'}.`,
                     )}
-                    {select(
-                      'metric',
-                      'Accounting unit',
-                      metricChoices[service].map((value) => [
-                        value,
-                        value === 'cost' ? 'Cost · integer microUSD' : value.replace('_', ' '),
-                      ]),
-                    )}
+                    {select('model', 'Model', modelChoices)}
                     {input(
-                      'limit',
-                      draft.metric === 'cost' ? 'Limit (integer microUSD)' : 'Limit (whole units)',
-                      draft.metric === 'cost'
-                        ? '1 USD = 1,000,000 microUSD. Example: 25 USD = 25000000.'
-                        : 'Positive whole units; tokens include input and output.',
+                      'monthly_usd',
+                      'Monthly budget (USD)',
+                      'Up to six decimal places; converted exactly to integer micro-USD.',
                     )}
-                    {select('period', 'UTC period', [
-                      ['minute', 'Calendar minute'],
-                      ['hour', 'Calendar hour'],
-                      ['day', 'Calendar day'],
-                      ['month', 'Calendar month'],
-                    ])}
-                    {input(
-                      'priority',
-                      'Priority',
-                      'Non-negative integer; higher numbers are evaluated first. All matching limits apply.',
-                    )}
-                    <Checkbox
-                      label="Policy enabled"
-                      checked={Boolean(draft.enabled)}
-                      disabled={saving}
-                      onChange={(_, data) => update('enabled', Boolean(data.checked))}
-                    />
                   </>
                 )}
-                {collection === 'prices' && (
+                {collection === 'organizations' && (
                   <>
-                    {input(
-                      'version',
-                      'Version',
-                      'Use a new ID/version for new rates; retain versions referenced by history.',
-                    )}
-                    <div className="form-note">
-                      Input price applies to uncached input. Output = generated tokens. Cached input
-                      is the discounted cache-read rate. Cache-write rates include the write
-                      surcharge: each replaces the uncached rate for its input subset, not an
-                      additional charge on total input. Token rates are USD per 1,000,000 tokens;
-                      all other rates are USD per single unit. Use 0 for unused standard dimensions,
-                      but leave optional cache-write rates blank when unknown or not configured.
-                      Unknown is not free: potentially billable cache writes without a known rate
-                      fail closed. Sample prices are not live Azure quotes. When more than one
-                      version exists for the same service/model, pin the desired price_version in
-                      the deployed registry; ambiguous versions fail closed.
-                    </div>
-                    {priceFields.map(([key, label]) =>
-                      input(key, label, 'Exact decimal USD string; never microUSD.'),
-                    )}
-                    {cacheWritePriceFields.map(([key, label]) =>
-                      input(
-                        key,
-                        label,
-                        'Required for Anthropic; optional for legacy OpenAI. Full write rate including surcharge. Blank saves null, never an assumed zero.',
-                        false,
-                        false,
-                      ),
-                    )}
+                    {input('name', 'Display name')}
+                    {select('kind', 'Organization unit type', [
+                      ['department', 'Department'],
+                      ['team', 'Team'],
+                    ])}
+                    {String(draft.kind) === 'team' &&
+                      select('department_id', 'Parent department', [
+                        ['', 'Choose an enabled department'],
+                        ...departments.map((department): [string, string] => [
+                          department.id,
+                          `${department.name} · ${department.id}`,
+                        ]),
+                      ])}
+                    {input('business_unit', 'Business unit')}
+                    {input('cost_center', 'Cost center')}
                   </>
                 )}
                 {collection === 'assignments' && (
                   <>
-                    {select('subscription_id', 'Application subscription', [
-                      ['', 'Choose a registered application subscription'],
-                      ...subscriptionChoices,
-                    ])}
-                    {input('policy_ids', 'Policy IDs', 'Comma-separated existing policy IDs.')}
                     {input(
-                      'reader_principal_ids',
-                      'Reader principal IDs (optional)',
-                      'Comma-separated Entra object IDs allowed to read this subscription’s data.',
-                      false,
-                      false,
+                      'principal_id',
+                      'Entra principal ID',
+                      'Explicitly assign the signed-in user; membership is not inferred from group claims.',
                     )}
                     {input(
-                      'display_label',
-                      'Display label (optional)',
-                      'Administrator label for application-subscription reports only; never telemetry.',
-                      false,
-                      false,
+                      'team_id',
+                      'Team ID',
+                      `Must match an enabled team: ${teams.map((item) => item.id).join(', ') || 'none configured'}.`,
                     )}
-                    <div className="form-note">
-                      {subscriptions.length
-                        ? `Tenant is derived from the selected application subscription. Available policies: ${
-                            policies.length
-                              ? policies.map((policy) => policy.id).join(', ')
-                              : 'none; create a policy first.'
-                          }`
-                        : 'No registered application subscriptions are available. Register an application before creating an assignment.'}
-                    </div>
+                    {input('display_label', 'Display label (optional)')}
+                    <Field label="Department" hint="Derived from the selected team.">
+                      <Input
+                        value={teams.find((team) => team.id === draft.team_id)?.department_id ?? ''}
+                        readOnly
+                        disabled
+                      />
+                    </Field>
                   </>
                 )}
+                {collection === 'prices' && (
+                  <>
+                    {select('model', 'Model alias', priceModelChoices)}
+                    {input('version', 'Price version')}
+                    {priceFields.map(([key, label]) =>
+                      input(key, label, 'Exact decimal USD string; not micro-USD.'),
+                    )}
+                  </>
+                )}
+                {collection !== 'prices' && (
+                  <Checkbox
+                    label="Enabled"
+                    checked={Boolean(draft.enabled)}
+                    disabled={saving}
+                    onChange={(_, data) => update('enabled', Boolean(data.checked))}
+                  />
+                )}
               </div>
-              {collection === 'policies' && (
+              {collection === 'budgets' && (
                 <p className="fine-print">
-                  Periods use UTC calendar boundaries, not rolling windows. Cost reservations
-                  conservatively use the highest applicable known input/cache rate and maximum
-                  output; actual settlement can release the difference. Anthropic uses an
-                  operator-verified input ceiling, not a universal byte-to-token bound.
+                  Monthly limits use UTC calendar months. Every matching user, team, and department
+                  budget applies. This is a soft cap: concurrent in-flight requests may overshoot;
+                  subsequent requests are denied.
                 </p>
               )}
             </DialogContent>

@@ -1,14 +1,12 @@
 const collections = new Set([
   'models',
-  'subscriptions',
-  'policies',
+  'budgets',
+  'organizations',
   'prices',
   'assignments',
   'usage',
-  'audit',
-  'reconciliation',
 ]);
-const editableCollections = new Set(['policies', 'prices', 'assignments']);
+const editableCollections = new Set(['budgets', 'organizations', 'prices', 'assignments']);
 const tokenPattern = /^[A-Za-z0-9._~-]+$/;
 const correlationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const maxRequestBytes = 1024 * 1024;
@@ -76,17 +74,26 @@ function apiTarget(req, endpoint) {
     const period = url.searchParams.get('period');
     if (!['1h', '24h', '7d'].includes(period)) return null;
     upstreamPath = `${path}?period=${period}`;
-  } else if (path === 'usage/callers' && req.method === 'GET') {
-    if (url.searchParams.size > 1 || [...url.searchParams.keys()].some((key) => key !== 'period')) {
+  } else if (path === 'chargeback' && req.method === 'GET') {
+    if (
+      url.searchParams.size !== 2 ||
+      [...url.searchParams.keys()].some((key) => !['month', 'format'].includes(key))
+    ) {
       return null;
     }
-    const period = url.searchParams.get('period') || 'day';
-    if (!['hour', 'day'].includes(period)) return null;
-    upstreamPath = `${path}?period=${period}`;
+    const month = url.searchParams.get('month');
+    const format = url.searchParams.get('format');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') || !['json', 'csv'].includes(format || ''))
+      return null;
+    upstreamPath = `${path}?month=${month}&format=${format}`;
+  } else if (path === 'budgets/status' && req.method === 'GET' && url.search === '') {
+    upstreamPath = path;
   } else if (collections.has(path) && req.method === 'GET' && url.search === '') {
     upstreamPath = path;
   } else {
-    const match = /^(policies|prices|assignments)\/([A-Za-z0-9._-]{1,256})$/.exec(path);
+    const match = /^(budgets|organizations|prices|assignments)\/([A-Za-z0-9._-]{1,256})$/.exec(
+      path,
+    );
     if (
       !match ||
       !editableCollections.has(match[1]) ||
@@ -244,7 +251,13 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
         return;
       }
       const contentType = response.headers.get('content-type') || '';
-      if (!/^application\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(contentType)) {
+      const isChargebackCsv =
+        target.pathname.endsWith('/chargeback') && target.searchParams.get('format') === 'csv';
+      if (
+        isChargebackCsv
+          ? !/^text\/csv(?:\s*;|$)/i.test(contentType)
+          : !/^application\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(contentType)
+      ) {
         outcome.errorCategory = 'api_invalid_response';
         await response.body?.cancel();
         send(res, 502, JSON.stringify({ error: 'The API returned an invalid response.' }));
@@ -254,7 +267,12 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
         response,
         isDashboard ? dashboardMaxResponseBytes : maxResponseBytes,
       );
-      send(res, response.status, result);
+      send(
+        res,
+        response.status,
+        result,
+        isChargebackCsv ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
+      );
     } catch {
       outcome.errorCategory = 'api_upstream_failure';
       send(res, 502, JSON.stringify({ error: 'The API could not complete this request.' }));

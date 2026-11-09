@@ -4,31 +4,48 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Portal } from '../src/Portal';
 import { RecordEditor } from '../src/RecordEditor';
-import type { Policy } from '../src/contracts';
+import type { Assignment, Organization } from '../src/contracts';
 import { createDemoApi } from '../src/demo';
 import * as telemetry from '../src/telemetry';
 import { TelemetryBoundary } from '../src/TelemetryBoundary';
 
-const policy: Policy = {
-  id: 'p1',
-  name: 'Monthly budget',
-  service: 'foundry',
-  model: '*',
-  tenant_id: '*',
-  subscription_id: '*',
-  limit: 25_000_000,
-  period: 'month',
-  metric: 'cost',
+const department: Organization = {
+  id: 'engineering',
+  tenant_id: 'tenant-1',
+  kind: 'department',
+  name: 'Engineering',
+  business_unit: 'Product',
+  cost_center: 'CC-4100',
   enabled: true,
-  priority: 10,
 };
+const team: Organization = {
+  id: 'platform',
+  tenant_id: 'tenant-1',
+  kind: 'team',
+  name: 'Platform',
+  department_id: 'engineering',
+  business_unit: 'Product',
+  cost_center: 'CC-4100',
+  enabled: true,
+};
+const assignment: Assignment = {
+  id: 'alice-assignment',
+  tenant_id: 'tenant-1',
+  principal_id: 'entra-object-id',
+  team_id: 'platform',
+  department_id: 'engineering',
+  display_label: 'Alice',
+  enabled: true,
+};
+function wrap(children: React.ReactNode) {
+  return render(<FluentProvider theme={webLightTheme}>{children}</FluentProvider>);
+}
 
 describe('portal telemetry outcomes', () => {
   it('logs page, refresh and failed/successful delete results without identity or record data', async () => {
     const user = userEvent.setup();
     const log = vi.spyOn(telemetry, 'track');
     const api = createDemoApi();
-    const id = (await api.list('policies'))[0].id;
     vi.spyOn(api, 'remove').mockRejectedValueOnce(new Error('private-server-message'));
     wrap(
       <Portal
@@ -43,17 +60,16 @@ describe('portal telemetry outcomes', () => {
       expect(log).toHaveBeenCalledWith(
         'portal_refresh',
         { outcome: 'success' },
-        expect.objectContaining({ collectionCount: 8, failureCount: 0 }),
+        expect.objectContaining({ collectionCount: 7, failureCount: 0 }),
       ),
     );
     expect(log).toHaveBeenCalledWith('portal_page', { page: 'overview', outcome: 'success' });
-    await user.click(screen.getByRole('button', { name: 'Budget policies' }));
-    expect(log).toHaveBeenCalledWith('portal_page', { page: 'policies', outcome: 'success' });
-    await user.click(screen.getByRole('button', { name: `Delete ${id}` }));
+    await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
+    await user.click(screen.getByRole('button', { name: 'Delete engineering-monthly' }));
     await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('private-server-message');
     expect(log).toHaveBeenCalledWith('portal_configuration', {
-      collection: 'policies',
+      collection: 'budgets',
       action: 'delete',
       outcome: 'failure',
       errorCategory: 'api',
@@ -61,14 +77,14 @@ describe('portal telemetry outcomes', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
     await waitFor(() =>
       expect(log).toHaveBeenCalledWith('portal_configuration', {
-        collection: 'policies',
+        collection: 'budgets',
         action: 'delete',
         outcome: 'success',
         errorCategory: 'none',
       }),
     );
     expect(JSON.stringify(log.mock.calls)).not.toContain('private');
-    expect(JSON.stringify(log.mock.calls)).not.toContain(id);
+    expect(JSON.stringify(log.mock.calls)).not.toContain('engineering-monthly');
   });
 
   it('logs a cancelled editor without submitting form contents', async () => {
@@ -76,13 +92,22 @@ describe('portal telemetry outcomes', () => {
     const log = vi.spyOn(telemetry, 'track');
     const save = vi.fn();
     const close = vi.fn();
-    wrap(<RecordEditor collection="policies" policies={[]} onSave={save} onClose={close} />);
-    await user.type(screen.getByLabelText(/^Name/), 'private policy name');
+    wrap(
+      <RecordEditor
+        collection="budgets"
+        organizations={[department, team]}
+        assignments={[assignment]}
+        models={[]}
+        onSave={save}
+        onClose={close}
+      />,
+    );
+    await user.type(screen.getByLabelText(/^Budget name/), 'private budget');
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(save).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledWith('portal_configuration', {
-      collection: 'policies',
+      collection: 'budgets',
       action: 'create',
       outcome: 'cancelled',
       errorCategory: 'none',
@@ -102,277 +127,242 @@ describe('portal telemetry outcomes', () => {
       </TelemetryBoundary>,
     );
     expect(screen.getByRole('alert')).not.toHaveTextContent('private');
-    expect(log).toHaveBeenCalledWith('portal_browser_error', { errorCategory: 'render_error' });
+    expect(log).toHaveBeenCalledWith(
+      'portal_browser_error',
+      expect.objectContaining({ errorCategory: 'render_error', errorName: 'Error' }),
+    );
     expect(JSON.stringify(log.mock.calls)).not.toContain('private');
   });
 });
-function wrap(children: React.ReactNode) {
-  return render(<FluentProvider theme={webLightTheme}>{children}</FluentProvider>);
-}
 
-describe('policy and price workflows', () => {
-  it('binds a policy to a registered application subscription and derives its tenant', async () => {
+describe('monthly budgets, assignments and price cards', () => {
+  it('converts an entered decimal USD limit to integer micro-USD exactly', async () => {
     const user = userEvent.setup();
     const save = vi.fn().mockResolvedValue(undefined);
     wrap(
       <RecordEditor
-        collection="policies"
-        policies={[]}
-        subscriptions={[
+        collection="budgets"
+        organizations={[department, team]}
+        assignments={[assignment]}
+        models={[
           {
-            id: 'application-research',
-            tenant_id: 'tenant-1',
-            display_name: 'Research application',
+            id: 'openai-chat:gpt-4o',
+            model: 'gpt-4o',
+            api_protocol: 'openai-chat',
+            deployment_name: 'chat',
+            price_version: 'v1',
+            max_input_tokens: 1000,
+            max_output_tokens: 1000,
           },
         ]}
         onSave={save}
         onClose={vi.fn()}
       />,
     );
-    await user.type(screen.getByLabelText(/^ID/), 'research-budget');
-    await user.type(screen.getByLabelText(/^Name/), 'Research budget');
-    await user.selectOptions(
-      screen.getByLabelText(/Application subscription scope/),
-      'application-research',
-    );
-    await user.type(screen.getByLabelText(/Limit \(integer microUSD\)/), '1000000');
+    await user.type(screen.getByLabelText(/^ID/), 'user-budget');
+    await user.type(screen.getByLabelText(/^Tenant ID/), 'tenant-1');
+    await user.type(screen.getByLabelText(/^Budget name/), 'Alice monthly');
+    await user.type(screen.getByLabelText(/Budget subject ID/), 'entra-object-id');
+    await user.type(screen.getByLabelText(/Monthly budget \(USD\)/), '12.340056');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(save).toHaveBeenCalledWith(
         expect.objectContaining({
-          subscription_id: 'application-research',
-          tenant_id: 'tenant-1',
-          limit: 1_000_000,
+          id: 'user-budget',
+          subject_type: 'user',
+          subject_id: 'entra-object-id',
+          limit_micro_usd: 12_340_056,
         }),
       ),
     );
-    expect(save.mock.calls[0][0]).not.toHaveProperty('principal_id');
   });
 
-  it('rejects fractional microUSD and saves an integer budget with a UTC period', async () => {
-    const log = vi.spyOn(telemetry, 'track');
+  it.each(['0.0000001', '1e3', '-1', '9007199255.999999'])(
+    'rejects unsafe or inexact monthly USD value %s',
+    async (value) => {
+      const user = userEvent.setup();
+      const save = vi.fn();
+      wrap(
+        <RecordEditor
+          collection="budgets"
+          organizations={[department, team]}
+          assignments={[assignment]}
+          models={[]}
+          onSave={save}
+          onClose={vi.fn()}
+        />,
+      );
+      await user.type(screen.getByLabelText(/^ID/), 'valid-id');
+      await user.type(screen.getByLabelText(/^Tenant ID/), 'tenant-1');
+      await user.type(screen.getByLabelText(/^Budget name/), 'Monthly');
+      await user.type(screen.getByLabelText(/Budget subject ID/), 'entra-object-id');
+      await user.type(screen.getByLabelText(/Monthly budget \(USD\)/), value);
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(/budget|large/);
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
+
+  it('derives assignment department from the enabled parent department of its team', async () => {
     const user = userEvent.setup();
     const save = vi.fn().mockResolvedValue(undefined);
-    wrap(
-      <RecordEditor
-        collection="policies"
-        record={policy}
-        policies={[policy]}
-        onSave={save}
-        onClose={vi.fn()}
-      />,
-    );
-    const limit = screen.getByLabelText(/Limit \(integer microUSD\)/);
-    await user.clear(limit);
-    await user.type(limit, '0.5');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('safe whole number');
-    expect(save).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith('portal_configuration', {
-      collection: 'policies',
-      action: 'update',
-      outcome: 'failure',
-      errorCategory: 'validation',
-    });
-    await user.clear(limit);
-    await user.type(limit, '5000000');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() =>
-      expect(save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          limit: 5000000,
-          period: 'month',
-          metric: 'cost',
-        }),
-      ),
-    );
-    expect(log).toHaveBeenCalledWith('portal_configuration', {
-      collection: 'policies',
-      action: 'update',
-      outcome: 'success',
-      errorCategory: 'none',
-    });
-    expect(JSON.stringify(log.mock.calls)).not.toMatch(
-      /Monthly budget|p1|5000000|25000000|principal/,
-    );
-  });
-
-  it('changes available accounting units when the service changes', async () => {
-    const user = userEvent.setup();
-    wrap(<RecordEditor collection="policies" policies={[]} onSave={vi.fn()} onClose={vi.fn()} />);
-    await user.selectOptions(screen.getByLabelText(/Service/), 'document-intelligence');
-    const metric = screen.getByLabelText(/Accounting unit/);
-    expect(within(metric).getByRole('option', { name: 'pages' })).toBeInTheDocument();
-    expect(within(metric).queryByRole('option', { name: 'tokens' })).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText(/Service/), 'language');
-    expect(within(metric).getByRole('option', { name: 'text records' })).toBeInTheDocument();
-  });
-
-  it('preserves exact decimal price strings and distinguishes per-million from per-unit', async () => {
-    const user = userEvent.setup();
-    const save = vi.fn().mockResolvedValue(undefined);
-    const record = (await createDemoApi().list('prices'))[0];
-    wrap(
-      <RecordEditor
-        collection="prices"
-        record={record}
-        policies={[]}
-        onSave={save}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/Pages · USD per page/)).toBeInTheDocument();
-    const cached = screen.getByLabelText(/Cached input tokens · USD per million/);
-    await user.clear(cached);
-    await user.type(cached, '0.000000123456');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() =>
-      expect(save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          cached_input_per_million: '0.000000123456',
-          input_per_million: '2.50',
-        }),
-      ),
-    );
-  });
-
-  it('rejects invalid price syntax and reports a failed API save without closing', async () => {
-    const user = userEvent.setup();
-    const save = vi.fn().mockRejectedValue(new Error('API denied this price version.'));
-    const close = vi.fn();
-    const record = (await createDemoApi().list('prices'))[0];
-    wrap(
-      <RecordEditor
-        collection="prices"
-        record={record}
-        policies={[]}
-        onSave={save}
-        onClose={close}
-      />,
-    );
-    const input = screen.getByLabelText(/Input tokens · USD per million/);
-    await user.clear(input);
-    await user.type(input, '-2');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('non-negative decimal');
-    expect(save).not.toHaveBeenCalled();
-    await user.clear(input);
-    await user.type(input, '2.50');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('API denied');
-    expect(close).not.toHaveBeenCalled();
-  });
-
-  it('requires tenant-bound assignments to reference existing policies', async () => {
-    const user = userEvent.setup();
-    const save = vi.fn();
     wrap(
       <RecordEditor
         collection="assignments"
-        policies={[policy]}
-        subscriptions={[
-          { id: 'application-1', tenant_id: 'tenant-1', display_name: 'Application one' },
+        organizations={[department, team]}
+        assignments={[]}
+        models={[]}
+        onSave={save}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.type(screen.getByLabelText(/^ID/), 'alice');
+    await user.type(screen.getByLabelText(/^Tenant ID/), 'tenant-1');
+    await user.type(screen.getByLabelText(/Entra principal ID/), 'entra-object-id');
+    await user.type(screen.getByLabelText(/^Team ID/), 'platform');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          principal_id: 'entra-object-id',
+          team_id: 'platform',
+          department_id: 'engineering',
+        }),
+      ),
+    );
+  });
+
+  it('keeps OpenAI price rates as exact decimal strings and excludes other billing units', async () => {
+    const user = userEvent.setup();
+    const save = vi.fn().mockResolvedValue(undefined);
+    wrap(
+      <RecordEditor
+        collection="prices"
+        organizations={[]}
+        assignments={[]}
+        models={[
+          {
+            id: 'openai-chat:gpt-4o',
+            model: 'gpt-4o',
+            api_protocol: 'openai-chat',
+            deployment_name: 'chat',
+            price_version: 'v1',
+            max_input_tokens: 1000,
+            max_output_tokens: 1000,
+          },
         ]}
         onSave={save}
         onClose={vi.fn()}
       />,
     );
-    await user.type(screen.getByLabelText(/^ID/), 'assignment-1');
-    await user.selectOptions(screen.getByLabelText(/^Application subscription/), 'application-1');
-    await user.type(screen.getByLabelText(/^Policy IDs/), 'does-not-exist');
+    await user.type(screen.getByLabelText(/^ID/), 'rate-v1');
+    await user.selectOptions(screen.getByLabelText(/Model alias/), 'gpt-4o');
+    await user.type(screen.getByLabelText(/^Price version/), 'v1');
+    const rate = screen.getByLabelText(/Cached input/);
+    await user.clear(rate);
+    await user.type(rate, '0.000000123456');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Every policy ID must exist');
-    expect(save).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-4o',
+          cached_input_per_million: '0.000000123456',
+        }),
+      ),
+    );
+    expect(
+      screen.queryByText(/per page|text record|per request|Anthropic/i),
+    ).not.toBeInTheDocument();
   });
 });
 
-describe('authorization and reporting', () => {
-  it('displays the read-only application subscription registry without gateway keys', async () => {
+describe('authorization, MTD status and exports', () => {
+  it('shows actual month-to-date spend and the explicit soft-cap warning', async () => {
     const user = userEvent.setup();
     wrap(
       <Portal
         api={createDemoApi()}
         roles={['RateLimit.Reader']}
-        identity="Reader"
+        identity="reader"
         cloud="commercial"
       />,
     );
-    await user.click(screen.getByRole('button', { name: 'Application subscriptions' }));
+    await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
     const table = await screen.findByRole('table', {
-      name: 'Registered application subscriptions',
+      name: 'Monthly actual spend and remaining budgets',
     });
-    expect(within(table).getByText('Research application')).toBeInTheDocument();
-    expect(within(table).getByText('application-research')).toBeInTheDocument();
-    expect(within(table).queryByText(/APIM|Ocp-Apim-Subscription-Key/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Create subscription' })).not.toBeInTheDocument();
+    expect(within(table).getByText(/Engineering monthly/)).toBeInTheDocument();
+    expect(table).toHaveTextContent('$0.90');
+    expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Create/ })).not.toBeInTheDocument();
   });
 
-  it('lets a reader inspect policies and estimated usage but never mutate configuration', async () => {
+  it('renders unknown chargeback counts without inventing zero tokens or dollars', async () => {
     const user = userEvent.setup();
     const api = createDemoApi();
-    const save = vi.spyOn(api, 'save');
-    wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="Reader" cloud="government" />);
-    expect(await screen.findByText('Research · monthly AI budget')).toBeInTheDocument();
-    expect(screen.getByText('Azure Government')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Budget policies' }));
-    expect(screen.queryByRole('button', { name: /Create policy/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Edit / })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Delete / })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Service usage' }));
-    expect(screen.getByText('Estimated / conservative')).toBeInTheDocument();
-    expect(screen.queryByText(/Last-decision remaining:/)).not.toBeInTheDocument();
-    expect(save).not.toHaveBeenCalled();
+    vi.spyOn(api, 'chargeback').mockResolvedValue([
+      {
+        business_unit: 'Product',
+        cost_center: 'CC-4100',
+        department_id: 'engineering',
+        team_id: 'platform',
+        user_ref: 'opaque-user',
+        subscription_id: 'application',
+        model: 'gpt-4.1-mini',
+        month: '2030-01',
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        cost_micro_usd: null,
+        unknown_requests: 1,
+      },
+    ]);
+    wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="reader" cloud="commercial" />);
+    await user.click(screen.getByRole('button', { name: 'Chargeback' }));
+    const report = await screen.findByRole('table', { name: 'Monthly chargeback report' });
+    expect(await within(report).findByText('Unknown — no actual usage reported')).toBeInTheDocument();
+    expect(report).toHaveTextContent('Unknown · Unknown · Unknown');
+    expect(report).not.toHaveTextContent('$0.00');
   });
 
-  it('requires confirmation before an administrator deletes configuration', async () => {
+  it('lets a reader view chargeback and export both contract formats', async () => {
     const user = userEvent.setup();
     const api = createDemoApi();
-    const remove = vi.spyOn(api, 'remove');
-    wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="Admin" cloud="commercial" />);
-    await screen.findByText('Research · monthly AI budget');
-    await user.click(screen.getByRole('button', { name: 'Budget policies' }));
-    await user.click(screen.getByRole('button', { name: 'Delete foundry-monthly' }));
-    expect(remove).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('policies', 'foundry-monthly'));
-    await waitFor(() =>
-      expect(screen.queryByText('Research · monthly AI budget')).not.toBeInTheDocument(),
-    );
+    const chargeback = vi.spyOn(api, 'chargeback');
+    const createUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:export');
+    const revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="reader" cloud="commercial" />);
+    await user.click(screen.getByRole('button', { name: 'Chargeback' }));
+    expect(
+      await screen.findByRole('table', { name: 'Monthly chargeback report' }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Export JSON' }));
+    await waitFor(() => expect(chargeback).toHaveBeenCalledWith(expect.any(String), 'json'));
+    expect(createUrl).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }));
+    await waitFor(() => expect(chargeback).toHaveBeenCalledWith(expect.any(String), 'csv'));
+    expect(createUrl).toHaveBeenCalledTimes(2);
+    expect(revokeUrl).toHaveBeenCalledTimes(2);
+    expect(anchorClick).toHaveBeenCalledTimes(2);
+    createUrl.mockRestore();
+    revokeUrl.mockRestore();
+    anchorClick.mockRestore();
   });
 
-  it('does not silently overwrite an existing ID in the create workflow', async () => {
-    const user = userEvent.setup();
-    const api = createDemoApi();
-    const save = vi.spyOn(api, 'save');
-    wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="Admin" cloud="commercial" />);
-    await screen.findByText('Research · monthly AI budget');
-    await user.click(screen.getByRole('button', { name: 'Budget policies' }));
-    await user.click(screen.getByRole('button', { name: 'Create policy' }));
-    await user.type(screen.getByLabelText(/^ID/), 'foundry-monthly');
-    await user.type(screen.getByLabelText(/^Name/), 'Replacement');
-    await user.type(screen.getByLabelText(/Limit \(integer microUSD\)/), '100');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('This ID already exists');
-    expect(save).not.toHaveBeenCalled();
-  });
-
-  it('shows API failures and retries without substituting demo data', async () => {
-    const user = userEvent.setup();
-    const api = createDemoApi();
-    const list = vi.spyOn(api, 'list').mockRejectedValue(new Error('API unavailable.'));
-    wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="Reader" cloud="commercial" />);
-    await screen.findAllByText(/API unavailable/);
-    expect(screen.queryByText('Research · monthly AI budget')).not.toBeInTheDocument();
-    expect(screen.getByText('Policies are unavailable. Refresh to retry.')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(16));
-  });
-
-  it('does not call reporting APIs for gateway-only identities', () => {
+  it('does not request portal data for gateway-only identities', () => {
     const api = createDemoApi();
     const list = vi.spyOn(api, 'list');
     wrap(<Portal api={api} roles={['RateLimit.Gateway']} identity="Gateway" cloud="commercial" />);
     expect(screen.getByRole('heading', { name: 'Access not assigned' })).toBeInTheDocument();
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it('keeps API failures visible without substituting demo records', async () => {
+    const api = createDemoApi();
+    vi.spyOn(api, 'list').mockRejectedValue(new Error('API unavailable.'));
+    wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="Reader" cloud="commercial" />);
+    expect(await screen.findAllByText(/API unavailable/)).not.toHaveLength(0);
+    expect(screen.queryByText('gpt-4o')).not.toBeInTheDocument();
   });
 });

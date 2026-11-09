@@ -1,36 +1,45 @@
-export type Service = 'foundry' | 'document-intelligence' | 'language';
-export type ApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
-export type Metric = 'cost' | 'tokens' | 'requests' | 'pages' | 'text_records';
-export type Period = 'minute' | 'hour' | 'day' | 'month';
+export type ApiProtocol = 'openai-chat' | 'openai-responses';
 export type Role = 'RateLimit.Admin' | 'RateLimit.Reader' | 'RateLimit.Gateway';
 
-export interface Policy {
+export interface Organization {
   id: string;
+  tenant_id: string;
+  kind: 'team' | 'department';
   name: string;
-  service: Service;
-  model: string;
-  tenant_id?: string;
-  subscription_id: string;
-  limit: number;
-  period: Period;
-  metric: Metric;
+  department_id?: string;
+  business_unit: string;
+  cost_center: string;
   enabled: boolean;
-  priority: number;
+}
+
+export interface Assignment {
+  id: string;
+  tenant_id: string;
+  principal_id: string;
+  team_id: string;
+  department_id: string;
+  display_label?: string;
+  enabled: boolean;
+}
+
+export interface Budget {
+  id: string;
+  tenant_id: string;
+  name: string;
+  subject_type: 'user' | 'team' | 'department';
+  subject_id: string;
+  model: '*' | string;
+  limit_micro_usd: number;
+  enabled: boolean;
 }
 
 export interface Price {
   id: string;
-  service: Service;
   model: string;
   version: string;
   input_per_million: string;
-  output_per_million: string;
   cached_input_per_million: string;
-  cache_write_5m_per_million?: string | null;
-  cache_write_1h_per_million?: string | null;
-  per_page: string;
-  per_text_record: string;
-  per_request: string;
+  output_per_million: string;
 }
 
 export interface Model {
@@ -43,67 +52,71 @@ export interface Model {
   max_output_tokens: number;
 }
 
-export interface Assignment {
-  id: string;
-  tenant_id: string;
-  subscription_id: string;
-  policy_ids: string[];
-  reader_principal_ids: string[];
-  display_label?: string | null;
-}
-
-export interface ApplicationSubscription {
-  id: string;
-  tenant_id: string;
-  display_name: string;
-}
-
-export interface CallerUsage {
-  id: string;
-  tenant_id: string;
-  subscription_id: string;
-  caller_ref: string;
-  display_label: string | null;
-  service: Service;
+export interface BudgetStatus {
+  budget_id: string;
+  name: string;
+  subject_type: 'user' | 'team' | 'department';
+  subject_id: string;
   model: string;
-  api_protocol: ApiProtocol | null;
-  streaming: boolean;
-  period: 'hour' | 'day';
-  start_at: string;
-  end_at: string;
-  request_count: number;
-  admitted_requests: number;
-  denied_requests: number;
-  denied_policy_counts: Record<string, number>;
-  estimated_requests: number;
-  cost_micro_usd: number;
-  actual_cost_micro_usd: number;
-  conservative_cost_micro_usd: number;
+  limit_micro_usd: number;
+  spent_micro_usd: number;
+  remaining_micro_usd: number;
+  month: string;
 }
 
-export interface LedgerRecord {
-  id: string;
-  tenant_id: string;
-  subscription_id?: string;
-  principal_id?: string;
-  kind: string;
+export interface UsageRecord {
+  event_version: 2;
+  event_name: 'usage_recorded';
+  event_id: string;
+  request_id: string;
   timestamp: string;
-  data: Record<string, unknown>;
+  month: string;
+  tenant_ref: string;
+  user_ref: string;
+  team_id: string;
+  department_id: string;
+  business_unit: string;
+  cost_center: string;
+  subscription_id: string;
+  model: string;
+  api_protocol: ApiProtocol;
+  streaming: boolean;
+  status: 'actual' | 'usage_unknown';
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  cost_micro_usd: number | null;
+  price_version: string;
+}
+
+export interface ChargebackRow {
+  business_unit: string;
+  cost_center: string;
+  department_id: string;
+  team_id: string;
+  user_ref: string;
+  subscription_id: string;
+  model: string;
+  month: string;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  cost_micro_usd: number | null;
+  unknown_requests: number;
 }
 
 export interface Collections {
-  models: Model;
-  subscriptions: ApplicationSubscription;
-  policies: Policy;
-  prices: Price;
+  budgets: Budget;
+  organizations: Organization;
   assignments: Assignment;
-  usage: LedgerRecord;
-  audit: LedgerRecord;
-  reconciliation: LedgerRecord;
+  prices: Price;
+  models: Model;
+  usage: UsageRecord;
 }
+
 export type Collection = keyof Collections;
-export type EditableCollection = 'policies' | 'prices' | 'assignments';
-export type EditableRecord = Policy | Price | Assignment;
+export type EditableCollection = 'budgets' | 'organizations' | 'assignments' | 'prices';
+export type EditableRecord = Budget | Organization | Assignment | Price;
 
 export interface RuntimeConfig {
   cloud: 'commercial' | 'government';
@@ -134,9 +147,10 @@ export interface DashboardTile {
 }
 
 export interface PortalApi {
-  callers(period: 'hour' | 'day'): Promise<CallerUsage[]>;
   dashboard(period: DashboardPeriod): Promise<DashboardTile[]>;
   list<K extends Collection>(collection: K): Promise<Collections[K][]>;
+  budgetStatus(): Promise<BudgetStatus[]>;
+  chargeback(month: string, format: 'json' | 'csv'): Promise<ChargebackRow[] | string>;
   save<K extends EditableCollection>(collection: K, record: Collections[K]): Promise<void>;
   remove(collection: EditableCollection, id: string): Promise<void>;
 }

@@ -9,8 +9,14 @@ export class TelemetryBoundary extends Component<{ children: ReactNode }, { fail
     return { failed: true };
   }
 
-  componentDidCatch(): void {
-    track('portal_browser_error', { errorCategory: 'render_error' });
+  componentDidCatch(error: Error): void {
+    track(
+      'portal_browser_error',
+      {
+        errorCategory: 'render_error',
+        errorName: error.name,
+      },
+    );
   }
 
   render(): ReactNode {

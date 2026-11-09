@@ -195,7 +195,7 @@ describe('production server', () => {
     const asset = await fetch(`http://127.0.0.1:${port}/index.html`);
     expect(asset.status).toBe(200);
     expect(asset.headers.get('content-type')).toContain('text/html');
-    const spa = await fetch(`http://127.0.0.1:${port}/budget-policies`, {
+    const spa = await fetch(`http://127.0.0.1:${port}/monthly-budgets`, {
       headers: { Accept: 'text/html' },
     });
     expect(spa.status).toBe(200);
@@ -266,7 +266,7 @@ describe('production server', () => {
     const upstream = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response('[{"id":"policy-1"}]', {
+        new Response('[{"id":"budget-1"}]', {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -279,7 +279,7 @@ describe('production server', () => {
       fetchImpl: upstream,
     });
     const correlationId = '55555555-5555-5555-5555-555555555555';
-    const response = await fetch(`http://127.0.0.1:${port}/api/policies`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/budgets`, {
       headers: {
         'X-Portal-Access-Token': 'header.payload.signature',
         Authorization: 'Bearer platform-or-client-token',
@@ -290,10 +290,10 @@ describe('production server', () => {
       },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual([{ id: 'policy-1' }]);
+    expect(await response.json()).toEqual([{ id: 'budget-1' }]);
     expect(upstream).toHaveBeenCalledOnce();
     const [target, init] = upstream.mock.calls[0];
-    expect(target.href).toBe('https://gateway.example.us/portal/policies');
+    expect(target.href).toBe('https://gateway.example.us/portal/budgets');
     expect(init).toMatchObject({ method: 'GET', redirect: 'manual' });
     expect(init.headers).toEqual({
       Authorization: 'Bearer header.payload.signature',
@@ -303,7 +303,7 @@ describe('production server', () => {
     expect(JSON.stringify(logger.mock.calls)).not.toMatch(
       /private|signature|platform-or-client-token|client-supplied-key/,
     );
-    const mutation = await fetch(`http://127.0.0.1:${port}/api/policies/policy-1`, {
+    const mutation = await fetch(`http://127.0.0.1:${port}/api/budgets/budget-1`, {
       method: 'PUT',
       headers: {
         'X-Portal-Access-Token': 'header.payload.signature',
@@ -311,14 +311,14 @@ describe('production server', () => {
         'X-Correlation-ID': correlationId,
         'Ocp-Apim-Subscription-Key': 'another-client-key',
       },
-      body: '{"id":"policy-1"}',
+      body: '{"id":"budget-1"}',
     });
     expect(mutation.status).toBe(204);
     const [mutationTarget, mutationInit] = upstream.mock.calls[1];
-    expect(mutationTarget.href).toBe('https://gateway.example.us/portal/policies/policy-1');
+    expect(mutationTarget.href).toBe('https://gateway.example.us/portal/budgets/budget-1');
     expect(mutationInit).toMatchObject({
       method: 'PUT',
-      body: '{"id":"policy-1"}',
+      body: '{"id":"budget-1"}',
       redirect: 'manual',
     });
     expect(mutationInit.headers).toEqual({
@@ -330,6 +330,67 @@ describe('production server', () => {
     expect(JSON.stringify(logger.mock.calls)).not.toMatch(/private|signature|another-client-key/);
     const publicResponse = await fetch(`http://127.0.0.1:${port}/config.json`);
     expect(await publicResponse.text()).not.toContain('server-private-key');
+  });
+
+  it('proxies budget status and exact chargeback query contracts, preserving CSV output', async () => {
+    const config = buildConfig({ ...valid, WEB_API_PROXY_ENABLED: 'true' });
+    const upstream = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('business_unit,cost_center\nProduct,CC-4100', {
+          status: 200,
+          headers: { 'Content-Type': 'text/csv; charset=utf-8' },
+        }),
+      );
+    const port = await start(config, vi.fn(), resolve('.'), {
+      upstreamUrl: valid.API_BASE_URL,
+      subscriptionKey: 'server-private-key',
+      fetchImpl: upstream,
+    });
+    const headers = { 'X-Portal-Access-Token': 'header.payload.signature' };
+    const status = await fetch(`http://127.0.0.1:${port}/api/budgets/status`, { headers });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual([]);
+    expect(upstream.mock.calls[0][0].href).toBe('https://gateway.example.us/portal/budgets/status');
+    const json = await fetch(`http://127.0.0.1:${port}/api/chargeback?month=2026-11&format=json`, {
+      headers,
+    });
+    expect(json.status).toBe(200);
+    expect(await json.json()).toEqual([]);
+    expect(upstream.mock.calls[1][0].href).toBe(
+      'https://gateway.example.us/portal/chargeback?month=2026-11&format=json',
+    );
+    const csv = await fetch(`http://127.0.0.1:${port}/api/chargeback?month=2026-11&format=csv`, {
+      headers,
+    });
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get('content-type')).toContain('text/csv');
+    expect(await csv.text()).toContain('CC-4100');
+    expect(upstream.mock.calls[2][0].href).toBe(
+      'https://gateway.example.us/portal/chargeback?month=2026-11&format=csv',
+    );
+    for (const suffix of [
+      '?month=2026-13&format=json',
+      '?month=2026-11&format=xml',
+      '?month=2026-11&format=json&identity=attacker',
+    ]) {
+      expect(
+        (await fetch(`http://127.0.0.1:${port}/api/chargeback${suffix}`, { headers })).status,
+      ).toBe(404);
+    }
+    expect(upstream).toHaveBeenCalledTimes(3);
   });
 
   it('allows only dashboard period queries and bounds dashboard responses separately', async () => {
@@ -381,10 +442,10 @@ describe('production server', () => {
       subscriptionKey: 'server-private-key',
       fetchImpl: upstream,
     });
-    expect((await fetch(`http://127.0.0.1:${port}/api/policies`)).status).toBe(401);
+    expect((await fetch(`http://127.0.0.1:${port}/api/budgets`)).status).toBe(401);
     expect(
       (
-        await fetch(`http://127.0.0.1:${port}/api/policies`, {
+        await fetch(`http://127.0.0.1:${port}/api/budgets`, {
           headers: { 'X-Portal-Access-Token': 'not-a-bearer-token' },
         })
       ).status,
@@ -426,7 +487,7 @@ describe('production server', () => {
       subscriptionKey: 'server-private-key',
       fetchImpl: upstream,
     });
-    const response = await fetch(`http://127.0.0.1:${port}/api/subscriptions`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/organizations`, {
       headers: { 'X-Portal-Access-Token': 'header.payload.signature' },
     });
     expect(response.status).toBe(502);

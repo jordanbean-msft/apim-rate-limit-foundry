@@ -33,6 +33,7 @@ function Bootstrap() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const [msalReady, setMsalReady] = useState(false);
   useEffect(() => {
     let active = true;
     fetch('/config.json', { cache: 'no-store', credentials: 'same-origin' })
@@ -65,6 +66,30 @@ function Bootstrap() {
     };
   }, [attempt]);
   const msal = useMemo(() => (config && !config.demoMode ? createMsal(config) : null), [config]);
+  useEffect(() => {
+    if (!msal) {
+      setMsalReady(false);
+      return;
+    }
+    let active = true;
+    setMsalReady(false);
+    setError('');
+    void msal
+      .initialize()
+      .then(() => {
+        if (active) setMsalReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        track('portal_bootstrap', { action: 'msal_initialize', outcome: 'failure' });
+        setError(
+          'Secure sign-in could not initialize. Reload the page and verify tenant configuration.',
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [msal]);
   const demo = useMemo(() => createDemoApi(), []);
   if (error)
     return (
@@ -91,6 +116,12 @@ function Bootstrap() {
         cloud={config.cloud}
         demo
       />
+    );
+  if (!msalReady)
+    return (
+      <main className="welcome">
+        <Spinner label="Initializing secure sign-in…" />
+      </main>
     );
   return (
     <MsalProvider instance={msal!}>

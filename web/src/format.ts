@@ -1,9 +1,3 @@
-export const services = {
-  foundry: 'Microsoft Foundry',
-  'document-intelligence': 'Document Intelligence',
-  language: 'Azure AI Language',
-} as const;
-
 export function microUsd(value: unknown): string {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
     return 'Not reported';

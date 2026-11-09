@@ -1,131 +1,105 @@
 import { Badge, Button } from '@fluentui/react-components';
 import type {
-  ApplicationSubscription,
   Assignment,
+  Budget,
   EditableCollection,
   EditableRecord,
-  Policy,
+  Organization,
   Price,
 } from '../contracts';
-import { services } from '../format';
-import { PolicyLimit } from './PolicyLimit';
-
-function PriceDetails({ price }: { price: Price }) {
-  const writeRate = (rate: string | null | undefined) =>
-    rate == null ? 'Not configured' : `$${rate}`;
-  const summary =
-    price.service === 'foundry'
-      ? `Uncached input $${price.input_per_million} · Output $${price.output_per_million} · Cache read discount $${price.cached_input_per_million} / million tokens`
-      : price.service === 'document-intelligence'
-        ? `$${price.per_page} / page · $${price.per_request} / request`
-        : `$${price.per_text_record} / text record · $${price.per_request} / request`;
-  return (
-    <>
-      <div className="price-summary">{summary}</div>
-      {price.service === 'foundry' && (
-        <div className="fine-print">
-          Cache write (includes surcharge) · 5 minutes {writeRate(price.cache_write_5m_per_million)}
-          {' · '}1 hour {writeRate(price.cache_write_1h_per_million)} / million tokens
-        </div>
-      )}
-      <details>
-        <summary>All accounting dimensions</summary>
-        <dl className="price-dimensions">
-          <dt>Input / million tokens</dt>
-          <dd>${price.input_per_million}</dd>
-          <dt>Output / million tokens</dt>
-          <dd>${price.output_per_million}</dd>
-          <dt>Cached input / million tokens (read discount)</dt>
-          <dd>${price.cached_input_per_million}</dd>
-          <dt>Cache write · 5 minutes / million tokens (includes surcharge)</dt>
-          <dd>{writeRate(price.cache_write_5m_per_million)}</dd>
-          <dt>Cache write · 1 hour / million tokens (includes surcharge)</dt>
-          <dd>{writeRate(price.cache_write_1h_per_million)}</dd>
-          <dt>Per page</dt>
-          <dd>${price.per_page}</dd>
-          <dt>Per text record</dt>
-          <dd>${price.per_text_record}</dd>
-          <dt>Per request</dt>
-          <dd>${price.per_request}</dd>
-        </dl>
-      </details>
-    </>
-  );
-}
+import { microUsd } from '../format';
 
 function RecordCells({
   collection,
   record,
-  subscriptions,
+  organizations,
 }: {
   collection: EditableCollection;
   record: EditableRecord;
-  subscriptions: ApplicationSubscription[];
+  organizations: Organization[];
 }) {
-  const subscriptionName = (id: string) =>
-    subscriptions.find((subscription) => subscription.id === id)?.display_name || id;
-  if (collection === 'policies') {
-    const policy = record as Policy;
+  if (collection === 'budgets') {
+    const budget = record as Budget;
     return (
       <>
         <td>
-          <strong>{policy.name}</strong>
+          <strong>{budget.name}</strong>
           <div className="fine-print">
-            {policy.id} · priority {policy.priority}
-          </div>
-          <div className="fine-print">
-            Tenant {policy.tenant_id || '*'} · application subscription{' '}
-            {subscriptionName(policy.subscription_id)}
+            {budget.id} · {budget.tenant_id}
           </div>
         </td>
         <td>
-          {services[policy.service]}
-          <div className="fine-print">{policy.model}</div>
+          {budget.subject_type}
+          <div className="fine-print">{budget.subject_id}</div>
         </td>
+        <td>{budget.model}</td>
+        <td>{microUsd(budget.limit_micro_usd)} / month</td>
         <td>
-          <PolicyLimit policy={policy} />
-        </td>
-        <td>
-          <Badge appearance="tint" color={policy.enabled ? 'success' : 'subtle'}>
-            {policy.enabled ? 'Enabled' : 'Disabled'}
+          <Badge appearance="tint" color={budget.enabled ? 'success' : 'subtle'}>
+            {budget.enabled ? 'Enabled' : 'Disabled'}
           </Badge>
         </td>
       </>
     );
   }
-  if (collection === 'prices') {
-    const price = record as Price;
+  if (collection === 'organizations') {
+    const organization = record as Organization;
+    const parent = organizations.find((item) => item.id === organization.department_id);
     return (
       <>
         <td>
-          <strong>{price.model}</strong>
-          <div className="fine-print">
-            {price.version} · {price.id}
-          </div>
+          <strong>{organization.name}</strong>
+          <div className="fine-print">{organization.id}</div>
         </td>
-        <td>{services[price.service]}</td>
         <td>
-          <PriceDetails price={price} />
+          {organization.kind}
+          <div className="fine-print">{parent ? `Department: ${parent.name}` : '—'}</div>
+        </td>
+        <td>{organization.business_unit}</td>
+        <td>{organization.cost_center}</td>
+        <td>
+          <Badge appearance="tint" color={organization.enabled ? 'success' : 'subtle'}>
+            {organization.enabled ? 'Enabled' : 'Disabled'}
+          </Badge>
         </td>
       </>
     );
   }
-  const assignment = record as Assignment;
+  if (collection === 'assignments') {
+    const assignment = record as Assignment;
+    return (
+      <>
+        <td>
+          <strong>{assignment.display_label || assignment.principal_id}</strong>
+          <div className="fine-print">
+            {assignment.id} · principal {assignment.principal_id}
+          </div>
+        </td>
+        <td>
+          {assignment.team_id}
+          <div className="fine-print">Department: {assignment.department_id}</div>
+        </td>
+        <td>{assignment.tenant_id}</td>
+        <td>
+          <Badge appearance="tint" color={assignment.enabled ? 'success' : 'subtle'}>
+            {assignment.enabled ? 'Enabled' : 'Disabled'}
+          </Badge>
+        </td>
+      </>
+    );
+  }
+  const price = record as Price;
   return (
     <>
       <td>
-        <strong>{assignment.id}</strong>
-        {assignment.display_label && <div className="fine-print">{assignment.display_label}</div>}
-      </td>
-      <td>
-        {subscriptionName(assignment.subscription_id)}
-        <div className="fine-print">{assignment.subscription_id}</div>
-        <div className="fine-print">Tenant: {assignment.tenant_id}</div>
+        <strong>{price.model}</strong>
         <div className="fine-print">
-          Explicit readers: {assignment.reader_principal_ids?.length ?? 0}
+          {price.id} · {price.version}
         </div>
       </td>
-      <td>{assignment.policy_ids.join(', ')}</td>
+      <td>${price.input_per_million} / million</td>
+      <td>${price.cached_input_per_million} / million</td>
+      <td>${price.output_per_million} / million</td>
     </>
   );
 }
@@ -133,81 +107,74 @@ function RecordCells({
 export function ConfigurationTable({
   collection,
   records,
+  organizations,
   admin,
-  subscriptions,
   onEdit,
   onDelete,
 }: {
   collection: EditableCollection;
   records: EditableRecord[];
+  organizations: Organization[];
   admin: boolean;
-  subscriptions: ApplicationSubscription[];
   onEdit: (record: EditableRecord) => void;
   onDelete: (id: string) => void;
 }) {
-  const headings = {
-    policies: ['Policy / scope', 'Service / model', 'Limit', 'Status'],
-    prices: ['Model / version', 'Service', 'USD rates'],
-    assignments: ['Assignment', 'Application subscription / tenant', 'Policy IDs'],
+  const headings: Record<EditableCollection, string[]> = {
+    budgets: ['Budget / tenant', 'Level / subject', 'Model', 'Monthly limit', 'Status'],
+    organizations: ['Organization unit', 'Type / parent', 'Business unit', 'Cost center', 'Status'],
+    assignments: ['User assignment', 'Team / department', 'Tenant', 'Status'],
+    prices: ['Model / price version', 'Uncached input rate', 'Cached input rate', 'Output rate'],
   };
   return (
-    <>
-      <div className="table-scroll">
-        <table>
-          <caption className="visually-hidden">
-            {collection === 'prices' ? 'Versioned price catalog' : collection}
-          </caption>
-          <thead>
-            <tr>
-              {headings[collection].map((label) => (
-                <th key={label}>{label}</th>
-              ))}
-              {admin && <th>Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => (
-              <tr key={record.id}>
-                <RecordCells
-                  collection={collection}
-                  record={record}
-                  subscriptions={subscriptions}
-                />
-                {admin && (
-                  <td>
-                    <div className="row-actions">
-                      <Button
-                        size="small"
-                        onClick={() => onEdit(record)}
-                        aria-label={`Edit ${record.id}`}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="small"
-                        appearance="subtle"
-                        onClick={() => onDelete(record.id)}
-                        aria-label={`Delete ${record.id}`}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </td>
-                )}
-              </tr>
+    <div className="table-scroll">
+      <table>
+        <caption className="visually-hidden">
+          {collection === 'prices' ? 'OpenAI price catalog' : collection}
+        </caption>
+        <thead>
+          <tr>
+            {headings[collection].map((heading) => (
+              <th key={heading}>{heading}</th>
             ))}
-          </tbody>
-        </table>
-      </div>
+            {admin && <th>Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {records.map((record) => (
+            <tr key={record.id}>
+              <RecordCells collection={collection} record={record} organizations={organizations} />
+              {admin && (
+                <td>
+                  <div className="row-actions">
+                    <Button
+                      size="small"
+                      onClick={() => onEdit(record)}
+                      aria-label={`Edit ${record.id}`}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      onClick={() => onDelete(record.id)}
+                      aria-label={`Delete ${record.id}`}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
       {collection === 'prices' && (
         <p className="fine-print panel-footnote">
-          Exact decimal USD strings, not microUSD. Cached input replaces uncached pricing for
-          reported cache-hit tokens. Cache writes use their full surcharge-inclusive rate instead of
-          the uncached rate for that subset. Blank cache-write rates are unknown, not zero. The
-          catalog is administrator-managed, not a live retail feed. When multiple versions exist for
-          a service/model, the gateway must pin an explicit price_version or requests fail closed.
+          Price rates are exact decimal USD strings per million tokens, never micro-USD. The API
+          pins the configured price version and computes cost using integer micro-USD. The portal
+          does not reprice provider usage.
         </p>
       )}
-    </>
+    </div>
   );
 }

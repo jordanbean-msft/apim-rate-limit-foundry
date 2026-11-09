@@ -97,7 +97,7 @@ describe('private manual browser telemetry', () => {
     track(
       'portal_api',
       {
-        collection: 'policies',
+        collection: 'budgets',
         method: 'PUT',
         outcome: 'success',
         errorCategory: 'private message',
@@ -110,7 +110,7 @@ describe('private manual browser telemetry', () => {
     );
     expect(mocks.track).toHaveBeenCalledWith({
       name: 'portal_api',
-      properties: { collection: 'policies', method: 'PUT', outcome: 'success' },
+      properties: { collection: 'budgets', method: 'PUT', outcome: 'success' },
       measurements: { requestCount: 1, status: 200, durationMs: 5 },
     });
     track(
@@ -126,12 +126,12 @@ describe('private manual browser telemetry', () => {
     expect(JSON.stringify(mocks.track.mock.calls)).not.toContain('private');
   });
 
-  it('retains subscription registry telemetry and the eight-collection refresh count', () => {
+  it('retains monthly budget configuration telemetry and bounds refresh measurements', () => {
     initializeTelemetry(config);
-    track('portal_api', { collection: 'subscriptions', method: 'GET', outcome: 'success' });
+    track('portal_api', { collection: 'organizations', method: 'GET', outcome: 'success' });
     expect(mocks.track).toHaveBeenLastCalledWith({
       name: 'portal_api',
-      properties: { collection: 'subscriptions', method: 'GET', outcome: 'success' },
+      properties: { collection: 'organizations', method: 'GET', outcome: 'success' },
       measurements: {},
     });
     track('portal_refresh', { outcome: 'success' }, { collectionCount: 8 });

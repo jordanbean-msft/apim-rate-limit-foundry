@@ -1,9 +1,9 @@
 import type {
-  CallerUsage,
+  BudgetStatus,
+  ChargebackRow,
   Collection,
-  DashboardPeriod,
-  DashboardTile,
   Collections,
+  DashboardTile,
   EditableCollection,
   PortalApi,
 } from './contracts';
@@ -26,11 +26,11 @@ export function createApi(
   proxyEnabled = false,
 ): PortalApi {
   async function request(
-    collection: Collection | 'callers' | 'dashboard',
+    path: string,
     method = 'GET',
-    recordId?: string,
     body?: unknown,
-    period?: 'hour' | 'day' | DashboardPeriod,
+    responseType: 'json' | 'text' = 'json',
+    expectArray = false,
   ): Promise<unknown> {
     const start = performance.now();
     let correlationId: string | undefined;
@@ -43,17 +43,10 @@ export function createApi(
     let requestCount = 0;
     let errorCategory = 'authentication';
     let outcome = 'failure';
+    const resource = path.split(/[/?]/, 1)[0] || 'api';
     try {
       const token = await getAccessToken();
       errorCategory = 'network';
-      const path =
-        collection === 'dashboard'
-          ? `dashboard?period=${period || '24h'}`
-          : collection === 'callers'
-            ? `usage/callers?period=${period || 'day'}`
-            : recordId === undefined
-              ? collection
-              : `${collection}/${encodeURIComponent(recordId)}`;
       requestCount = 1;
       const response = await fetch(`${baseUrl}/${path}`, {
         method,
@@ -62,9 +55,9 @@ export function createApi(
             ? { 'X-Portal-Access-Token': token }
             : { Authorization: `Bearer ${token}` }),
           ...(correlationId ? { 'X-Correlation-ID': correlationId } : {}),
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: body === undefined ? undefined : JSON.stringify(body),
         credentials: proxyEnabled ? 'same-origin' : 'omit',
         cache: 'no-store',
       });
@@ -80,8 +73,13 @@ export function createApi(
         throw new ApiError(message, response.status);
       }
       errorCategory = 'invalid_response';
-      const result: unknown = response.status === 204 ? undefined : await response.json();
-      if (method === 'GET' && !Array.isArray(result))
+      const result: unknown =
+        response.status === 204
+          ? undefined
+          : responseType === 'text'
+            ? await response.text()
+            : await response.json();
+      if (expectArray && !Array.isArray(result))
         throw new ApiError('The API returned an invalid collection response.', 502);
       outcome = 'success';
       errorCategory = 'none';
@@ -90,7 +88,7 @@ export function createApi(
       try {
         telemetry(
           'portal_api',
-          { collection, method, correlationId, outcome, errorCategory },
+          { collection: resource, method, correlationId, outcome, errorCategory },
           { status, durationMs: performance.now() - start, requestCount },
         );
       } catch {
@@ -98,21 +96,39 @@ export function createApi(
       }
     }
   }
+
   return {
-    async callers(period): Promise<CallerUsage[]> {
-      return (await request('callers', 'GET', undefined, undefined, period)) as CallerUsage[];
-    },
     async dashboard(period): Promise<DashboardTile[]> {
-      return (await request('dashboard', 'GET', undefined, undefined, period)) as DashboardTile[];
+      return (await request(
+        `dashboard?period=${period}`,
+        'GET',
+        undefined,
+        'json',
+        true,
+      )) as DashboardTile[];
     },
     async list<K extends Collection>(collection: K): Promise<Collections[K][]> {
-      return (await request(collection)) as Collections[K][];
+      return (await request(collection, 'GET', undefined, 'json', true)) as Collections[K][];
+    },
+    async budgetStatus() {
+      return (await request('budgets/status', 'GET', undefined, 'json', true)) as BudgetStatus[];
+    },
+    async chargeback(month: string, format: 'json' | 'csv') {
+      const path = `chargeback?month=${encodeURIComponent(month)}&format=${format}`;
+      const result = await request(
+        path,
+        'GET',
+        undefined,
+        format === 'csv' ? 'text' : 'json',
+        format === 'json',
+      );
+      return result as ChargebackRow[] | string;
     },
     async save<K extends EditableCollection>(collection: K, record: Collections[K]): Promise<void> {
-      await request(collection, 'PUT', record.id, record);
+      await request(`${collection}/${encodeURIComponent(record.id)}`, 'PUT', record);
     },
-    async remove(collection, id) {
-      await request(collection, 'DELETE', id);
+    async remove(collection: EditableCollection, id: string) {
+      await request(`${collection}/${encodeURIComponent(id)}`, 'DELETE');
     },
   };
 }

@@ -7,26 +7,26 @@ export function ModelInventory({
   modelsError,
   pricesError,
   loading,
+  showPrices,
 }: {
   models: Model[];
   prices: Price[];
   modelsError?: string;
   pricesError?: string;
   loading: boolean;
+  showPrices: boolean;
 }) {
   if (modelsError)
     return <p className="empty-inline">Model inventory unavailable. Refresh to retry.</p>;
   if (!models.length && !loading)
     return (
-      <p className="empty-inline">
-        No models registered. Routing is configured through deployment.
-      </p>
+      <p className="empty-inline">No OpenAI models are registered in the gateway inventory.</p>
     );
   return (
     <section className="surface data-panel">
       <div className="table-scroll">
         <table>
-          <caption className="visually-hidden">Registered models</caption>
+          <caption className="visually-hidden">Registered OpenAI models</caption>
           <thead>
             <tr>
               <th>Protocol / alias</th>
@@ -38,24 +38,19 @@ export function ModelInventory({
           <tbody>
             {models.map((model) => {
               const matches = prices.filter(
-                (price) =>
-                  price.service === 'foundry' &&
-                  price.model === model.model &&
-                  price.version === model.price_version,
+                (price) => price.model === model.model && price.version === model.price_version,
               );
               const price = matches[0];
-              const status = pricesError
-                ? 'Price catalog unavailable'
-                : loading
-                  ? 'Checking price'
-                  : matches.length === 0
-                    ? 'Price not configured'
-                    : matches.length > 1
-                      ? 'Ambiguous price'
-                      : model.api_protocol === 'anthropic-messages' &&
-                          (price.cache_write_5m_per_million == null ||
-                            price.cache_write_1h_per_million == null)
-                        ? 'Cache-write rates missing'
+              const status = !showPrices
+                ? 'Price pin managed by deployment'
+                : pricesError
+                  ? 'Price catalog unavailable'
+                  : loading
+                    ? 'Checking price'
+                    : matches.length === 0
+                      ? 'Price not configured'
+                      : matches.length > 1
+                        ? 'Ambiguous price'
                         : 'Price configured';
               return (
                 <tr key={model.id}>
@@ -68,14 +63,14 @@ export function ModelInventory({
                     <div>{model.price_version}</div>
                     <Badge
                       appearance="tint"
-                      color={status === 'Price configured' ? 'success' : 'warning'}
+                      color={status === 'Price configured' || !showPrices ? 'success' : 'warning'}
                     >
                       {status}
                     </Badge>
-                    {status === 'Price configured' && (
+                    {showPrices && status === 'Price configured' && price && (
                       <div className="fine-print">
-                        Input ${price.input_per_million} · Output ${price.output_per_million} ·
-                        Cached ${price.cached_input_per_million} / million
+                        Input ${price.input_per_million} · Cached ${price.cached_input_per_million}{' '}
+                        · Output ${price.output_per_million} / million tokens
                       </div>
                     )}
                   </td>
@@ -91,12 +86,8 @@ export function ModelInventory({
         </table>
       </div>
       <p className="fine-print panel-footnote">
-        OpenAI and Anthropic identify API protocols, not the backend account kind. Microsoft Foundry
-        supports approved deployments through these protocols.
-      </p>
-      <p className="fine-print panel-footnote">
-        Registry routing and price pins are deployment-managed. Unknown prices are not free;
-        configuration alone does not guarantee request admission.
+        The gateway supports OpenAI Chat Completions and Responses. Model routing and pinned price
+        versions are deployment-managed; the portal does not configure provider deployment IDs.
       </p>
     </section>
   );

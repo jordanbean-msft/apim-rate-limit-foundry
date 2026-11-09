@@ -5,24 +5,38 @@ import type { RuntimeConfig } from './contracts';
 
 const collections = [
   'models',
-  'subscriptions',
-  'policies',
+  'budgets',
+  'organizations',
   'prices',
   'assignments',
   'usage',
-  'audit',
-  'reconciliation',
+  'budgetStatus',
+  'chargeback',
+  'dashboard',
 ];
 const schema = {
-  portal_page: { page: ['overview', ...collections, 'denials', 'callers'], outcome: ['success'] },
+  portal_page: {
+    page: [
+      'overview',
+      'budgets',
+      'organizations',
+      'assignments',
+      'prices',
+      'models',
+      'usage',
+      'chargeback',
+      'dashboard',
+    ],
+    outcome: ['success'],
+  },
   portal_api: {
-    collection: [...collections, 'callers'],
+    collection: [...collections],
     method: ['GET', 'PUT', 'DELETE'],
     outcome: ['success', 'failure'],
     errorCategory: ['none', 'authentication', 'http', 'network', 'invalid_response'],
   },
   portal_configuration: {
-    collection: ['policies', 'prices', 'assignments'],
+    collection: ['budgets', 'organizations', 'prices', 'assignments'],
     action: ['create', 'update', 'delete'],
     outcome: ['success', 'failure', 'cancelled'],
     errorCategory: ['none', 'validation', 'api'],
@@ -33,6 +47,7 @@ const schema = {
   },
   portal_refresh: { outcome: ['success', 'partial_failure'] },
   portal_browser_error: { errorCategory: ['script', 'unhandled_rejection', 'render_error'] },
+  portal_chargeback_export: { format: ['json', 'csv'], outcome: ['success', 'failure'] },
 } as const;
 export type TelemetryName = keyof typeof schema;
 export type Telemetry = (
