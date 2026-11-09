@@ -1,184 +1,27 @@
-# VS Code REST Client examples. Every request needs BOTH Entra authorization and
-# an inference product key, supplied only through your untracked environment.
-# The stable APIM subscription ID owns the application's budget, not either secret key.
-# Model and operation names must match the configured APIM API and price cards.
-@gateway = https://your-gateway.azure-api.net
-@chatModel = {{$processEnv CHAT_MODEL_ALIAS}}
-@fastModel = {{$processEnv FAST_MODEL_ALIAS}}
-@responsesModel = {{$processEnv RESPONSES_MODEL_ALIAS}}
-@anthropicModel = {{$processEnv ANTHROPIC_MODEL_ALIAS}}
-@fastAnthropicModel = {{$processEnv FAST_ANTHROPIC_MODEL_ALIAS}}
+@gateway = https://your-apim.azure-api.net
+@accessToken = replace-with-delegated-user-token
+@subscriptionKey = replace-with-inference-product-key
 
-### Non-streaming: APIM reserves, backend executes, actual usage settles
+### Non-streaming Chat. Identity and budgets follow the validated user.
 POST {{gateway}}/foundry/chat/completions
+Authorization: Bearer {{accessToken}}
+Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
-{
-  "model": "{{chatModel}}",
-  "messages": [{"role": "user", "content": "Explain why budget caps differ from TPM limits."}],
-  "max_tokens": 64,
-  "stream": false
-}
+{"model":"sample-model","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100}
 
-### Streaming: conservative reservation, no client-supplied cache discount
+### Streaming Chat. The gateway also forces final provider usage.
 POST {{gateway}}/foundry/chat/completions
+Authorization: Bearer {{accessToken}}
+Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
-{
-  "model": "{{chatModel}}",
-  "messages": [{"role": "user", "content": "Describe cached input token pricing."}],
-  "max_tokens": 64,
-  "stream": true
-}
+{"model":"sample-model","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100,"stream":true,"stream_options":{"include_usage":true}}
 
-### OpenAI Responses: stateless inline input, bounded output
+### Responses
 POST {{gateway}}/foundry/responses
+Authorization: Bearer {{accessToken}}
+Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
 
-{
-  "model": "{{responsesModel}}",
-  "input": "Explain why token budgets and dollar budgets differ.",
-  "max_output_tokens": 64,
-  "store": false,
-  "stream": false
-}
-
-### OpenAI Responses: streaming retains conservative reservation
-POST {{gateway}}/foundry/responses
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{
-  "model": "{{responsesModel}}",
-  "input": "Describe cached input token pricing.",
-  "max_output_tokens": 64,
-  "store": false,
-  "stream": true
-}
-
-### Anthropic Messages: explicit cache breakpoint; backend model/version are operator-pinned
-POST {{gateway}}/anthropic/v1/messages
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
-
-{
-  "model": "{{anthropicModel}}",
-  "max_tokens": 64,
-  "system": [
-    {
-      "type": "text",
-      "text": "You explain AI budget governance clearly. This short example does not guarantee a cache hit.",
-      "cache_control": {"type": "ephemeral", "ttl": "5m"}
-    }
-  ],
-  "messages": [{"role": "user", "content": "Explain the distinction between cache reads and cache writes."}],
-  "stream": false
-}
-
-### Anthropic Messages: streaming and 1-hour cache write pricing
-POST {{gateway}}/anthropic/v1/messages
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
-
-{
-  "model": "{{anthropicModel}}",
-  "max_tokens": 64,
-  "system": [
-    {
-      "type": "text",
-      "text": "You explain AI budget governance clearly. A real cacheable prefix must meet the model's minimum length.",
-      "cache_control": {"type": "ephemeral", "ttl": "1h"}
-    }
-  ],
-  "messages": [{"role": "user", "content": "Explain conservative streaming accounting."}],
-  "stream": true
-}
-
-### Language sentiment: record count rounds per document
-POST {{gateway}}/language/sentiment
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{
-  "documents": [
-    {"id": "1", "language": "en", "text": "The example is easy to understand."},
-    {"id": "2", "language": "en", "text": "The rate-limit decision is visible."}
-  ]
-}
-
-### Document Intelligence: selected pages are enforced on the backend, not just claimed
-POST {{gateway}}/document-intelligence/analyze?pages=1-2
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{
-  "base64Source": "{{$processEnv SAMPLE_PDF_BASE64}}"
-}
-
-# Follow the returned gateway Operation-Location with an Entra token and the same app subscription.
-# Do not call a raw backend URL or reuse another application's operation ID.
-
-# Set approved aliases, for example gpt-5.4 and gpt-5.4-mini, after actual deployment.
-# Chat and Responses each need their own registry entry for a shared alias.
-### Chat standard alias
-POST {{gateway}}/foundry/chat/completions
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{"model":"{{chatModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
-
-### Chat fast alias
-POST {{gateway}}/foundry/chat/completions
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{"model":"{{fastModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
-
-### Responses standard alias
-POST {{gateway}}/foundry/responses
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{"model":"{{responsesModel}}","input":"Hello","max_output_tokens":64,"store":false}
-
-### Responses fast alias
-POST {{gateway}}/foundry/responses
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-
-{"model":"{{fastModel}}","input":"Hello","max_output_tokens":64,"store":false}
-
-### Messages standard alias
-POST {{gateway}}/anthropic/v1/messages
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
-
-{"model":"{{anthropicModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
-
-### Messages fast alias
-POST {{gateway}}/anthropic/v1/messages
-Content-Type: application/json
-Authorization: Bearer {{$processEnv GATEWAY_ACCESS_TOKEN}}
-Ocp-Apim-Subscription-Key: {{$processEnv APIM_SUBSCRIPTION_KEY}}
-anthropic-version: {{$processEnv ANTHROPIC_VERSION}}
-
-{"model":"{{fastAnthropicModel}}","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}
+{"model":"sample-model","input":"Say hello.","max_output_tokens":100,"stream":true}

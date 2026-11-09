@@ -1,0 +1,21 @@
+[
+  {
+    "id": "engineering",
+    "tenant_id": "local-tenant",
+    "kind": "department",
+    "name": "Engineering",
+    "business_unit": "product",
+    "cost_center": "eng",
+    "enabled": true
+  },
+  {
+    "id": "platform",
+    "tenant_id": "local-tenant",
+    "kind": "team",
+    "name": "Platform",
+    "department_id": "engineering",
+    "business_unit": "product",
+    "cost_center": "eng-platform",
+    "enabled": true
+  }
+]

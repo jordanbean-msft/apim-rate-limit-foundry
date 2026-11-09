@@ -137,6 +137,21 @@ async def test_batches_partial_failures_and_result_bounds() -> None:
     assert "Sensitive" not in json.dumps(tiles)
 
 
+async def test_month_to_date_tiles_keep_kql_month_start_instead_of_selected_period() -> None:
+    month_tile = dashboard_part(1)
+    for item in month_tile["metadata"]["inputs"]:
+        if item["name"] == "Query":
+            item["value"] = "AppTraces | where TimeGenerated >= startofmonth(now())"
+    service = dashboard_service({"0": dashboard_part(0), "1": month_tile})
+    service.logs.query_batch.return_value = [query_result([]), query_result([])]
+    with patch(
+        "apim_rate_limit_foundry.reports.dashboard.LogsBatchQuery", wraps=LogsBatchQuery
+    ) as make_query:
+        await service.fetch("1h")
+    assert make_query.call_args_list[0].kwargs["timespan"] == timedelta(hours=1)
+    assert make_query.call_args_list[1].kwargs["timespan"] is None
+
+
 async def test_dashboard_api_requires_admin_and_rejects_client_query_inputs(
     settings: Settings, engine: Engine
 ) -> None:

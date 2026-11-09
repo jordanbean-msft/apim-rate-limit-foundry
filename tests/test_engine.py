@@ -1,544 +1,318 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from datetime import UTC, datetime
 
 import pytest
 
-from apim_rate_limit_foundry.accounting import digest
-from apim_rate_limit_foundry.engine import Engine, event
-from apim_rate_limit_foundry.models import Policy, Price, Reserve, Settle, Usage
-from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
-from apim_rate_limit_foundry.stores.contracts import Conflict, RecoveryRequired
+from apim_rate_limit_foundry.accounting import utc_month
+from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecordRequest
+from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
+from apim_rate_limit_foundry.models.price import Price
+from apim_rate_limit_foundry.stores.contracts import Conflict
 from apim_rate_limit_foundry.stores.memory import MemoryCounters
 
 
-async def test_concurrent_idempotency_and_all_policies_atomic(
-    engine: Engine, request_body: Reserve
-) -> None:
-    repeated = await asyncio.gather(*(engine.reserve(request_body) for _ in range(30)))
-    assert all(r.allowed for r in repeated)
-    assert len({r.reservation_id for r in repeated}) == 1
-    assert list(engine.counters.counts.values()) == [100]
-    await engine.repository.create(
-        "policies",
-        "request-cap",
-        {
-            "id": "request-cap",
-            "name": "Requests",
-            "service": "foundry",
-            "subscription_id": "*",
-            "limit": 1,
-            "period": "hour",
-            "metric": "requests",
+def check(request_id: str = "request-1", **changes: object) -> BudgetCheck:
+    payload: dict[str, object] = {
+        "request_id": request_id,
+        "tenant_id": "tenant-1",
+        "principal_id": "user-1",
+        "subscription_id": "apim-subscription",
+        "model": "model-1",
+        "api_protocol": "openai-chat",
+        "streaming": False,
+    }
+    payload.update(changes)
+    return BudgetCheck.model_validate(payload)
+
+
+def actual(request_id: str = "request-1") -> UsageRecordRequest:
+    return UsageRecordRequest(
+        request_id=request_id,
+        status="actual",
+        provider_usage={
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 0},
         },
     )
-    second = await engine.reserve(request_body.model_copy(update={"request_id": "second"}))
-    assert second.allowed
-    counts_before = dict(engine.counters.counts)
-    denied = await asyncio.gather(
-        *(
-            engine.reserve(request_body.model_copy(update={"request_id": f"denied-{i}"}))
-            for i in range(20)
+
+
+async def test_hierarchy_budgets_are_snapshotted_and_all_exhausted_levels_deny(
+    engine: Engine,
+) -> None:
+    admitted = await engine.check(check())
+    assert admitted["allowed"] is True
+    assert admitted["denied_budget_ids"] == []
+
+    recorded = await engine.record_usage(actual())
+    assert recorded["replayed"] is False
+    assert recorded["event"]["cost_micro_usd"] == 100
+    assert recorded["event"]["business_unit"] == "BU-ENG"
+    assert recorded["event"]["cost_center"] == "CC-100"
+
+    denied = await engine.check(check("request-2"))
+    assert denied["allowed"] is False
+    assert set(denied["denied_budget_ids"]) == {
+        "budget-user",
+        "budget-team",
+        "budget-department",
+    }
+
+
+async def test_check_is_idempotent_conflict_protected_and_completed_ids_rejected(
+    engine: Engine,
+) -> None:
+    first = await engine.check(check())
+    replay = await engine.check(check())
+    assert first == replay
+    with pytest.raises(Conflict, match="different request"):
+        await engine.check(check("request-1", model="other"))
+
+    await engine.record_usage(actual())
+    with pytest.raises(Conflict, match="Completed"):
+        await engine.check(check())
+
+
+async def test_post_request_soft_cap_allows_in_flight_requests_to_overshoot(
+    engine: Engine,
+) -> None:
+    checks = await asyncio.gather(
+        engine.check(check("inflight-1")), engine.check(check("inflight-2"))
+    )
+    assert all(result["allowed"] for result in checks)
+    await engine.record_usage(actual("inflight-1"))
+    await engine.record_usage(actual("inflight-2"))
+    next_request = await engine.check(check("next"))
+    assert next_request["allowed"] is False
+
+
+@pytest.mark.parametrize("subject_type", ["user", "team", "department", None])
+async def test_each_configured_zero_budget_blocks_but_unconfigured_levels_do_not(
+    engine: Engine, subject_type: str | None
+) -> None:
+    for kind in ("user", "team", "department"):
+        budget_id = f"budget-{kind}"
+        budget = await engine.repository.get("budgets", budget_id)
+        assert budget is not None
+        budget.update(enabled=kind == subject_type, limit_micro_usd=0)
+        await engine.repository.mutate("budgets", budget_id, budget, {"id": f"audit-{kind}"})
+
+    decision = await engine.check(check())
+
+    assert decision["allowed"] is (subject_type is None)
+    assert decision["denied_budget_ids"] == ([f"budget-{subject_type}"] if subject_type else [])
+
+
+async def test_month_rollover_resets_budgets_and_preserves_inflight_accounting_month(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "apim_rate_limit_foundry.engine.utc_month",
+        lambda: utc_month(datetime(2030, 12, 31, 23, 59, tzinfo=UTC)),
+    )
+    await engine.check(check("completed-december"))
+    await engine.check(check("inflight-december"))
+    await engine.record_usage(actual("completed-december"))
+    assert not (await engine.check(check("denied-december")))["allowed"]
+    monkeypatch.setattr(
+        "apim_rate_limit_foundry.engine.utc_month",
+        lambda: utc_month(datetime(2031, 1, 1, tzinfo=UTC)),
+    )
+
+    late_record = await engine.record_usage(actual("inflight-december"))
+    january = await engine.check(check("fresh-january"))
+
+    assert late_record["event"]["month"] == "2030-12"
+    assert january["allowed"]
+    assert (
+        sum(row["cost_micro_usd"] for row in await engine.chargeback("tenant-1", "2030-12", None))
+        == 200
+    )
+    assert await engine.chargeback("tenant-1", "2031-01", None) == []
+
+
+async def test_wildcard_budget_accumulates_spend_across_models(engine: Engine) -> None:
+    for kind in ("user", "team", "department"):
+        budget_id = f"budget-{kind}"
+        budget = await engine.repository.get("budgets", budget_id)
+        assert budget is not None
+        budget["limit_micro_usd"] = 200
+        await engine.repository.mutate("budgets", budget_id, budget, {"id": f"audit-{kind}"})
+    second_price = Price(
+        id="price-2",
+        model="model-2",
+        version="v1",
+        input_per_million="2",
+        cached_input_per_million="0.5",
+        output_per_million="4",
+    )
+    await engine.repository.create("prices", second_price.id, second_price.model_dump(mode="json"))
+    await engine.check(check())
+    await engine.record_usage(actual())
+    second = check("request-2", model="model-2")
+    assert (await engine.check(second))["allowed"]
+    await engine.record_usage(actual("request-2"))
+    assert not (await engine.check(check("request-3")))["allowed"]
+
+
+async def test_usage_record_is_durable_first_idempotent_and_conflict_checked(
+    engine: Engine,
+) -> None:
+    await engine.check(check())
+    first = await engine.record_usage(actual())
+    replay = await engine.record_usage(actual())
+    assert first["event"] == replay["event"]
+    assert first["replayed"] is False and replay["replayed"] is True
+    assert len(await engine.repository.list("usage_v2")) == 1
+
+    with pytest.raises(Conflict, match="different provider usage"):
+        await engine.record_usage(
+            UsageRecordRequest(
+                request_id="request-1",
+                status="actual",
+                provider_usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+        )
+
+
+async def test_usage_commit_survives_redis_loss_and_duplicate_writers_charge_once(
+    engine: Engine,
+) -> None:
+    await engine.check(check())
+    counters = engine.counters
+    assert isinstance(counters, MemoryCounters)
+    counters.ready = False
+    results = await asyncio.gather(engine.record_usage(actual()), engine.record_usage(actual()))
+    assert sorted(result["replayed"] for result in results) == [False, True]
+    assert len(await engine.repository.list("usage_v2")) == 1
+    with pytest.raises(OSError):
+        await engine.check(check("next"))
+
+
+async def test_unknown_usage_is_explicit_and_never_charged_as_zero(engine: Engine) -> None:
+    await engine.check(check())
+    result = await engine.record_usage(
+        UsageRecordRequest(request_id="request-1", status="usage_unknown")
+    )
+    event = result["event"]
+    assert event["status"] == "usage_unknown"
+    assert event["input_tokens"] is None
+    assert event["cost_micro_usd"] is None
+    rows = await engine.chargeback("tenant-1", event["month"], "user-1")
+    assert len(rows) == 1
+    assert rows[0]["unknown_requests"] == 1
+    assert rows[0]["cost_micro_usd"] is None
+    assert rows[0]["input_tokens"] is None
+
+
+async def test_malformed_provider_usage_is_durably_downgraded_to_unknown(engine: Engine) -> None:
+    await engine.check(check())
+    result = await engine.record_usage(
+        UsageRecordRequest(
+            request_id="request-1",
+            status="actual",
+            provider_usage={"prompt_tokens": "not-a-count"},
         )
     )
-    assert not any(d.allowed for d in denied)
-    assert engine.counters.counts == counts_before
-    assert denied[0].headers["Retry-After"]
-
-
-async def test_application_budget_shares_across_actors_and_isolates_subscriptions(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-) -> None:
-    bounded = policy.model_copy(update={"limit": 150})
-    await engine.repository.mutate(
-        "policies", policy.id, bounded.model_dump(mode="json"), {"id": "app-budget"}
+    assert result["event"]["status"] == "usage_unknown"
+    assert result["event"]["cost_micro_usd"] is None
+    assert result["event"]["input_tokens"] is None
+    replay = await engine.record_usage(
+        UsageRecordRequest(
+            request_id="request-1",
+            status="actual",
+            provider_usage={"prompt_tokens": "not-a-count"},
+        )
     )
-    first = await engine.reserve(request_body.model_copy(update={"request_id": "first"}))
-    repeated_by_other_actor = await engine.reserve(
-        request_body.model_copy(update={"principal_id": "user-2", "request_id": "first"})
-    )
-    second_actor_request = await engine.reserve(
-        request_body.model_copy(update={"principal_id": "user-2", "request_id": "second"})
-    )
-    isolated_application = await engine.reserve(
-        request_body.model_copy(update={"request_id": "other-app", "subscription_id": "app-2"})
-    )
-
-    assert first.allowed and repeated_by_other_actor.allowed
-    assert first.reservation_id == repeated_by_other_actor.reservation_id
-    assert not second_actor_request.allowed
-    assert isolated_application.allowed
-    assert sorted(engine.counters.counts.values()) == [100, 100]
-    assert (await engine.repository.get("intents", first.reservation_id))["data"]["request"][
-        "principal_id"
-    ] == "user-1"
+    assert replay["replayed"] is True
 
 
-async def test_legacy_user_policy_is_not_widened_to_applications(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-) -> None:
-    legacy = policy.model_dump(mode="json")
-    legacy.pop("subscription_id")
-    legacy["principal_id"] = "user-1"
-    await engine.repository.mutate("policies", policy.id, legacy, {"id": "legacy-policy"})
-
-    with pytest.raises(ValueError, match="No matching policy"):
-        await engine.reserve(request_body)
-    assert not engine.counters.counts
-
-
-async def test_legacy_liabilities_recover_outside_application_counter_and_reports(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-    price: Price,
-) -> None:
-    legacy_id = digest(request_body.tenant_id, request_body.principal_id, request_body.request_id)
-    legacy_request = request_body.model_dump(mode="json")
-    legacy_request["subscription_id"] = None
-    expired_reset = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    legacy_debit = {
-        "key": "legacy-user-counter-v1",
-        "policy_id": policy.id,
-        "metric": "cost",
-        "amount": 100,
-        "limit": 300,
-        "reset_at": expired_reset,
+async def test_usage_outside_snapshotted_model_price_bounds_is_unknown(engine: Engine) -> None:
+    engine.settings.model_registry = {
+        "openai-chat:model-1": ModelDeployment(
+            api_protocol="openai-chat",
+            endpoint="https://models.example.com",
+            path="/openai/deployments/model-1/chat/completions",
+            model="model-1",
+            audience="https://cognitiveservices.azure.com",
+            api_version="2025-01-01-preview",
+            price_version="v1",
+            max_input_tokens=5,
+            max_output_tokens=20,
+        )
     }
-    intent_data = {
-        "request": legacy_request,
-        "fingerprint": "legacy-fingerprint",
-        "debits": [legacy_debit],
-        "price": price.model_dump(mode="json"),
-        "decision": {"allowed": True, "reason": "reserved"},
-    }
+    await engine.check(check())
+    result = await engine.record_usage(actual())
+    assert result["event"]["status"] == "usage_unknown"
+    assert result["event"]["cost_micro_usd"] is None
+    assert result["event"]["input_tokens"] is None
+    assert result["event"]["output_tokens"] is None
+
+
+async def test_counter_projection_rebuilds_from_the_authoritative_ledger(engine: Engine) -> None:
+    counters = engine.counters
+    assert isinstance(counters, MemoryCounters)
+    await engine.check(check())
+    await engine.record_usage(actual())
+    counters.counts.clear()
+    denied = await engine.check(check("next"))
+    assert denied["allowed"] is False
+    assert counters.counts
+    assert await engine.rebuild_counters() == 1
+
+
+async def test_projection_failure_after_durable_write_is_repaired_on_next_check(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await engine.check(check())
+
+    async def fail_projection(records):
+        raise OSError("simulated crash gap")
+
+    monkeypatch.setattr(engine.counters, "project", fail_projection)
+    recorded = await engine.record_usage(actual())
+    assert recorded["event"]["cost_micro_usd"] == 100
+    assert len(await engine.repository.list("usage_v2")) == 1
+    monkeypatch.undo()
+    assert not (await engine.check(check("next")))["allowed"]
+
+
+async def test_unassigned_principal_and_missing_price_fail_closed(engine: Engine) -> None:
+    with pytest.raises(ValueError, match="unassigned"):
+        await engine.check(check("unknown-user", principal_id="intruder"))
+    await engine.repository.mutate("prices", "price-1", None, {"id": "audit-1"})
+    with pytest.raises(ValueError, match="price card"):
+        await engine.check(check("no-price"))
+
+
+async def test_legacy_application_data_is_not_reinterpreted_as_user_budgets(
+    engine: Engine,
+) -> None:
     await engine.repository.create(
-        "intents",
-        legacy_id,
-        event("intent", legacy_id, request_body.tenant_id, request_body.principal_id, intent_data),
+        "assignments",
+        "legacy-app-assignment",
+        {
+            "id": "legacy-app-assignment",
+            "tenant_id": "tenant-1",
+            "subscription_id": "old-apim-app",
+            "policy_ids": ["legacy-policy"],
+        },
     )
     await engine.repository.create(
         "usage",
-        legacy_id,
-        event(
-            "reservation",
-            legacy_id,
-            request_body.tenant_id,
-            request_body.principal_id,
-            {
-                **intent_data,
-                "allowed": True,
-                "status": "reserved",
-            },
-        ),
-    )
-
-    await engine.recover()
-    assert engine.counters.counts == {"legacy-user-counter-v1": 100}
-    assert (await engine.reserve(request_body)).allowed
-    assert sorted(engine.counters.counts.values()) == [100, 100]
-    assert await engine.reconcile() == 1
-    legacy_settlement = await engine.repository.get("settlements", legacy_id)
-    assert legacy_settlement is not None and "subscription_id" not in legacy_settlement
-    summary = await UsageSummaryService(engine.repository).summarize(
-        "day", request_body.tenant_id, request_body.principal_id, True
-    )
-    assert len(summary) == 1 and summary[0].subscription_id == request_body.subscription_id
-    usage_report = await engine.report("usage", request_body.tenant_id, "admin", True)
-    assert next(row for row in usage_report if row["id"] == legacy_id)["accounting_scope"] == (
-        "legacy_user"
-    )
-
-
-async def test_settlement_refunds_only_known_actual_usage(
-    engine: Engine, request_body: Reserve
-) -> None:
-    decision = await engine.reserve(request_body)
-    actual = Settle(
-        reservation_id=decision.reservation_id,
-        usage=Usage(input_tokens=8, output_tokens=2, cached_input_tokens=4),
-        status="actual",
-    )
-    await asyncio.gather(*(engine.settle(actual) for _ in range(15)))
-    assert list(engine.counters.counts.values()) == [18]
-    with pytest.raises(Conflict):
-        await engine.settle(
-            actual.model_copy(update={"usage": Usage(input_tokens=0, output_tokens=0)})
-        )
-    with pytest.raises(ValueError, match="missing"):
-        await engine.settle(actual.model_copy(update={"usage": Usage()}))
-    report = await engine.report("usage", "tenant-1", "user-1", False)
-    assert report[0]["data"]["estimated"] is False
-    assert report[0]["data"]["debits"][0]["amount"] == 18
-
-
-async def test_missing_usage_is_not_zero(engine: Engine, request_body: Reserve) -> None:
-    decision = await engine.reserve(request_body)
-    with pytest.raises(ValueError, match="missing"):
-        await engine.settle(
-            Settle(reservation_id=decision.reservation_id, usage=Usage(), status="actual")
-        )
-    assert list(engine.counters.counts.values()) == [100]
-    await engine.settle(
-        Settle(
-            reservation_id=decision.reservation_id,
-            usage=Usage(input_tokens=0, output_tokens=0),
-            status="actual",
-        )
-    )
-    assert list(engine.counters.counts.values()) == [0]
-
-
-async def test_missing_cached_usage_keeps_conservative_pricing_visibly_estimated(
-    engine: Engine,
-    request_body: Reserve,
-) -> None:
-    missing = await engine.reserve(request_body)
-    settlement = await engine.settle(
-        Settle(
-            reservation_id=missing.reservation_id,
-            status="actual",
-            usage=Usage(input_tokens=8, output_tokens=2),
-        )
-    )
-    assert settlement["data"]["estimated"]
-    assert settlement["data"]["cached_input_reported"] is False
-    with pytest.raises(Conflict):
-        await engine.settle(
-            Settle(
-                reservation_id=missing.reservation_id,
-                status="actual",
-                usage=Usage(input_tokens=8, output_tokens=2, cached_input_tokens=0),
-            )
-        )
-    explicit = await engine.reserve(request_body.model_copy(update={"request_id": "explicit-zero"}))
-    settlement = await engine.settle(
-        Settle(
-            reservation_id=explicit.reservation_id,
-            status="actual",
-            usage=Usage(input_tokens=8, output_tokens=2, cached_input_tokens=0),
-        )
-    )
-    assert not settlement["data"]["estimated"]
-    assert settlement["data"]["cached_input_reported"] is True
-    assert sorted(engine.counters.counts.values()) == [48]
-
-
-async def test_unknown_cached_usage_never_refunds_the_higher_possible_input_rate(
-    engine: Engine,
-    request_body: Reserve,
-    price: Price,
-) -> None:
-    expensive_cached = price.model_copy(
-        update={"cached_input_per_million": price.output_per_million}
-    )
-    await engine.repository.mutate(
-        "prices", price.id, expensive_cached.model_dump(mode="json"), {"id": "price-change"}
-    )
-    decision = await engine.reserve(request_body)
-    settlement = await engine.settle(
-        Settle(
-            reservation_id=decision.reservation_id,
-            status="actual",
-            usage=Usage(input_tokens=8, output_tokens=2),
-        )
-    )
-    assert settlement["data"]["estimated"]
-    assert list(engine.counters.counts.values()) == [40]
-
-
-async def test_streams_and_release_retain_conservative_debit(
-    engine: Engine, request_body: Reserve
-) -> None:
-    decision = await engine.reserve(request_body.model_copy(update={"streaming": True}))
-    await engine.release(decision.reservation_id)
-    assert list(engine.counters.counts.values()) == [100]
-    assert (await engine.repository.list("reconciliation"))[0]["data"]["estimated"]
-    with pytest.raises(ValueError, match="hard bound"):
-        await engine.settle(
-            Settle(
-                reservation_id=decision.reservation_id,
-                status="actual",
-                usage=Usage(input_tokens=10, output_tokens=21),
-            )
-        )
-
-
-async def test_storage_failure_does_not_grant_admission(
-    engine: Engine, request_body: Reserve
-) -> None:
-    engine.repository.fail = True
-    with pytest.raises(OSError):
-        await engine.reserve(request_body)
-    assert not engine.counters.counts
-    engine.repository.fail = False
-    original_create = engine.repository.create
-
-    async def failing_create(collection: str, record_id: str, record: dict) -> dict:
-        if collection == "usage":
-            raise OSError("Durable event failed after Redis")
-        return await original_create(collection, record_id, record)
-
-    engine.repository.create = failing_create
-    with pytest.raises(OSError):
-        await engine.reserve(request_body)
-    assert list(engine.counters.counts.values()) == [100]
-    engine.repository.create = original_create
-    engine.counters = MemoryCounters(ready=False)
-    with pytest.raises(RecoveryRequired):
-        await engine.reserve(request_body)
-    await engine.recover()
-    assert list(engine.counters.counts.values()) == [100]
-    assert not (await engine.reserve(request_body)).allowed
-
-
-async def test_cache_loss_recovery_replays_settled_and_unresolved(
-    engine: Engine, request_body: Reserve
-) -> None:
-    first = await engine.reserve(request_body)
-    await engine.settle(
-        Settle(
-            reservation_id=first.reservation_id,
-            usage=Usage(input_tokens=1, output_tokens=1),
-            status="actual",
-        )
-    )
-    await engine.reserve(
-        request_body.model_copy(update={"request_id": "unresolved", "streaming": True})
-    )
-    engine.counters = MemoryCounters(ready=False)
-    with pytest.raises(RecoveryRequired):
-        await engine.reserve(request_body.model_copy(update={"request_id": "new"}))
-    await engine.recover()
-    # The failed request's durable intent is retained conservatively too.
-    assert list(engine.counters.counts.values()) == [206]
-    assert (await engine.reserve(request_body)).allowed
-
-
-async def test_repeated_recovery_keeps_uncertain_liabilities_but_not_proven_denials(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-) -> None:
-    bounded = policy.model_copy(update={"limit": 200})
-    await engine.repository.mutate(
-        "policies",
-        policy.id,
-        bounded.model_dump(mode="json"),
-        {"id": "bounded"},
-    )
-    engine.counters = MemoryCounters(ready=False)
-    with pytest.raises(RecoveryRequired):
-        await engine.reserve(request_body)
-    await engine.recover()
-    uncertain = await engine.reserve(request_body)
-    assert not uncertain.allowed and uncertain.reason == "recovered_conservatively"
-    engine.counters = MemoryCounters(ready=False)
-    await engine.recover()
-    assert list(engine.counters.counts.values()) == [100]
-    assert not (await engine.reserve(request_body)).allowed
-    new_request = await engine.reserve(request_body.model_copy(update={"request_id": "new"}))
-    assert new_request.allowed
-    denied_request = request_body.model_copy(update={"request_id": "proven-denied"})
-    denied = await engine.reserve(denied_request)
-    assert not denied.allowed and denied.reason == "budget_exhausted"
-    for _ in range(2):
-        engine.counters = MemoryCounters(ready=False)
-        await engine.recover()
-        assert list(engine.counters.counts.values()) == [200]
-        assert not (await engine.reserve(request_body)).allowed
-        replay = await engine.reserve(denied_request)
-        assert not replay.allowed and replay.reason == "budget_exhausted"
-
-
-async def test_unknown_price_and_request_id_reuse_fail_closed(
-    engine: Engine, request_body: Reserve
-) -> None:
-    with pytest.raises(ValueError, match="matching price"):
-        await engine.reserve(request_body.model_copy(update={"model": "unknown"}))
-    assert not engine.counters.counts
-    await engine.reserve(request_body)
-    with pytest.raises(Conflict):
-        await engine.reserve(request_body.model_copy(update={"operation": "other"}))
-
-
-async def test_document_poll_binding_and_scope(engine: Engine, request_body: Reserve) -> None:
-    price = Price(
-        id="di",
-        service="document-intelligence",
-        model="read",
-        version="1",
-        per_page="0.01",
-        per_request="0",
-    )
-    await engine.repository.create("prices", "di", price.model_dump(mode="json"))
-    await engine.repository.create(
-        "policies",
-        "di",
+        "legacy-app-usage",
         {
-            "id": "di",
-            "name": "DI",
-            "service": "document-intelligence",
-            "subscription_id": "*",
-            "limit": 5,
-            "period": "day",
-            "metric": "pages",
+            "id": "legacy-app-usage",
+            "kind": "usage",
+            "tenant_id": "tenant-1",
+            "principal_id": "user-1",
+            "data": {"cost_micro_usd": 999_999, "status": "actual"},
         },
     )
-    decision = await engine.reserve(
-        request_body.model_copy(
-            update={
-                "service": "document-intelligence",
-                "model": "read",
-                "usage": Usage(pages=5),
-                "document_bound_verified": True,
-            }
-        )
-    )
-    binding = {
-        "operation_id": str(uuid4()),
-        "reservation_id": decision.reservation_id,
-        "tenant_id": request_body.tenant_id,
-        "principal_id": request_body.principal_id,
-        "subscription_id": request_body.subscription_id,
-        "model": "read",
-    }
-    assert (await engine.bind_operation(binding))["allowed"]
-    assert (await engine.bind_operation(binding))["allowed"]
-    check = {k: v for k, v in binding.items() if k != "reservation_id"}
-    assert (await engine.check_operation(check))["allowed"]
-    assert (await engine.check_operation({**check, "principal_id": "different-user"}))["allowed"]
-    assert not (await engine.check_operation({**check, "tenant_id": "other"}))["allowed"]
-    assert not (await engine.check_operation({**check, "subscription_id": "another-app"}))[
-        "allowed"
-    ]
-    other_application = await engine.reserve(
-        request_body.model_copy(
-            update={
-                "request_id": "document-other-app",
-                "subscription_id": "another-app",
-                "service": "document-intelligence",
-                "model": "read",
-                "usage": Usage(pages=5),
-                "document_bound_verified": True,
-            }
-        )
-    )
-    other_binding = {
-        **binding,
-        "reservation_id": other_application.reservation_id,
-        "subscription_id": "another-app",
-    }
-    assert (await engine.bind_operation(other_binding))["allowed"]
-    other_check = {key: value for key, value in other_binding.items() if key != "reservation_id"}
-    assert (await engine.check_operation(other_check))["allowed"]
-    assert (await engine.bind_operation({**binding, "principal_id": "other"}))["allowed"]
 
-
-async def test_timer_finalizes_expired_stream_without_refund(
-    engine: Engine, request_body: Reserve
-) -> None:
-    decision = await engine.reserve(request_body.model_copy(update={"streaming": True}))
-    record = engine.repository.records["intents", decision.reservation_id]
-    past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    for debit in record["data"]["debits"]:
-        debit["reset_at"] = past
-    assert await engine.reconcile() == 1
-    assert await engine.reconcile() == 0
-    assert list(engine.counters.counts.values()) == [100]
-
-
-async def test_recovery_failure_keeps_gate_closed(engine: Engine, request_body: Reserve) -> None:
-    await engine.reserve(request_body)
-    engine.repository.fail = True
-    with pytest.raises(OSError):
-        await engine.recover()
-    engine.repository.fail = False
-    with pytest.raises(RecoveryRequired):
-        await engine.reserve(request_body.model_copy(update={"request_id": "new"}))
-    with pytest.raises(Conflict):
-        await engine.recover()
-
-
-async def test_expired_intent_cannot_admit_against_an_old_window(
-    engine: Engine,
-    request_body: Reserve,
-) -> None:
-    decision = await engine.reserve(request_body)
-    intent = engine.repository.records["intents", decision.reservation_id]
-    intent["data"]["debits"][0]["reset_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
-    assert not (await engine.reserve(request_body)).allowed
-
-
-async def test_metric_edit_does_not_mix_liabilities_or_settlement_deltas(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-) -> None:
-    original = await engine.reserve(request_body)
-    changed = policy.model_copy(update={"metric": "requests", "limit": 2})
-    await engine.repository.mutate(
-        "policies", policy.id, changed.model_dump(mode="json"), {"id": "metric-change"}
-    )
-    for request_id in ("new-metric-1", "new-metric-2"):
-        assert (
-            await engine.reserve(request_body.model_copy(update={"request_id": request_id}))
-        ).allowed
-    await engine.settle(
-        Settle(
-            reservation_id=original.reservation_id,
-            status="actual",
-            usage=Usage(input_tokens=2, output_tokens=1),
-        )
-    )
-    assert sorted(engine.counters.counts.values()) == [2, 8]
-    assert not (
-        await engine.reserve(request_body.model_copy(update={"request_id": "denied"}))
-    ).allowed
-
-
-@pytest.mark.parametrize("minute_limit", [1, 100])
-async def test_denial_reports_blocking_policy_reset_not_shorter_unblocked_window(
-    engine: Engine,
-    request_body: Reserve,
-    policy: Policy,
-    frozen_accounting_time: datetime,
-    minute_limit: int,
-) -> None:
-    monthly = policy.model_copy(update={"period": "month", "limit": 100})
-    await engine.repository.mutate(
-        "policies", monthly.id, monthly.model_dump(mode="json"), {"id": "month-change"}
-    )
-    await engine.repository.create(
-        "policies",
-        "minute",
-        {
-            "id": "minute",
-            "name": "Requests",
-            "service": "foundry",
-            "subscription_id": "*",
-            "limit": minute_limit,
-            "period": "minute",
-            "metric": "requests",
-        },
-    )
-    first = await engine.reserve(request_body)
-    assert first.allowed
-    assert first.remaining_by_policy == {"policy-1": 0, "minute": minute_limit - 1}
-    denied = await engine.reserve(request_body.model_copy(update={"request_id": "month-denied"}))
-    assert not denied.allowed
-    assert denied.reset_at == "2030-12-01T00:00:00+00:00"
-    assert denied.retry_after > 60
-    assert set(denied.matched_policy_ids) == {"policy-1", "minute"}
-    assert set(denied.denied_policy_ids) == (
-        {"policy-1", "minute"} if minute_limit == 1 else {"policy-1"}
-    )
-    assert "policy-1" in denied.headers["X-RateLimit-Denied-Policies"]
-    await engine.recover()
-    replay = await engine.reserve(request_body.model_copy(update={"request_id": "month-denied"}))
-    assert replay.reset_at == denied.reset_at
-    assert replay.denied_policy_ids == denied.denied_policy_ids
+    admitted = await engine.check(check())
+    assert admitted["allowed"] is True
+    assert len(await engine.usage("tenant-1", "user-1", admin=False)) == 0
+    assert [row["id"] for row in await engine.configuration("assignments")] == ["assignment-1"]

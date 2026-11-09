@@ -1,35 +1,36 @@
+import hashlib
 import json
+import logging
 from datetime import UTC, datetime
-from typing import Any
 from uuid import uuid4
 
+from azure.core.exceptions import AzureError
+from pydantic import ValidationError
+from redis.exceptions import RedisError
+
 from apim_rate_limit_foundry.accounting import (
-    actual_debits,
-    cost,
-    debits,
+    cost_micro_usd,
     digest,
-    matching,
-    validate_estimate,
+    normalize_openai_usage,
+    utc_month,
 )
-from apim_rate_limit_foundry.caller_reference import caller_ref
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.fingerprints import reserve_fingerprint, settlement_fingerprint
-from apim_rate_limit_foundry.models import Assignment, Decision, Policy, Price, Reserve, Settle
-from apim_rate_limit_foundry.normalization.incomplete import IncompleteUsageError
-from apim_rate_limit_foundry.normalization.settlement import normalize_settlement_usage
+from apim_rate_limit_foundry.models import Assignment, Budget, BudgetCheck, Organization, Price
+from apim_rate_limit_foundry.models.budget_check import UsageRecordRequest
 from apim_rate_limit_foundry.stores.contracts import Conflict, CounterStore, Record, Repository
-from apim_rate_limit_foundry.telemetry import emit, observe_operation
+from apim_rate_limit_foundry.telemetry import emit
+
+CONFIG_MODELS: dict[str, type[Organization] | type[Assignment] | type[Budget] | type[Price]] = {
+    "organizations": Organization,
+    "assignments": Assignment,
+    "budgets": Budget,
+    "prices": Price,
+}
+USAGE_COLLECTION = "usage_v2"
 
 
-def event(
-    kind: str,
-    record_id: str,
-    tenant: str,
-    principal: str,
-    data: Record,
-    subscription_id: str | None = None,
-) -> Record:
-    record = {
+def event(kind: str, record_id: str, tenant: str, principal: str, data: Record) -> Record:
+    return {
         "id": record_id,
         "kind": kind,
         "tenant_id": tenant,
@@ -37,9 +38,6 @@ def event(
         "timestamp": datetime.now(UTC).isoformat(),
         "data": data,
     }
-    if subscription_id is not None:
-        record["subscription_id"] = subscription_id
-    return record
 
 
 class Engine:
@@ -49,612 +47,691 @@ class Engine:
         self.settings = settings
 
     async def configuration(self, collection: str) -> list[Record]:
-        return [r for r in await self.repository.list(collection) if not r.get("_deleted")]
-
-    async def policies(self) -> list[Policy]:
-        policies = []
-        for record in await self.configuration("policies"):
-            if not record.get("subscription_id") and "principal_id" in record:
+        model = CONFIG_MODELS.get(collection)
+        records = []
+        for record in await self.repository.list(collection):
+            if record.get("_deleted"):
                 continue
-            policies.append(Policy.model_validate(record))
-        return policies
+            if model is not None:
+                try:
+                    record = model.model_validate(record).model_dump(mode="json", exclude_none=True)
+                except ValidationError:
+                    # Legacy application-scoped records remain archived, not reinterpreted.
+                    continue
+            records.append(record)
+        return records
 
-    async def assignments(self) -> list[Assignment]:
-        assignments = []
-        for record in await self.configuration("assignments"):
-            if not record.get("subscription_id") and "principal_id" in record:
-                continue
-            assignments.append(Assignment.model_validate(record))
-        return assignments
-
-    def application_context(self, request: Reserve) -> Record:
-        return {
-            "subscription_id": request.subscription_id,
-            "application_name": self.settings.application_name(
-                request.tenant_id, request.subscription_id
-            ),
-        }
-
-    @observe_operation("reserve")
-    async def reserve(self, request: Reserve) -> Decision:
-        application = self.application_context(request)
-        emit(
-            "reservation_requested",
-            service=request.service,
-            model=request.model,
-            api_protocol=request.effective_protocol,
-            estimated=True,
-            **application,
-        )
-        validate_estimate(request, self.settings)
-        reservation_id = digest(
-            "application-v1", request.tenant_id, request.subscription_id, request.request_id
-        )
-        intent = await self.repository.get("intents", reservation_id)
-        replayed = intent is not None
-        if intent is None and request.service == "foundry" and self.settings.model_registry:
-            deployment = self.settings.registered_model(
-                request.effective_protocol or "openai-chat", request.model
-            )
-            if (
-                request.usage.input_tokens > deployment.max_input_tokens
-                or request.usage.output_tokens > deployment.max_output_tokens
-            ):
-                raise ValueError("Request exceeds registered model token bounds")
-            if request.price_version not in (None, deployment.price_version):
-                raise ValueError("Price version does not match the registered model")
-            request = request.model_copy(update={"price_version": deployment.price_version})
-        elif intent is not None and request.price_version is None:
-            request = request.model_copy(
-                update={"price_version": intent["data"]["request"].get("price_version")}
-            )
-        fingerprint = reserve_fingerprint(request)
-        if intent is None:
-            policies = matching(
-                request,
-                await self.policies(),
-                await self.assignments(),
-            )
-            if not policies:
-                emit(
-                    "rate_decision",
-                    caller_ref=caller_ref(request.tenant_id, request.subscription_id),
-                    streaming=request.streaming,
-                    allowed=False,
-                    reason="no_matching_policy",
-                    service=request.service,
-                    model=request.model,
-                    api_protocol=request.effective_protocol,
-                    **application,
-                )
-                raise ValueError("No matching policy; admission denied")
-            prices = [
-                Price.model_validate(p)
-                for p in await self.configuration("prices")
-                if p["service"] == request.service
-                and p["model"] == request.model
-                and (request.price_version is None or request.price_version == p["version"])
-            ]
-            if len(prices) != 1:
-                emit(
-                    "rate_decision",
-                    caller_ref=caller_ref(request.tenant_id, request.subscription_id),
-                    streaming=request.streaming,
-                    allowed=False,
-                    reason="price_configuration_invalid",
-                    service=request.service,
-                    model=request.model,
-                    api_protocol=request.effective_protocol,
-                    **application,
-                )
-                raise ValueError("Exactly one matching price version is required")
-            price = prices[0]
-            now = datetime.now(UTC)
-            charges = debits(request, policies, price, now)
-            reset = min(d["reset_at"] for d in charges)
-            retry_after = max(1, int((datetime.fromisoformat(reset) - now).total_seconds()) + 1)
-            decision = Decision(
-                allowed=True,
-                reservation_id=reservation_id,
-                reason="reserved",
-                reset_at=reset,
-                retry_after=retry_after,
-                matched_policy_ids=[d["policy_id"] for d in charges],
-            ).model_dump(exclude={"denied_policy_ids"})
-            candidate = event(
-                "intent",
-                reservation_id,
-                request.tenant_id,
-                request.principal_id,
-                {
-                    "request": request.model_dump(mode="json"),
-                    "accounting_version": 2,
-                    "fingerprint": fingerprint,
-                    "debits": charges,
-                    "price": price.model_dump(mode="json"),
-                    "decision": decision,
-                },
-                request.subscription_id,
-            )
-            # Persist the maximum liability before touching Redis. Incomplete intents replay
-            # conservatively after cache loss, including crashes before the admission reply.
-            intent = await self.repository.create("intents", reservation_id, candidate)
-        data = intent["data"]
-        if replayed:
-            emit("reservation_intent_replayed", reservation_id=reservation_id, replayed=True)
-        if data["fingerprint"] != fingerprint:
-            emit("idempotency_conflict", reservation_id=reservation_id, operation="reserve")
-            raise Conflict("Request ID reused with different request")
-        if any(d["reset_at"] <= datetime.now(UTC).isoformat() for d in data["debits"]):
-            emit(
-                "rate_decision",
-                caller_ref=caller_ref(request.tenant_id, request.subscription_id),
-                streaming=request.streaming,
-                reservation_id=reservation_id,
-                allowed=False,
-                reason="reservation_window_expired",
-                replayed=replayed,
-                service=request.service,
-                model=request.model,
-                api_protocol=request.effective_protocol,
-                **application,
-            )
-            return Decision(
-                allowed=False,
-                reason="reservation_window_expired",
-                reservation_id=reservation_id,
-                reset_at=data["decision"]["reset_at"],
-            )
-        decision = await self.counters.reserve(
-            reservation_id, fingerprint, data["debits"], data["decision"]
-        )
-        emit(
-            "counter_reservation_evaluated",
-            reservation_id=reservation_id,
-            allowed=decision["allowed"],
-            reason=decision["reason"],
-            remaining=decision["remaining"],
-            stage="pending_durable_usage",
-        )
-        decision["headers"] = {
-            "X-RateLimit-Remaining": str(decision["remaining"]),
-            "X-RateLimit-Reset": decision["reset_at"],
-            "X-RateLimit-Estimated": "true",
-            "X-RateLimit-Policies": ",".join(decision.get("matched_policy_ids", [])),
-        }
-        if not decision["allowed"]:
-            decision["retry_after"] = max(
-                1,
-                int(
-                    (
-                        datetime.fromisoformat(decision["reset_at"]) - datetime.now(UTC)
-                    ).total_seconds()
-                )
-                + 1,
-            )
-            decision["headers"]["Retry-After"] = str(decision["retry_after"])
-            decision["headers"]["X-RateLimit-Denied-Policies"] = ",".join(
-                decision.get("denied_policy_ids", [])
-            )
-        else:
-            decision["retry_after"] = 0
-        reserved_cost = cost(
-            Price.model_validate(data["price"]),
-            request.usage,
-            True,
-            request.effective_protocol,
-        )
-        # An allow is not returned until its immutable durable usage event exists.
-        await self.repository.create(
-            "usage",
-            reservation_id,
-            event(
-                "reservation",
-                reservation_id,
-                request.tenant_id,
-                request.principal_id,
-                {
-                    **data,
-                    **decision,
-                    "status": "reserved" if decision["allowed"] else "denied",
-                    "estimated": True,
-                    "api_protocol": request.effective_protocol,
-                    "cost_micro_usd": reserved_cost if decision["allowed"] else 0,
-                },
-                request.subscription_id,
-            ),
-        )
-        emit(
-            "rate_decision",
-            caller_ref=caller_ref(request.tenant_id, request.subscription_id),
-            streaming=request.streaming,
-            reservation_id=reservation_id,
-            allowed=decision["allowed"],
-            service=request.service,
-            model=request.model,
-            api_protocol=request.effective_protocol,
-            reason=decision["reason"],
-            remaining=decision["remaining"],
-            matched_policy_ids=decision.get("matched_policy_ids", []),
-            denied_policy_ids=decision.get("denied_policy_ids", []),
-            reset_at=decision["reset_at"],
-            retry_after=decision["retry_after"],
-            replayed=replayed,
-            estimated=True,
-            reserved_cost_micro_usd=reserved_cost,
-            cost_micro_usd=reserved_cost if decision["allowed"] else 0,
-            **application,
-        )
-        for charge in data["debits"]:
-            emit(
-                "reservation_policy_debit",
-                caller_ref=caller_ref(request.tenant_id, request.subscription_id),
-                streaming=request.streaming,
-                reservation_id=reservation_id,
-                allowed=decision["allowed"],
-                service=request.service,
-                model=request.model,
-                api_protocol=request.effective_protocol,
-                remaining=decision.get("remaining_by_policy", {}).get(charge["policy_id"]),
-                applied_amount=charge["amount"] if decision["allowed"] else 0,
-                policy_outcome="allowed"
-                if decision["allowed"]
-                else (
-                    "denied"
-                    if charge["policy_id"] in decision.get("denied_policy_ids", [])
-                    else "blocked"
-                ),
-                replayed=replayed,
-                **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
-                **application,
-            )
-        return Decision.model_validate(decision)
-
-    @observe_operation("settle")
-    async def settle(self, request: Settle) -> Record:
-        emit("settlement_requested", reservation_id=request.reservation_id, status=request.status)
-        intent = await self.repository.get("intents", request.reservation_id)
-        if intent is None:
-            raise Conflict("Unknown reservation")
-        data = intent["data"]
-        has_application_scope = bool(data["request"].get("subscription_id"))
-        original = Reserve.from_persisted(data["request"])
-        application = self.application_context(original) if has_application_scope else {}
+    async def save_configuration(
+        self, collection: str, record_id: str, record: Record, actor_tenant: str, actor: str
+    ) -> Record:
+        model = CONFIG_MODELS.get(collection)
+        if model is None:
+            raise ValueError("Unsupported configuration collection")
         try:
-            usage = normalize_settlement_usage(request, original)
-        except IncompleteUsageError:
-            admitted = await self.repository.get("usage", request.reservation_id)
-            if admitted is None or not admitted["data"]["allowed"]:
-                raise Conflict("Unknown admitted reservation") from None
-            pending_id = digest(request.reservation_id, "incomplete_provider_usage")
-            pending = event(
-                "settlement_pending",
-                pending_id,
-                intent["tenant_id"],
-                intent["principal_id"],
-                {
-                    "status": "conservative",
-                    "estimated": True,
-                    "reason": "incomplete_provider_usage",
-                    "reservation_id": request.reservation_id,
-                    "api_protocol": original.effective_protocol,
-                },
-                original.subscription_id if has_application_scope else None,
-            )
-            persisted_pending = await self.repository.create("reconciliation", pending_id, pending)
-            emit(
-                "settlement_pending",
-                reservation_id=request.reservation_id,
-                caller_ref=caller_ref(original.tenant_id, original.subscription_id)
-                if has_application_scope
-                else None,
-                streaming=original.streaming,
-                status="conservative",
-                estimated=True,
-                reason="incomplete_provider_usage",
-                service=original.service,
-                model=original.model,
-                api_protocol=original.effective_protocol,
-                **application,
-            )
-            return persisted_pending
-        cached_reported = request.status == "actual" and (
-            "cached_input_tokens" in usage.model_fields_set
+            parsed = model.model_validate(record)
+        except ValidationError as error:
+            raise ValueError("Invalid configuration record") from error
+        normalized = parsed.model_dump(mode="json", exclude_none=True)
+        if normalized["id"] != record_id:
+            raise ValueError("Path ID must match body ID")
+        existing = await self.repository.get(collection, record_id)
+        if existing and not existing.get("_deleted"):
+            if existing.get("tenant_id") not in (None, actor_tenant):
+                raise Conflict("Configuration record belongs to another tenant")
+            try:
+                model.model_validate(existing)
+            except ValidationError as error:
+                raise Conflict(
+                    "Legacy configuration must be archived before replacement"
+                ) from error
+        if "tenant_id" in normalized and normalized["tenant_id"] != actor_tenant:
+            raise ValueError("Configuration tenant must match the administrator")
+        if isinstance(parsed, Assignment):
+            await self._validate_assignment(parsed)
+        if isinstance(parsed, Organization):
+            await self._validate_organization(parsed)
+        if isinstance(parsed, Budget):
+            if parsed.tenant_id != actor_tenant:
+                raise ValueError("Budget tenant must match the administrator")
+            await self._validate_budget(parsed)
+        audit = event(
+            "configuration",
+            uuid4().hex,
+            actor_tenant,
+            actor,
+            {"action": "put", "collection": collection, "record_id": record_id},
         )
-        writes_reported = request.status == "actual" and {
-            "cache_write_input_tokens_5m",
-            "cache_write_input_tokens_1h",
-        }.issubset(usage.model_fields_set)
-        if request.status == "actual":
-            charges = actual_debits(
-                data["debits"],
-                Price.model_validate(data["price"]),
-                usage,
-                conservative_input=not cached_reported,
-                api_protocol=original.effective_protocol,
+        await self.repository.mutate(collection, record_id, normalized, audit)
+        return normalized
+
+    async def delete_configuration(
+        self, collection: str, record_id: str, actor_tenant: str, actor: str
+    ) -> None:
+        if collection not in CONFIG_MODELS:
+            raise ValueError("Unsupported configuration collection")
+        current = await self.repository.get(collection, record_id)
+        if current is None or current.get("_deleted"):
+            return
+        try:
+            CONFIG_MODELS[collection].model_validate(current)
+        except ValidationError as error:
+            raise Conflict(
+                "Legacy configuration must be archived, not deleted by the new API"
+            ) from error
+        if current.get("tenant_id", actor_tenant) != actor_tenant:
+            raise ValueError("Configuration tenant must match the administrator")
+        if collection == "organizations":
+            dependents = await self.configuration("organizations")
+            assignments = await self.configuration("assignments")
+            if any(row.get("department_id") == record_id for row in dependents):
+                raise ValueError("Organization units with child teams cannot be deleted")
+            if any(
+                row.get("enabled") is True
+                and record_id in (row.get("team_id"), row.get("department_id"))
+                for row in assignments
+            ):
+                raise ValueError("Organization units with active assignments cannot be deleted")
+        audit = event(
+            "configuration",
+            uuid4().hex,
+            actor_tenant,
+            actor,
+            {"action": "delete", "collection": collection, "record_id": record_id},
+        )
+        await self.repository.mutate(collection, record_id, None, audit)
+
+    async def _validate_assignment(self, assignment: Assignment) -> None:
+        for existing in await self.configuration("assignments"):
+            if existing.get("id") != assignment.id and (
+                existing.get("tenant_id") == assignment.tenant_id
+                and existing.get("principal_id") == assignment.principal_id
+                and existing.get("enabled") is True
+                and assignment.enabled
+            ):
+                raise ValueError("An active assignment already exists for this user")
+        organizations = [
+            Organization.model_validate(r) for r in await self.configuration("organizations")
+        ]
+        team = next(
+            (
+                item
+                for item in organizations
+                if item.id == assignment.team_id
+                and item.kind == "team"
+                and item.tenant_id == assignment.tenant_id
+                and item.enabled
+            ),
+            None,
+        )
+        department = next(
+            (
+                item
+                for item in organizations
+                if item.id == assignment.department_id
+                and item.kind == "department"
+                and item.tenant_id == assignment.tenant_id
+                and item.enabled
+            ),
+            None,
+        )
+        if team is None or department is None or team.department_id != department.id:
+            raise ValueError("Assignment requires an enabled team and its enabled department")
+
+    async def _validate_organization(self, organization: Organization) -> None:
+        if organization.kind != "team":
+            return
+        parent = await self.repository.get("organizations", organization.department_id or "")
+        if (
+            parent is None
+            or parent.get("_deleted")
+            or parent.get("kind") != "department"
+            or parent.get("enabled") is not True
+            or parent.get("tenant_id") != organization.tenant_id
+        ):
+            raise ValueError("Team parent must be an enabled department in the same tenant")
+
+    async def _validate_budget(self, budget: Budget) -> None:
+        if budget.subject_type == "user":
+            valid = any(
+                row.get("tenant_id") == budget.tenant_id
+                and row.get("principal_id") == budget.subject_id
+                and row.get("enabled") is True
+                for row in await self.configuration("assignments")
             )
         else:
-            charges = data["debits"]
-        estimated = request.status != "actual" or (
-            original.service == "foundry" and usage.input_tokens > 0 and not cached_reported
+            organization = await self.repository.get("organizations", budget.subject_id)
+            expected_kind = "team" if budget.subject_type == "team" else "department"
+            valid = bool(
+                organization
+                and not organization.get("_deleted")
+                and organization.get("kind") == expected_kind
+                and organization.get("tenant_id") == budget.tenant_id
+                and organization.get("enabled") is True
+            )
+        if not valid:
+            raise ValueError("Budget subject must be an active user or organization unit")
+
+    async def check(self, check: BudgetCheck) -> Record:
+        request_key = digest(check.tenant_id, check.request_id)
+        fingerprint = digest(
+            check.tenant_id,
+            check.principal_id,
+            check.subscription_id,
+            check.model,
+            check.api_protocol,
+            str(check.streaming),
         )
-        fingerprint = settlement_fingerprint(request, usage, cached_reported)
-        counter = await self.counters.finalize(request.reservation_id, charges, fingerprint)
-        result = event(
-            "settlement",
-            request.reservation_id,
-            intent["tenant_id"],
-            intent["principal_id"],
-            {
-                "status": request.status,
-                "estimated": estimated,
-                "cached_input_reported": cached_reported if original.service == "foundry" else None,
-                "cache_write_input_reported": writes_reported
-                if original.effective_protocol == "anthropic-messages"
-                else None,
-                "api_protocol": original.effective_protocol,
-                "cost_micro_usd": cost(
-                    Price.model_validate(data["price"]),
-                    usage if request.status == "actual" else original.usage,
-                    request.status != "actual" or not cached_reported,
-                    original.effective_protocol,
-                ),
-                "reservation_id": request.reservation_id,
-                "usage": usage.model_dump(),
-                "debits": charges,
-                "counter": counter,
+        async with self.counters.locked():
+            saved = await self.repository.get("requests", request_key)
+            if saved is not None:
+                data = saved["data"]
+                if data["fingerprint"] != fingerprint:
+                    raise Conflict("Request ID reused with different request")
+                if await self.repository.get(USAGE_COLLECTION, request_key) is not None:
+                    raise Conflict("Completed request IDs cannot be dispatched again")
+                result = data["decision"]
+                return {**result, "request_id": check.request_id}
+
+            assignment = await self._assignment(check.tenant_id, check.principal_id)
+            if assignment is None:
+                raise ValueError("Unknown or unassigned user")
+            organization = await self._organization_context(assignment)
+            deployment = (
+                self.settings.registered_model(check.api_protocol, check.model)
+                if self.settings.model_registry
+                else None
+            )
+            price = await self._get_price(check)
+            month, reset = utc_month()
+            usage_records = await self.repository.list(USAGE_COLLECTION)
+            await self.counters.project(usage_records)
+            matching = self._matching_budgets(
+                check, assignment, await self.configuration("budgets")
+            )
+            spend_by_budget = self._spend_by_budget(matching, usage_records, month, check.model)
+            denied = [
+                budget.id
+                for budget in matching
+                if spend_by_budget.get(budget.id, 0) >= budget.limit_micro_usd
+            ]
+            allowed = not denied
+            reason = "allowed" if allowed else "budget_exhausted"
+            decision = {
+                "allowed": allowed,
+                "request_id": check.request_id,
+                "reason": reason,
+                "denied_budget_ids": denied,
+                "reset_at": reset.isoformat(),
+                "retry_after": max(1, int((reset - datetime.now(UTC)).total_seconds())),
+            }
+            data = {
                 "fingerprint": fingerprint,
-            },
-            original.subscription_id if has_application_scope else None,
-        )
-        persisted = await self.repository.create("settlements", request.reservation_id, result)
-        if persisted["data"]["fingerprint"] != fingerprint:
-            emit("idempotency_conflict", reservation_id=request.reservation_id, operation="settle")
-            raise Conflict("Reservation already durably finalized differently")
-        await self.repository.create("reconciliation", request.reservation_id, result)
-        reserved_cost = cost(
-            Price.model_validate(data["price"]),
-            original.usage,
-            True,
-            original.effective_protocol,
-        )
-        emit(
-            "settlement_recorded",
-            caller_ref=caller_ref(original.tenant_id, original.subscription_id)
-            if has_application_scope
-            else None,
-            streaming=original.streaming,
-            reservation_id=request.reservation_id,
-            service=original.service,
-            model=original.model,
-            api_protocol=original.effective_protocol,
-            status=request.status,
-            estimated=estimated,
-            cost_micro_usd=result["data"]["cost_micro_usd"],
-            reserved_cost_micro_usd=reserved_cost,
-            refunded_cost_micro_usd=max(0, reserved_cost - result["data"]["cost_micro_usd"]),
-            cached_input_reported=cached_reported,
-            cache_write_input_reported=writes_reported,
-            price_id=data["price"]["id"],
-            price_version=data["price"]["version"],
-            **(usage if request.status == "actual" else original.usage).model_dump(),
-            **application,
-        )
-        emit(
-            "settlement_price",
-            reservation_id=request.reservation_id,
-            price_id=data["price"]["id"],
-            price_version=data["price"]["version"],
-            **{
-                k: v
-                for k, v in data["price"].items()
-                if k not in ("id", "version", "service", "model")
-            },
-        )
-        for before, charge in zip(data["debits"], charges, strict=True):
+                "check": check.model_dump(mode="json"),
+                "assignment": assignment.model_dump(mode="json"),
+                "organization": organization,
+                "price": price.model_dump(mode="json"),
+                "price_version": price.version,
+                "model_bounds": (
+                    {
+                        "max_input_tokens": deployment.max_input_tokens,
+                        "max_output_tokens": deployment.max_output_tokens,
+                    }
+                    if deployment
+                    else None
+                ),
+                "month": month,
+                "decision": {key: value for key, value in decision.items() if key != "request_id"},
+            }
+            await self.repository.create(
+                "requests",
+                request_key,
+                event("request", request_key, check.tenant_id, check.principal_id, data),
+            )
             emit(
-                "settlement_policy_debit",
-                caller_ref=caller_ref(original.tenant_id, original.subscription_id)
-                if has_application_scope
-                else None,
-                streaming=original.streaming,
-                reservation_id=request.reservation_id,
-                status=request.status,
-                estimated=estimated,
-                service=original.service,
-                model=original.model,
-                api_protocol=original.effective_protocol,
-                reserved_amount=before["amount"],
-                applied_amount=charge["amount"],
-                refunded_amount=max(0, before["amount"] - charge["amount"]),
-                **{k: charge[k] for k in ("policy_id", "metric", "amount", "limit", "reset_at")},
-                **application,
+                "budget_decision",
+                allowed=allowed,
+                reason=reason,
+                model=check.model,
+                user_ref=_opaque(check.tenant_id, check.principal_id),
+                team_id=assignment.team_id,
+                department_id=assignment.department_id,
+                denied_budget_ids=denied,
             )
-        return persisted
+            return decision
 
-    @observe_operation("release")
-    async def release(self, reservation_id: str) -> Record:
-        intent = await self.repository.get("intents", reservation_id)
-        if intent is None:
-            raise Conflict("Unknown reservation")
-        # The shared release contract contains no proof that dispatch did not happen.
-        # Therefore release finalizes the liability, never silently refunds it.
-        return await self.settle(
-            Settle(
-                reservation_id=reservation_id,
-                usage=Reserve.from_persisted(intent["data"]["request"]).usage,
-                status="conservative",
-            )
-        )
+    async def _assignment(self, tenant_id: str, principal_id: str) -> Assignment | None:
+        matches = [
+            Assignment.model_validate(record)
+            for record in await self.configuration("assignments")
+            if record.get("tenant_id") == tenant_id
+            and record.get("principal_id") == principal_id
+            and record.get("enabled") is True
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
-    @observe_operation("reconcile")
-    async def reconcile(self) -> int:
-        count = 0
-        for intent in await self.repository.list("intents"):
-            record_id = intent["id"]
-            if await self.repository.get("settlements", record_id):
-                continue
-            usage_event = await self.repository.get("usage", record_id)
-            if usage_event is None or not usage_event["data"]["allowed"]:
-                continue
-            if max(d["reset_at"] for d in intent["data"]["debits"]) > datetime.now(UTC).isoformat():
-                continue
-            await self.release(record_id)
-            count += 1
-        emit("reconciliation_completed", records=count, status="ok")
-        return count
-
-    @observe_operation("recover")
-    async def recover(self) -> Record:
-        token = await self.counters.begin_recovery()
-        emit("recovery_started", status="admission_closed")
-        records: list[Record] = []
-        for intent in await self.repository.list("intents"):
-            data = intent["data"]
-            usage_event = await self.repository.get("usage", intent["id"])
-            settlement = await self.repository.get("settlements", intent["id"])
-            if settlement:
-                counter = settlement["data"]["counter"]
-            else:
-                usage_data = usage_event["data"] if usage_event else {}
-                allowed = usage_data.get("allowed") is True
-                proven_denial = (
-                    usage_data.get("allowed") is False
-                    and usage_data.get("reason") == "budget_exhausted"
-                )
-                recorded_decision = {
-                    name: usage_data[name] for name in Decision.model_fields if name in usage_data
-                }
-                counter = {
-                    "fingerprint": data["fingerprint"],
-                    "final": "",
-                    "decision": {
-                        **data["decision"],
-                        **recorded_decision,
-                        "allowed": allowed,
-                        "remaining": 0,
-                        "reason": "budget_exhausted"
-                        if proven_denial
-                        else "recovered_conservatively",
-                    },
-                    # A retry denied by recovery is not proof that the original
-                    # ambiguous attempt incurred no liability.
-                    "debits": [] if proven_denial else data["debits"],
-                }
-            records.append({"id": intent["id"], "counter": counter})
-        # Durable recovery audit must succeed before reopening the admission gate.
-        result = event(
-            "recovery", uuid4().hex, "*", "*", {"status": "recovered", "records": len(records)}
-        )
-        await self.repository.create("audit", result["id"], result)
-        await self.counters.recover(token, records)
-        emit("recovery_completed", records=len(records), status="recovered")
-        return result
-
-    @observe_operation("bind_operation")
-    async def bind_operation(self, payload: dict[str, Any]) -> Record:
-        intent = await self.repository.get("intents", payload["reservation_id"])
-        admitted = await self.repository.get("usage", payload["reservation_id"])
-        if intent is None or admitted is None or not admitted["data"]["allowed"]:
-            raise Conflict("Unknown admitted reservation")
-        request = intent["data"]["request"]
-        if "subscription_id" not in request:
-            raise Conflict("Legacy user-scoped reservations cannot bind operations")
-        if request["service"] != "document-intelligence" or any(
-            payload[k] != request[k] for k in ("tenant_id", "subscription_id", "model")
+    async def _organization_context(self, assignment: Assignment) -> Record:
+        organizations = {
+            record["id"]: Organization.model_validate(record)
+            for record in await self.configuration("organizations")
+        }
+        team = organizations.get(assignment.team_id)
+        department = organizations.get(assignment.department_id)
+        if (
+            team is None
+            or department is None
+            or not team.enabled
+            or not department.enabled
+            or team.kind != "team"
+            or department.kind != "department"
+            or team.tenant_id != assignment.tenant_id
+            or department.tenant_id != assignment.tenant_id
+            or team.department_id != department.id
         ):
-            raise Conflict("Operation identity does not match reservation")
-        record_id = digest(
-            "application-v1",
-            payload["tenant_id"],
-            payload["subscription_id"],
-            str(payload["operation_id"]),
-        )
-        old = await self.repository.create("operations", record_id, payload)
-        if any(old.get(key) != value for key, value in payload.items() if key != "principal_id"):
-            raise Conflict("Operation already bound differently")
-        emit(
-            "operation_ownership",
-            operation="bind",
-            allowed=True,
-            service="document-intelligence",
-            reservation_id=payload["reservation_id"],
-            model=payload["model"],
-        )
-        return {"allowed": True}
-
-    @observe_operation("check_operation")
-    async def check_operation(self, payload: dict[str, Any]) -> Record:
-        record_id = digest(
-            "application-v1",
-            payload["tenant_id"],
-            payload["subscription_id"],
-            str(payload["operation_id"]),
-        )
-        old = await self.repository.get("operations", record_id)
-        allowed = old is not None and all(
-            old.get(k) == v for k, v in payload.items() if k != "principal_id"
-        )
-        emit(
-            "operation_ownership",
-            operation="check",
-            allowed=allowed,
-            service="document-intelligence",
-            model=payload["model"],
-        )
+            raise ValueError("Assigned organization is unavailable")
         return {
-            "allowed": allowed,
-            **({"reservation_id": old["reservation_id"]} if allowed and old else {}),
+            "team_id": team.id,
+            "department_id": department.id,
+            "business_unit": team.business_unit,
+            "cost_center": team.cost_center,
         }
 
-    async def report(
-        self, collection: str, tenant: str, principal: str, admin: bool
-    ) -> list[Record]:
-        if collection == "usage":
-            records = await self.repository.list("usage")
-            for record in records:
-                settled = await self.repository.get("settlements", record["id"])
-                if settled:
-                    record["data"].update(
-                        {
-                            k: v
-                            for k, v in settled["data"].items()
-                            if k
-                            in (
-                                "debits",
-                                "status",
-                                "estimated",
-                                "usage",
-                                "cached_input_reported",
-                                "cache_write_input_reported",
-                                "api_protocol",
-                                "cost_micro_usd",
-                            )
-                        }
+    async def _get_price(self, check: BudgetCheck) -> Price:
+        version: str | None = None
+        if self.settings.model_registry:
+            version = self.settings.registered_model(check.api_protocol, check.model).price_version
+        matches = [
+            Price.model_validate(record)
+            for record in await self.configuration("prices")
+            if record.get("model") == check.model
+            and (version is None or record.get("version") == version)
+        ]
+        if len(matches) != 1:
+            raise ValueError("Exactly one matching price card is required")
+        return matches[0]
+
+    @staticmethod
+    def _matching_budgets(
+        check: BudgetCheck, assignment: Assignment, records: list[Record]
+    ) -> list[Budget]:
+        subjects = {
+            ("user", check.principal_id),
+            ("team", assignment.team_id),
+            ("department", assignment.department_id),
+        }
+        return [
+            budget
+            for record in records
+            if (budget := Budget.model_validate(record)).enabled
+            and budget.tenant_id == check.tenant_id
+            and (budget.subject_type, budget.subject_id) in subjects
+            and budget.model in ("*", check.model)
+        ]
+
+    @staticmethod
+    def _spend_by_budget(
+        budgets: list[Budget], usage_records: list[Record], month: str, model: str
+    ) -> dict[str, int]:
+        spend = {budget.id: 0 for budget in budgets}
+        for record in usage_records:
+            data = record.get("data", {})
+            amount = data.get("cost_micro_usd")
+            if (
+                record.get("kind") != "usage"
+                or data.get("month") != month
+                or data.get("status") != "actual"
+                or not isinstance(amount, int)
+            ):
+                continue
+            for budget in budgets:
+                if (
+                    budget.tenant_id == record.get("tenant_id")
+                    and (budget.model == "*" or budget.model == model)
+                    and (budget.model == "*" or data.get("model") == budget.model)
+                    and (
+                        (
+                            budget.subject_type == "user"
+                            and budget.subject_id == record.get("principal_id")
+                        )
+                        or (
+                            budget.subject_type == "team"
+                            and budget.subject_id == data.get("team_id")
+                        )
+                        or (
+                            budget.subject_type == "department"
+                            and budget.subject_id == data.get("department_id")
+                        )
                     )
-        else:
-            records = await self.repository.list(collection)
-        if admin:
-            scoped = records
-        else:
-            assignments = await self.configuration("assignments")
-            visible = {
-                (assignment["tenant_id"], assignment["subscription_id"])
-                for assignment in assignments
-                if assignment.get("tenant_id") == tenant
-                and "subscription_id" in assignment
-                and principal in assignment.get("reader_principal_ids", [])
+                ):
+                    spend[budget.id] += amount
+        return spend
+
+    async def record_usage(self, body: UsageRecordRequest) -> Record:
+        candidates = await self.repository.list("requests")
+        matches = [
+            record["id"]
+            for record in candidates
+            if record.get("data", {}).get("check", {}).get("request_id") == body.request_id
+        ]
+        if len(matches) != 1:
+            raise Conflict("Budget check not found")
+        request_key = matches[0]
+        request = await self.repository.get("requests", request_key)
+        if request is None:
+            raise Conflict("Budget check not found")
+        fingerprint = _usage_fingerprint(body)
+        prior = await self.repository.get(USAGE_COLLECTION, request_key)
+        if prior is not None:
+            _validate_usage_replay(prior, body.status, fingerprint)
+            await self._refresh_projection()
+            return {"event": prior["data"]["event"], "replayed": True}
+
+        data = request["data"]
+        check = data["check"]
+        if not data["decision"]["allowed"]:
+            raise Conflict("Denied requests cannot be charged")
+        usage = None
+        cost = None
+        status = body.status
+        if body.status == "actual":
+            if body.provider_usage is None:
+                status = "usage_unknown"
+            else:
+                try:
+                    usage = normalize_openai_usage(body.provider_usage, check["api_protocol"])
+                    bounds = data.get("model_bounds")
+                    if bounds and (
+                        usage["input_tokens"] > bounds["max_input_tokens"]
+                        or usage["output_tokens"] > bounds["max_output_tokens"]
+                    ):
+                        raise ValueError("Provider usage exceeds the pinned price range")
+                    price = Price.model_validate(data["price"])
+                    cost = cost_micro_usd(price, usage)
+                except (ValueError, KeyError, TypeError):
+                    status = "usage_unknown"
+                    usage = None
+                    cost = None
+        elif body.provider_usage is not None:
+            raise ValueError("Unknown usage must not include fabricated provider counters")
+
+        month = data["month"]
+        snapshot = data["organization"]
+        projection_keys = [
+            digest(check["tenant_id"], kind, subject_id, month)
+            for kind, subject_id in (
+                ("user", check["principal_id"]),
+                ("team", snapshot["team_id"]),
+                ("department", snapshot["department_id"]),
+            )
+        ]
+        timestamp = datetime.now(UTC).isoformat()
+        event_id = digest("usage-event-v2", check["tenant_id"], body.request_id)
+        event_data: Record = {
+            "event_version": 2,
+            "event_name": "usage_recorded",
+            "event_id": event_id,
+            "request_id": body.request_id,
+            "timestamp": timestamp,
+            "month": month,
+            "tenant_ref": _opaque(check["tenant_id"]),
+            "user_ref": _opaque(check["tenant_id"], check["principal_id"]),
+            "team_id": snapshot["team_id"],
+            "department_id": snapshot["department_id"],
+            "business_unit": snapshot["business_unit"],
+            "cost_center": snapshot["cost_center"],
+            "subscription_id": check["subscription_id"],
+            "model": check["model"],
+            "api_protocol": check["api_protocol"],
+            "streaming": check["streaming"],
+            "status": status,
+            "input_tokens": usage["input_tokens"] if usage else None,
+            "cached_input_tokens": usage["cached_input_tokens"] if usage else None,
+            "output_tokens": usage["output_tokens"] if usage else None,
+            "cost_micro_usd": cost,
+            "price_version": data["price_version"],
+        }
+        record_data = {
+            **event_data,
+            "submitted_status": body.status,
+            "usage_fingerprint": fingerprint,
+            "projection_keys": projection_keys,
+            "event": event_data,
+        }
+        durable = event(
+            "usage", request_key, check["tenant_id"], check["principal_id"], record_data
+        )
+        saved, created = await self.repository.create_if_absent(
+            USAGE_COLLECTION, request_key, durable
+        )
+        if not created:
+            _validate_usage_replay(saved, body.status, fingerprint)
+        await self._refresh_projection()
+        if created:
+            emit("usage_recorded", **event_data)
+        return {"event": saved["data"]["event"], "replayed": not created}
+
+    async def _refresh_projection(self) -> None:
+        try:
+            async with self.counters.locked():
+                await self.counters.project(await self.repository.list(USAGE_COLLECTION))
+        except (OSError, TimeoutError, AzureError, RedisError):
+            emit(
+                "usage_projection_rebuild_deferred", level=logging.WARNING, error_type="projection"
+            )
+
+    async def rebuild_counters(self) -> int:
+        async with self.counters.locked():
+            records = await self.repository.list(USAGE_COLLECTION)
+            await self.counters.project(records)
+            return len(records)
+
+    async def usage(self, tenant_id: str, principal_id: str, admin: bool) -> list[Record]:
+        records = await self.repository.list(USAGE_COLLECTION)
+        return [
+            record["data"]["event"]
+            for record in records
+            if record.get("tenant_id") == tenant_id
+            and (admin or record.get("principal_id") == principal_id)
+        ]
+
+    async def budget_status(
+        self, tenant_id: str, principal_id: str, admin: bool = False
+    ) -> list[Record]:
+        assignments = [
+            Assignment.model_validate(record)
+            for record in await self.configuration("assignments")
+            if record.get("tenant_id") == tenant_id
+            and record.get("enabled") is True
+            and (admin or record.get("principal_id") == principal_id)
+        ]
+        if not admin and not assignments:
+            return []
+        principals = {item.principal_id for item in assignments}
+        teams = {item.team_id for item in assignments}
+        departments = {item.department_id for item in assignments}
+        month, _ = utc_month()
+        budgets = [
+            budget
+            for record in await self.configuration("budgets")
+            if (budget := Budget.model_validate(record)).enabled
+            and budget.tenant_id == tenant_id
+            and (
+                admin
+                or (budget.subject_type == "user" and budget.subject_id in principals)
+                or (budget.subject_type == "team" and budget.subject_id in teams)
+                or (budget.subject_type == "department" and budget.subject_id in departments)
+            )
+        ]
+        records = await self.repository.list(USAGE_COLLECTION)
+        result = []
+        for budget in budgets:
+            actual = 0
+            for record in records:
+                data = record["data"]
+                if (
+                    data.get("month") == month
+                    and data.get("status") == "actual"
+                    and isinstance(data.get("cost_micro_usd"), int)
+                    and record.get("tenant_id") == tenant_id
+                    and (
+                        (
+                            budget.subject_type == "user"
+                            and record.get("principal_id") == budget.subject_id
+                        )
+                        or (
+                            budget.subject_type == "team"
+                            and data.get("team_id") == budget.subject_id
+                        )
+                        or (
+                            budget.subject_type == "department"
+                            and data.get("department_id") == budget.subject_id
+                        )
+                    )
+                    and (budget.model == "*" or data.get("model") == budget.model)
+                ):
+                    actual += data["cost_micro_usd"]
+            row = {
+                "budget_id": budget.id,
+                "name": budget.name,
+                "subject_type": budget.subject_type,
+                "subject_id": budget.subject_id,
+                "model": budget.model,
+                "limit_micro_usd": budget.limit_micro_usd,
+                "spent_micro_usd": actual,
+                "remaining_micro_usd": max(0, budget.limit_micro_usd - actual),
+                "month": month,
             }
-            scoped = [
-                record
-                for record in records
-                if (record.get("tenant_id"), record.get("subscription_id")) in visible
-            ]
-        # Internal counter snapshots and fingerprints are not portal contracts.
-        result = json.loads(json.dumps(scoped))
-        for record in result:
-            if collection in ("usage", "reconciliation") and not record.get("subscription_id"):
-                record["accounting_scope"] = "legacy_user"
-            for name in ("counter", "fingerprint", "price", "decision"):
-                record["data"].pop(name, None)
+            result.append(row)
+            assignment = next(
+                (
+                    item
+                    for item in assignments
+                    if (
+                        (budget.subject_type == "user" and item.principal_id == budget.subject_id)
+                        or (budget.subject_type == "team" and item.team_id == budget.subject_id)
+                        or (
+                            budget.subject_type == "department"
+                            and item.department_id == budget.subject_id
+                        )
+                    )
+                ),
+                None,
+            )
+            team_id = (
+                budget.subject_id
+                if budget.subject_type == "team"
+                else assignment.team_id
+                if assignment
+                else None
+            )
+            department_id = (
+                budget.subject_id
+                if budget.subject_type == "department"
+                else assignment.department_id
+                if assignment
+                else None
+            )
+            if budget.subject_type == "team" and assignment is None:
+                team = await self.repository.get("organizations", budget.subject_id)
+                if team and not team.get("_deleted"):
+                    department_id = team.get("department_id")
+            emit(
+                "budget_status",
+                month=month,
+                budget_id=budget.id,
+                subject_type=budget.subject_type,
+                subject_id=(
+                    _opaque(tenant_id, budget.subject_id)
+                    if budget.subject_type == "user"
+                    else budget.subject_id
+                ),
+                model=budget.model,
+                limit_micro_usd=budget.limit_micro_usd,
+                spent_micro_usd=actual,
+                remaining_micro_usd=row["remaining_micro_usd"],
+                user_ref=(
+                    _opaque(tenant_id, budget.subject_id) if budget.subject_type == "user" else None
+                ),
+                team_id=team_id,
+                department_id=department_id,
+            )
         return result
+
+    async def chargeback(
+        self, tenant_id: str, month: str, principal_id: str | None
+    ) -> list[Record]:
+        records = await self.repository.list(USAGE_COLLECTION)
+        groups: dict[tuple[str, ...], Record] = {}
+        for record in records:
+            data = record["data"]
+            if (
+                record.get("tenant_id") != tenant_id
+                or data.get("month") != month
+                or (principal_id and record.get("principal_id") != principal_id)
+            ):
+                continue
+            key = tuple(
+                str(data.get(field) or "")
+                for field in (
+                    "business_unit",
+                    "cost_center",
+                    "department_id",
+                    "team_id",
+                    "user_ref",
+                    "subscription_id",
+                    "model",
+                    "month",
+                    "status",
+                )
+            )
+            unknown = data.get("status") == "usage_unknown"
+            group = groups.setdefault(
+                key,
+                {
+                    "business_unit": key[0],
+                    "cost_center": key[1],
+                    "department_id": key[2],
+                    "team_id": key[3],
+                    "user_ref": key[4],
+                    "subscription_id": key[5],
+                    "model": key[6],
+                    "month": key[7],
+                    "input_tokens": None if unknown else 0,
+                    "cached_input_tokens": None if unknown else 0,
+                    "output_tokens": None if unknown else 0,
+                    "cost_micro_usd": None if unknown else 0,
+                    "unknown_requests": 0,
+                },
+            )
+            if unknown:
+                group["unknown_requests"] += 1
+            else:
+                for field in (
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "output_tokens",
+                    "cost_micro_usd",
+                ):
+                    group[field] += data[field]
+        return list(groups.values())
+
+
+def _usage_fingerprint(body: UsageRecordRequest) -> str:
+    serialized = (
+        json.dumps(body.provider_usage, sort_keys=True, separators=(",", ":"))
+        if body.provider_usage is not None
+        else ""
+    )
+    return digest(body.status, serialized)
+
+
+def _validate_usage_replay(record: Record, status: str, fingerprint: str) -> None:
+    if record["data"]["submitted_status"] != status:
+        raise Conflict("Usage request already finalized differently")
+    if record["data"]["usage_fingerprint"] != fingerprint:
+        raise Conflict("Usage request replayed with different provider usage")
+
+
+def _opaque(*parts: str) -> str:
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()

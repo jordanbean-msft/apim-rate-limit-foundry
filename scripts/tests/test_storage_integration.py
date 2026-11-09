@@ -28,13 +28,13 @@ async def test_real_table_sdk_preserves_events_and_atomic_config_audit() -> None
             assert await repository.list("usage") == [original]
 
             await repository.mutate(
-                "policies", "policy", {"id": "policy", "limit": 5}, {"id": "put"}
+                "budgets", "budget", {"id": "budget", "limit_micro_usd": 5}, {"id": "put"}
             )
-            assert (await repository.get("policies", "policy"))["limit"] == 5
+            assert (await repository.get("budgets", "budget"))["limit_micro_usd"] == 5
             assert await repository.list("audit") == [{"id": "put"}]
 
-            await repository.mutate("policies", "policy", None, {"id": "delete"})
-            assert (await repository.get("policies", "policy"))["_deleted"]
+            await repository.mutate("budgets", "budget", None, {"id": "delete"})
+            assert (await repository.get("budgets", "budget"))["_deleted"]
             assert len(await repository.list("audit")) == 2
         finally:
             await table.delete_table()

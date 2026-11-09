@@ -1,0 +1,11 @@
+[
+  {
+    "id": "local-developer",
+    "tenant_id": "local-tenant",
+    "principal_id": "local-developer",
+    "team_id": "platform",
+    "department_id": "engineering",
+    "display_label": "Local sample developer",
+    "enabled": true
+  }
+]

@@ -16,9 +16,8 @@ class StreamUsage:
         self.event_bytes = 0
         self.usage: dict[str, Any] | None = None
         self.complete = False
+        self.terminated = False
         self.invalid = False
-        self.started = False
-        self.delta_seen = False
 
     def feed(self, chunk: bytes) -> None:
         if self.invalid:
@@ -60,8 +59,8 @@ class StreamUsage:
         if not data:
             return
         if data == "[DONE]":
-            if self.protocol == "openai-chat" and self.usage is not None and not self.complete:
-                self.complete = True
+            if self.protocol == "openai-chat" and self.usage is not None and not self.terminated:
+                self.terminated = True
                 return
             raise ValueError("Unexpected stream terminator")
         if self.complete:
@@ -74,42 +73,18 @@ class StreamUsage:
                 if self.usage is not None or payload.get("choices") != []:
                     raise ValueError("Ambiguous Chat usage")
                 self.usage = self._usage(payload["usage"])
+                self.complete = True
         elif self.protocol == "openai-responses":
             kind = payload.get("type")
             if kind in ("response.completed", "response.incomplete"):
                 response = payload["response"]
-                expected = "completed" if kind == "response.completed" else "incomplete"
-                if not isinstance(response, dict) or response.get("status") != expected:
+                expected_status = kind.removeprefix("response.")
+                if not isinstance(response, dict) or response.get("status") != expected_status:
                     raise ValueError("Invalid terminal response")
                 self.usage = self._usage(response["usage"])
                 self.complete = True
             elif kind in ("error", "response.failed"):
                 raise ValueError("Provider stream failed")
-        else:
-            self._anthropic(payload)
-
-    def _anthropic(self, payload: dict[str, Any]) -> None:
-        kind = payload.get("type")
-        if kind == "message_start":
-            if self.started:
-                raise ValueError("Duplicate message start")
-            self.usage = self._usage(payload["message"]["usage"])
-            self.started = True
-        elif kind == "message_delta":
-            if not self.started or self.usage is None:
-                raise ValueError("Message delta before start")
-            update = self._usage(payload["usage"])
-            old, new = self.usage.get("output_tokens"), update.get("output_tokens")
-            if type(old) is not int or type(new) is not int or new < old:
-                raise ValueError("Output usage must be cumulative")
-            self.usage = {**self.usage, **update}
-            self.delta_seen = True
-        elif kind == "message_stop":
-            if not self.started or not self.delta_seen:
-                raise ValueError("Message stopped without final usage")
-            self.complete = True
-        elif kind == "error":
-            raise ValueError("Provider stream failed")
 
     @staticmethod
     def _usage(value: Any) -> dict[str, Any]:

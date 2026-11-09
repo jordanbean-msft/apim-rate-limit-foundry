@@ -99,15 +99,27 @@ class DashboardService:
 
     async def _batch(self, tiles: list[Record], period: DashboardPeriod) -> list[Record]:
         duration = {"1h": timedelta(hours=1), "24h": timedelta(days=1), "7d": timedelta(days=7)}
-        requests = [
-            LogsBatchQuery(
-                self.settings.log_analytics_workspace_id,
-                tile["query"],
-                timespan=duration[period],
-                server_timeout=20,
-            )
-            for tile in tiles
-        ]
+        requests = []
+        for tile in tiles:
+            query = tile["query"]
+            if "startofmonth(now())" in query.lower():
+                requests.append(
+                    LogsBatchQuery(
+                        self.settings.log_analytics_workspace_id,
+                        query,
+                        timespan=None,
+                        server_timeout=20,
+                    )
+                )
+            else:
+                requests.append(
+                    LogsBatchQuery(
+                        self.settings.log_analytics_workspace_id,
+                        query,
+                        timespan=duration[period],
+                        server_timeout=20,
+                    )
+                )
         try:
             results = await self.logs.query_batch(requests)
         except AzureError:

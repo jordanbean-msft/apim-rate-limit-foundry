@@ -27,10 +27,11 @@ async def stream_provider(req: Request) -> Response:
     global runtime
     token = correlation_id.set(request_correlation(req.headers.get("x-correlation-id")))
     try:
-        authenticate(req, settings).require("RateLimit.Gateway")
-        reservation_id = safe_id(req.headers.get("x-ratelimit-reservation"))
-        if not reservation_id:
-            raise HTTPException(400, "A reservation is required")
+        actor = authenticate(req, settings)
+        actor.require("RateLimit.Gateway")
+        request_id = safe_id(req.headers.get("x-usage-request-id"))
+        if not request_id:
+            raise HTTPException(400, "X-Usage-Request-ID is required")
         body = bytearray()
         async for chunk in req.stream():
             body.extend(chunk)
@@ -42,7 +43,7 @@ async def stream_provider(req: Request) -> Response:
             raise HTTPException(503, "Managed identity is required for provider streams")
         relay = StreamRelay(runtime.engine, runtime.credential, settings)
         status, content_type, chunks, provider_headers = await relay.open(
-            reservation_id, bytes(body)
+            actor.tenant_id, request_id, bytes(body)
         )
         return StreamingResponse(
             chunks,
@@ -52,7 +53,7 @@ async def stream_provider(req: Request) -> Response:
                 **provider_headers,
                 "Cache-Control": "no-store",
                 "X-Accel-Buffering": "no",
-                "X-RateLimit-Accounting": "provider-stream",
+                "X-RateLimit-Accounting": "post-request",
             },
         )
     except HTTPException as error:
@@ -61,6 +62,6 @@ async def stream_provider(req: Request) -> Response:
         return JSONResponse({"detail": "Invalid stream admission"}, status_code=409)
     except (OSError, aiohttp.ClientError, AzureError, RedisError):
         emit("limiter_dependency_unavailable", level=logging.ERROR, streaming=True)
-        return JSONResponse({"detail": "Stream unavailable; reservation retained"}, status_code=503)
+        return JSONResponse({"detail": "Streaming relay unavailable"}, status_code=503)
     finally:
         correlation_id.reset(token)

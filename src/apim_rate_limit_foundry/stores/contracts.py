@@ -1,3 +1,4 @@
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
 Record = dict[str, Any]
@@ -7,6 +8,9 @@ class Repository(Protocol):
     async def get(self, collection: str, record_id: str) -> Record | None: ...
     async def list(self, collection: str) -> list[Record]: ...
     async def create(self, collection: str, record_id: str, record: Record) -> Record: ...
+    async def create_if_absent(
+        self, collection: str, record_id: str, record: Record
+    ) -> tuple[Record, bool]: ...
     async def mutate(
         self, collection: str, record_id: str, record: Record | None, audit: Record
     ) -> None: ...
@@ -14,20 +18,14 @@ class Repository(Protocol):
 
 
 class CounterStore(Protocol):
-    async def reserve(
-        self, reservation_id: str, fingerprint: str, debits: list[Record], decision: Record
-    ) -> Record: ...
-    async def finalize(
-        self, reservation_id: str, debits: list[Record], fingerprint: str
-    ) -> Record: ...
-    async def begin_recovery(self) -> str: ...
-    async def recover(self, token: str, records: list[Record]) -> None: ...
+    def locked(self) -> AbstractAsyncContextManager[None]: ...
+    async def project(self, records: list[Record]) -> None: ...
     async def close(self) -> None: ...
 
 
-class RecoveryRequired(RuntimeError):  # noqa: N818
+class Conflict(ValueError):  # noqa: N818
     pass
 
 
-class Conflict(ValueError):  # noqa: N818
+class RecoveryRequired(RuntimeError):  # noqa: N818
     pass

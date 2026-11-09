@@ -9,7 +9,6 @@ class StreamBackend(BaseModel):
     model: str
     audience: HttpUrl
     api_version: str = ""
-    anthropic_version: str = ""
 
     @model_validator(mode="after")
     def fixed_https_origin(self) -> "StreamBackend":

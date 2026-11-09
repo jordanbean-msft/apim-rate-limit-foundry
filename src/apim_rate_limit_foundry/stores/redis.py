@@ -1,23 +1,24 @@
 import asyncio
 import json
 import time
-from typing import Any
-from uuid import uuid4
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from azure.identity.aio import DefaultAzureCredential
 from redis.asyncio import Redis
-from redis.exceptions import ResponseError
+from redis.exceptions import RedisError
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.stores import scripts
-from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
-from apim_rate_limit_foundry.telemetry import observe_dependency
+from apim_rate_limit_foundry.stores.contracts import Record
+from apim_rate_limit_foundry.stores.scripts import REPLACE_PROJECTION
+from apim_rate_limit_foundry.telemetry import emit, observe_dependency
 
 
 class RedisCounters:
-    """One hash tag and one eviction unit prevent cross-slot and partial-key cache loss."""
+    """Redis serializes ledger reads and stores a rebuildable projection only."""
 
-    key = "{limiter}:ledger"
+    projection_key = "{limiter}:usage-projection"
+    lock_key = "{limiter}:usage-ledger-lock"
 
     def __init__(
         self,
@@ -30,7 +31,7 @@ class RedisCounters:
         self.client = client
         self.static_client = client is not None
         self.expires = 0
-        self.lock = asyncio.Lock()
+        self.connection_lock = asyncio.Lock()
 
     @classmethod
     def from_url(cls, settings: Settings, url: str) -> "RedisCounters":
@@ -40,15 +41,12 @@ class RedisCounters:
             settings,
             None,
             Redis.from_url(
-                url,
-                decode_responses=True,
-                socket_timeout=10,
-                socket_connect_timeout=10,
+                url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10
             ),
         )
 
     async def connection(self) -> Redis:
-        async with self.lock:
+        async with self.connection_lock:
             if self.static_client:
                 assert self.client is not None
                 return self.client
@@ -71,48 +69,38 @@ class RedisCounters:
                 self.expires = token.expires_on
             return self.client
 
-    async def execute(self, script: str, *args: str) -> Any:
+    @asynccontextmanager
+    async def locked(self) -> AsyncIterator[None]:
         client = await self.connection()
+        lock = client.lock(self.lock_key, timeout=300, blocking_timeout=30)
+        if not await lock.acquire():
+            raise OSError("Could not acquire usage-ledger lock")
         try:
-            return await client.eval(script, 1, self.key, *args)
-        except ResponseError as error:
-            if "RECOVERY_REQUIRED" in str(error):
-                raise RecoveryRequired(
-                    "Cache cold start; administrator recovery required"
-                ) from error
-            if "CONFLICT" in str(error):
-                raise Conflict("Idempotency or recovery conflict") from error
-            raise
+            yield
+        finally:
+            try:
+                await lock.release()
+            except RedisError:
+                # The durable ledger is authoritative; a lost release expires by TTL.
+                emit("counter_lock_release_deferred", error_type="RedisError")
 
-    @observe_dependency("redis", "reserve")
-    async def reserve(
-        self, reservation_id: str, fingerprint: str, debits: list[Record], decision: Record
-    ) -> Record:
-        return json.loads(
-            await self.execute(
-                scripts.RESERVE,
-                reservation_id,
-                fingerprint,
-                json.dumps(debits),
-                json.dumps(decision),
-            )
+    @observe_dependency("redis", "project")
+    async def project(self, records: list[Record]) -> None:
+        projection: dict[str, int] = {}
+        for record in records:
+            data = record.get("data", {})
+            amount = data.get("cost_micro_usd")
+            if not isinstance(amount, int):
+                continue
+            for key in data.get("projection_keys", []):
+                projection[key] = projection.get(key, 0) + amount
+        client = await self.connection()
+        await client.eval(
+            REPLACE_PROJECTION,
+            1,
+            self.projection_key,
+            json.dumps(projection, separators=(",", ":")),
         )
-
-    @observe_dependency("redis", "finalize")
-    async def finalize(self, reservation_id: str, debits: list[Record], fingerprint: str) -> Record:
-        return json.loads(
-            await self.execute(scripts.FINALIZE, reservation_id, json.dumps(debits), fingerprint)
-        )
-
-    @observe_dependency("redis", "begin_recovery")
-    async def begin_recovery(self) -> str:
-        token = uuid4().hex
-        await self.execute(scripts.BEGIN_RECOVERY, token)
-        return token
-
-    @observe_dependency("redis", "recover")
-    async def recover(self, token: str, records: list[Record]) -> None:
-        await self.execute(scripts.RECOVER, token, json.dumps(records))
 
     async def close(self) -> None:
         if self.client:

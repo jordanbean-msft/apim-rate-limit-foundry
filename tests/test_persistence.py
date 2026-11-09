@@ -1,192 +1,32 @@
 import json
-import logging
-import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from redis.exceptions import ResponseError
+from azure.core.exceptions import ResourceExistsError
 
-from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.runtime import Runtime
-from apim_rate_limit_foundry.stores.redis import RedisCounters
 from apim_rate_limit_foundry.stores.table import TableRepository
-from apim_rate_limit_foundry.telemetry import JsonFormatter
 
 
-async def test_table_create_collision_read_list_and_atomic_audit() -> None:
-    client = AsyncMock()
+async def test_table_create_if_absent_is_durable_and_idempotent() -> None:
+    record = {"id": "request", "kind": "usage", "data": {"event_version": 2}}
+    client = MagicMock()
+    client.create_entity = AsyncMock(side_effect=[None, ResourceExistsError("duplicate")])
+    client.get_entity = AsyncMock(return_value={"payload": json.dumps(record)})
     repository = TableRepository(client)
-    record = {"id": "p", "name": "Policy"}
-    assert await repository.create("policies", "p", record) == record
-    entity = client.create_entity.call_args.args[0]
-    assert json.loads(entity["payload"]) == record
-    client.create_entity.side_effect = ResourceExistsError()
-    client.get_entity.return_value = entity
-    assert await repository.create("policies", "p", {"id": "p", "name": "different"}) == record
-    client.get_entity.side_effect = ResourceNotFoundError()
-    assert await repository.get("policies", "missing") is None
 
-    async def entities():
-        yield entity
-
-    client.query_entities = MagicMock(return_value=entities())
-    assert await repository.list("policies") == [record]
-    audit = {"id": "audit", "actor": "admin"}
-    await repository.mutate("policies", "p", record, audit)
-    operations = client.submit_transaction.call_args.args[0]
-    assert len(operations) == 2
-    assert operations[0][0] == "create"
-    assert operations[1][0] == "upsert"
-    assert operations[0][1]["PartitionKey"] == operations[1][1]["PartitionKey"]
-    await repository.mutate("policies", "p", None, audit)
-    tombstone = client.submit_transaction.call_args.args[0][1][1]
-    assert json.loads(tombstone["payload"])["_deleted"]
-    client.submit_transaction.side_effect = OSError("transaction failed")
-    with pytest.raises(OSError):
-        await repository.mutate("policies", "p", record, audit)
-    await repository.close()
-    client.close.assert_awaited_once()
-
-
-async def test_redis_renews_entra_token_and_recycles_connections(settings: Settings) -> None:
-    credential = AsyncMock()
-    credential.get_token.return_value = SimpleNamespace(
-        token="fresh", expires_on=time.time() + 3600
+    created, inserted = await repository.create_if_absent("usage_v2", "request", record)
+    replay, inserted_again = await repository.create_if_absent(
+        "usage_v2", "request", {"id": "request", "data": {"event_version": 1}}
     )
-    counters = RedisCounters(settings, credential)
-    previous = AsyncMock()
-    counters.client = previous
-    counters.expires = time.time() + 10
-    with patch("apim_rate_limit_foundry.stores.redis.Redis") as redis_class:
-        redis_class.return_value = AsyncMock()
-        client = await counters.connection()
-        previous.aclose.assert_awaited_once()
-        credential.get_token.assert_awaited_with("https://redis.azure.com/.default")
-        assert redis_class.call_args.kwargs["ssl"] is True
-        assert redis_class.call_args.kwargs["password"] == "fresh"
-        assert await counters.connection() is client
-        assert credential.get_token.await_count == 1
-        client.eval.side_effect = ResponseError("unrecognized failure")
-        with pytest.raises(ResponseError):
-            await counters.execute("return 1")
-        await counters.close()
+
+    assert created == replay == record
+    assert inserted is True
+    assert inserted_again is False
+    assert client.create_entity.await_count == 2
+    assert client.get_entity.await_count == 1
 
 
-@pytest.mark.parametrize(
-    ("cloud", "audience", "authority"),
-    [
-        ("commercial", "https://storage.azure.com", "https://login.microsoftonline.com"),
-        ("government", "https://storage.azure.us", "https://login.microsoftonline.us"),
-    ],
-)
-async def test_cloud_runtime_constructs_real_clients_and_closes(
-    settings: Settings,
-    cloud: str,
-    audience: str,
-    authority: str,
-) -> None:
-    production = settings.model_copy(
-        update={
-            "local_store_enabled": False,
-            "table_endpoint": "https://example.table.core.windows.net",
-            "redis_host": "redis.example",
-            "redis_username": "object-id",
-            "azure_client_id": "client-id",
-            "azure_cloud": cloud,
-            "redis_token_scope": "https://explicitly-verified.example/.default",
-        }
-    )
-    with (
-        patch("apim_rate_limit_foundry.runtime.DefaultAzureCredential") as credential_class,
-        patch("apim_rate_limit_foundry.runtime.TableClient") as table_class,
-    ):
-        credential_class.return_value = AsyncMock()
-        table_class.return_value = AsyncMock()
-        runtime = Runtime(production)
-        assert isinstance(runtime.engine.repository, TableRepository)
-        assert isinstance(runtime.engine.counters, RedisCounters)
-        assert credential_class.call_args.kwargs["managed_identity_client_id"] == "client-id"
-        assert credential_class.call_args.kwargs["authority"] == authority
-        assert table_class.call_args.kwargs["audience"] == audience
-        await runtime.close()
-        credential_class.return_value.close.assert_awaited_once()
-    with pytest.raises(ValueError, match="required"):
-        Runtime(Settings(_env_file=None))
-
-
-async def test_local_persistent_runtime_uses_explicit_emulators_without_entra() -> None:
-    settings = Settings(
-        _env_file=None,
-        local_store_enabled=True,
-        local_redis_url="redis://127.0.0.1:6379/5",
-        local_table_connection_string="UseDevelopmentStorage=true",
-        table_name="LocalLedger",
-    )
-    table, redis = AsyncMock(), AsyncMock()
-    with (
-        patch(
-            "apim_rate_limit_foundry.runtime.TableClient.from_connection_string", return_value=table
-        ) as table_factory,
-        patch(
-            "apim_rate_limit_foundry.stores.redis.Redis.from_url",
-            return_value=redis,
-        ) as redis_factory,
-        patch("apim_rate_limit_foundry.runtime.DefaultAzureCredential") as credential_factory,
-    ):
-        runtime = Runtime(settings)
-        assert isinstance(runtime.engine.repository, TableRepository)
-        assert isinstance(runtime.engine.counters, RedisCounters)
-        table_factory.assert_called_once_with(
-            conn_str="UseDevelopmentStorage=true",
-            table_name="LocalLedger",
-        )
-        redis_factory.assert_called_once()
-        assert redis_factory.call_args.args == ("redis://127.0.0.1:6379/5",)
-        assert await runtime.engine.counters.connection() is redis
-        runtime.engine.counters.expires = 0
-        assert await runtime.engine.counters.connection() is redis
-        credential_factory.assert_not_called()
-        table.create_table.assert_not_awaited()
-        await runtime.close()
-        redis.aclose.assert_awaited_once()
-
-
-def test_local_persistent_configuration_requires_both_endpoints_and_opt_in() -> None:
-    with pytest.raises(ValueError, match="required together"):
-        Settings(_env_file=None, local_store_enabled=True, local_redis_url="redis://localhost")
-    with pytest.raises(ValueError, match="required together"):
-        Settings(
-            _env_file=None,
-            local_store_enabled=True,
-            local_table_connection_string="UseDevelopmentStorage=true",
-        )
-    with pytest.raises(ValueError, match="LOCAL_STORE_ENABLED"):
-        Settings(
-            _env_file=None,
-            local_redis_url="redis://localhost",
-            local_table_connection_string="UseDevelopmentStorage=true",
-        )
-    with pytest.raises(ValueError, match="prohibited"):
-        Settings(
-            _env_file=None,
-            website_site_name="app",
-            website_auth_enabled=True,
-            local_redis_url="redis://localhost",
-            local_table_connection_string="UseDevelopmentStorage=true",
-        )
-
-
-def test_structured_logs_only_emit_allowlisted_context() -> None:
-    record = logging.LogRecord("limiter", logging.INFO, "", 0, "decision", (), None)
-    record.reservation_id = "reservation"
-    record.allowed = True
-    record.prompt = "must not log"
-    payload = json.loads(JsonFormatter().format(record))
-    assert payload == {
-        "level": "INFO",
-        "event": "decision",
-        "reservation_id": "reservation",
-        "allowed": True,
-    }
+def test_table_entity_key_hashes_collection_and_record_identity() -> None:
+    entity = TableRepository.entity("usage_v2", "request-123", {"id": "record"})
+    assert entity["PartitionKey"] == "ledger"
+    assert entity["RowKey"] != "request-123"
+    assert entity["collection"] == "usage_v2"

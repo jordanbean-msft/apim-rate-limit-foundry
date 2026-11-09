@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Save sample policies/prices (without this flag, print the records only)",
+        help="Save sample configuration (without this flag, print the records only)",
     )
     args = parser.parse_args()
     settings = SeedSettings()
@@ -59,7 +59,7 @@ def main() -> None:
         }
     examples = Path(__file__).resolve().parents[1] / "examples"
     with httpx.Client(timeout=30, follow_redirects=False, headers=headers) as client:
-        for collection in ("prices", "policies"):
+        for collection in ("organizations", "assignments", "prices", "budgets"):
             records = json.loads((examples / f"{collection}.json").read_text())
             for record in records:
                 record_id = quote(record["id"], safe="")

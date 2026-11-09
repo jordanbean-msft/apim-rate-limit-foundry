@@ -18,19 +18,9 @@ class ModelDeployment(StreamBackend):
         paths = {
             "openai-chat": f"/openai/deployments/{self.model}/chat/completions",
             "openai-responses": "/openai/v1/responses",
-            "anthropic-messages": "/anthropic/v1/messages",
         }
         if self.path != paths[self.api_protocol]:
             raise ValueError("Model path must match its protocol and provider deployment")
-        if self.api_protocol == "anthropic-messages":
-            if (
-                re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", self.anthropic_version) is None
-                or self.api_version
-            ):
-                raise ValueError("Messages requires anthropic_version, not api_version")
-        elif (
-            re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.api_version) is None
-            or self.anthropic_version
-        ):
-            raise ValueError("OpenAI models require api_version, not anthropic_version")
+        if self.api_version and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.api_version) is None:
+            raise ValueError("OpenAI api_version must be a safe identifier")
         return self

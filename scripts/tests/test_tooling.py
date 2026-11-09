@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from scripts import configure_ci, seed
+from scripts.archive_legacy_config import archive
 
 
 def test_seed_dry_run_never_writes(monkeypatch, capsys) -> None:
@@ -42,14 +43,44 @@ def test_seed_apply_uses_access_token_and_real_collection_routes(monkeypatch) ->
 
     seed.main()
 
-    anthropic_price = next(
-        request for request in requests if request.url.path == "/api/prices/sample-anthropic-v1"
+    saved_price = json.loads(
+        next(
+            request for request in requests if request.url.path == "/api/prices/sample-model-v1"
+        ).content
     )
-    saved_price = json.loads(anthropic_price.content)
-    assert saved_price["cache_write_5m_per_million"] == "3.75"
-    assert saved_price["cache_write_1h_per_million"] == "6.00"
+    assert saved_price["cached_input_per_million"] == "0.20"
+    assert {request.url.path.split("/")[2] for request in requests} == {
+        "organizations",
+        "assignments",
+        "prices",
+        "budgets",
+    }
     assert all(request.headers["Authorization"] == "Bearer test-token" for request in requests)
-    assert str(requests[0].url) == "https://gateway.example/api/prices/sample-foundry-v1"
+    assert str(requests[0].url) == "https://gateway.example/api/organizations/engineering"
+
+
+def test_archive_preserves_legacy_values_and_refuses_overwrite(tmp_path) -> None:
+    source, destination = tmp_path / "source.json", tmp_path / "archive.json"
+    original = {"usage": [{"id": "legacy", "cost": 123}]}
+    source.write_text(json.dumps(original))
+
+    archive(source, destination)
+
+    assert json.loads(destination.read_text())["data"] == original
+    assert json.loads(source.read_text()) == original
+    assert destination.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        archive(source, destination)
+
+
+def test_archive_rejects_non_collection_without_creating_output(tmp_path) -> None:
+    source, destination = tmp_path / "source.json", tmp_path / "archive.json"
+    source.write_text("null")
+
+    with pytest.raises(ValueError, match="object or array"):
+        archive(source, destination)
+
+    assert not destination.exists()
 
 
 def test_seed_cannot_send_local_admin_headers_to_cloud(monkeypatch) -> None:

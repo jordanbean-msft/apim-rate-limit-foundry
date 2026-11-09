@@ -1,0 +1,32 @@
+[
+  {
+    "id": "developer-monthly",
+    "tenant_id": "local-tenant",
+    "name": "Developer monthly USD",
+    "subject_type": "user",
+    "subject_id": "local-developer",
+    "model": "*",
+    "limit_micro_usd": 80000000,
+    "enabled": true
+  },
+  {
+    "id": "platform-monthly",
+    "tenant_id": "local-tenant",
+    "name": "Platform monthly USD",
+    "subject_type": "team",
+    "subject_id": "platform",
+    "model": "*",
+    "limit_micro_usd": 800000000,
+    "enabled": true
+  },
+  {
+    "id": "engineering-monthly",
+    "tenant_id": "local-tenant",
+    "name": "Engineering monthly USD",
+    "subject_type": "department",
+    "subject_id": "engineering",
+    "model": "*",
+    "limit_micro_usd": 8000000000,
+    "enabled": true
+  }
+]

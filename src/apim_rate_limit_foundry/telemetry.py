@@ -18,58 +18,42 @@ LOGGER_NAME = "apim_rate_limit_foundry"
 correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _SAFE_SUBSCRIPTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}\Z")
-_CALLER_REF = re.compile(r"[0-9a-f]{64}\Z")
 _FIELDS = frozenset(
     {
         "correlation_id",
         "event_name",
         "event_version",
-        "reservation_id",
+        "event_id",
+        "request_id",
+        "tenant_ref",
+        "user_ref",
+        "team_id",
+        "department_id",
+        "budget_id",
+        "budget_ids",
+        "denied_budget_ids",
+        "subject_type",
+        "subject_id",
+        "month",
+        "limit_micro_usd",
+        "spent_micro_usd",
+        "remaining_micro_usd",
+        "business_unit",
+        "cost_center",
         "allowed",
-        "service",
         "model",
         "api_protocol",
         "error_type",
         "operation",
         "status",
         "reason",
-        "remaining",
-        "estimated",
         "retry_after",
-        "matched_policy_ids",
-        "denied_policy_ids",
-        "policy_id",
-        "metric",
-        "amount",
-        "applied_amount",
-        "reserved_amount",
-        "refunded_amount",
-        "policy_outcome",
-        "limit",
         "reset_at",
-        "price_id",
         "price_version",
         "cost_micro_usd",
-        "reserved_cost_micro_usd",
-        "refunded_cost_micro_usd",
-        "cached_input_reported",
-        "cache_write_input_reported",
         "input_tokens",
         "output_tokens",
         "cached_input_tokens",
-        "cache_write_input_tokens_5m",
-        "cache_write_input_tokens_1h",
-        "pages",
-        "text_records",
-        "requests",
-        "input_per_million",
-        "output_per_million",
-        "cached_input_per_million",
-        "cache_write_5m_per_million",
-        "cache_write_1h_per_million",
-        "per_page",
-        "per_text_record",
-        "per_request",
         "collection",
         "action",
         "records",
@@ -78,17 +62,12 @@ _FIELDS = frozenset(
         "http_method",
         "http_status",
         "route",
-        "past_due",
         "replayed",
-        "stage",
-        "caller_ref",
         "subscription_id",
-        "application_name",
         "streaming",
-        "settlement_source",
     }
 )
-_TEXT_FIELDS = frozenset({"application_name", "route", "reset_at"})
+_TEXT_FIELDS = frozenset({"route", "reset_at", "month", "business_unit", "cost_center"})
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _LOG_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
@@ -108,28 +87,17 @@ _EVENTS = frozenset(
         "configuration_written",
         "durable_record_read",
         "durable_record_replayed",
-        "rate_decision",
-        "reservation_policy_debit",
-        "settlement_recorded",
-        "settlement_price",
-        "settlement_policy_debit",
-        "settlement_pending",
-        "reconciliation_completed",
-        "recovery_completed",
-        "recovery_started",
-        "operation_ownership",
+        "budget_decision",
+        "budget_status",
+        "usage_recorded",
+        "usage_event_publish_failed",
+        "stream_usage_unknown",
+        "usage_record_failed",
+        "counter_projection_rebuilt",
+        "usage_projection_rebuild_deferred",
+        "counter_lock_release_deferred",
         "idempotency_conflict",
-        "reservation_requested",
-        "reservation_intent_replayed",
-        "counter_reservation_evaluated",
-        "settlement_requested",
-        "reconciliation_timer_started",
-        "reconciliation_timer_completed",
-        "reconciliation_timer_failed",
-        "stream_dispatch_started",
-        "stream_usage_observed",
-        "stream_settlement_completed",
-        "stream_settlement_pending",
+        "dashboard_unavailable",
     }
 )
 
@@ -151,15 +119,11 @@ def safe_attributes(values: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in values.items():
         if key not in _FIELDS or value is None:
             continue
-        if key == "caller_ref" and not (isinstance(value, str) and _CALLER_REF.fullmatch(value)):
-            continue
         if key == "subscription_id" and not (
             isinstance(value, str) and _SAFE_SUBSCRIPTION_ID.fullmatch(value)
         ):
             continue
         if key == "streaming" and not isinstance(value, bool):
-            continue
-        if key == "settlement_source" and value != "provider_stream":
             continue
         if isinstance(value, bool | int):
             result[key] = value
@@ -172,7 +136,10 @@ def safe_attributes(values: Mapping[str, Any]) -> dict[str, Any]:
                     result[key] = value
             elif safe_id(value):
                 result[key] = value
-        elif key in ("matched_policy_ids", "denied_policy_ids") and isinstance(value, list):
+        elif key in (
+            "budget_ids",
+            "denied_budget_ids",
+        ) and isinstance(value, list):
             result[key] = [item for item in value[:128] if isinstance(item, str) and safe_id(item)]
     return result
 
@@ -184,7 +151,7 @@ def emit(event: str, *, level: int = logging.INFO, **attributes: Any) -> None:
             **attributes,
             "correlation_id": correlation_id.get(),
             "event_name": name,
-            "event_version": 1,
+            "event_version": 2 if name == "usage_recorded" else 1,
         }
     )
     logging.getLogger(LOGGER_NAME).log(level, name, extra=context)
@@ -266,7 +233,6 @@ def observe_operation(
                     operation=operation,
                     error_type=type(error).__name__,
                     status="error",
-                    **({"allowed": False} if operation == "reserve" else {}),
                     duration_ms=round((perf_counter() - start) * 1000, 3),
                 )
                 raise

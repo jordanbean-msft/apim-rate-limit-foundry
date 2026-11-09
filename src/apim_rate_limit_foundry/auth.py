@@ -58,6 +58,16 @@ def authenticate(request: Request, settings: Settings) -> Identity:
                 values.get("roles", [])
                 + values.get("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", [])
             )
+            if "RateLimit.Gateway" in roles:
+                client_ids = {
+                    value.casefold()
+                    for claim_type in ("azp", "appid")
+                    for value in values.get(claim_type, [])
+                }
+                if not settings.gateway_client_id or client_ids != {
+                    settings.gateway_client_id.casefold()
+                }:
+                    raise ValueError("Unexpected gateway client")
         except (ValueError, KeyError, TypeError, binascii.Error) as error:
             raise HTTPException(401, "Invalid platform principal") from error
     else:

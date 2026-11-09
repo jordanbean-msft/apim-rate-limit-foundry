@@ -4,12 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BeforeValidator, Field
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:@*-]+$")]
-SubscriptionIdentifier = Annotated[
-    str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:@-]+$")
-]
-Service = Literal["foundry", "document-intelligence", "language"]
-ApiProtocol = Literal["openai-chat", "openai-responses", "anthropic-messages"]
-Amount = Annotated[int, Field(strict=True, ge=0, le=9_000_000_000_000)]
+ApiProtocol = Literal["openai-chat", "openai-responses"]
 
 
 def _decimal_string(value: object) -> object:

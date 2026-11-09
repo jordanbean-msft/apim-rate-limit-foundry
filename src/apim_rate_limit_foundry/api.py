@@ -1,34 +1,20 @@
+import csv
+import io
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
-from uuid import uuid4
 
 from azure.core.exceptions import AzureError
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from fastapi.responses import JSONResponse, Response
 from redis.exceptions import RedisError
 
 from apim_rate_limit_foundry.auth import Identity, authenticate
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine, event
-from apim_rate_limit_foundry.models import (
-    Assignment,
-    Contract,
-    Decision,
-    OperationBind,
-    OperationCheck,
-    Policy,
-    Price,
-    Release,
-    Reserve,
-    Settle,
-    UsageSummary,
-)
-from apim_rate_limit_foundry.models.caller_usage import CallerUsage
-from apim_rate_limit_foundry.reports.caller_usage import CallerUsageService
+from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecordRequest
 from apim_rate_limit_foundry.reports.dashboard import DashboardPeriod, DashboardService
-from apim_rate_limit_foundry.reports.usage_summary import UsageSummaryService
 from apim_rate_limit_foundry.request_telemetry import RequestTelemetryMiddleware
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
@@ -58,7 +44,7 @@ def create_app(
         if runtime:
             await runtime.close()
 
-    app = FastAPI(title="AI Rate Limiter", lifespan=lifespan)
+    app = FastAPI(title="AI Monthly Budget Gateway", lifespan=lifespan)
     app.add_middleware(RequestTelemetryMiddleware)
     app.state.get_engine = get_engine
 
@@ -87,9 +73,7 @@ def create_app(
         )
         return JSONResponse(
             status_code=503,
-            content={
-                "detail": "Limiter unavailable; admission denied; recovery may be required",
-            },
+            content={"detail": "Budget service unavailable; request denied"},
         )
 
     for error_type in (OSError, AzureError, RedisError, RecoveryRequired):
@@ -97,11 +81,9 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def unexpected_handler(request: Request, error: Exception) -> JSONResponse:
-        # ServerErrorMiddleware handles unexpected failures outside user middleware.
-        # Retain correlation on its response without disclosing exception messages.
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal limiter error; admission denied"},
+            content={"detail": "Internal budget service error"},
             headers={"X-Correlation-ID": request.state.correlation_id},
         )
 
@@ -128,41 +110,30 @@ def create_app(
             emit("dashboard_unavailable", level=logging.WARNING, error_type=type(error).__name__)
             raise HTTPException(503, "Dashboard telemetry is unavailable. Retry later.") from error
 
-    @app.post("/api/decisions/reserve")
-    async def reserve(body: Reserve, actor: Auth) -> Decision:
+    @app.post("/api/budgets/check")
+    async def check_budget(body: BudgetCheck, actor: Auth) -> Record:
         actor.require("RateLimit.Gateway")
-        return await get_engine().reserve(body)
+        return await get_engine().check(body)
 
-    @app.post("/api/decisions/settle")
-    async def settle(body: Settle, actor: Auth) -> Record:
+    @app.post("/api/usage/record")
+    async def record_usage(body: UsageRecordRequest, actor: Auth) -> Record:
         actor.require("RateLimit.Gateway")
-        return await get_engine().settle(body)
+        return await get_engine().record_usage(body)
 
-    @app.post("/api/decisions/release")
-    async def release(body: Release, actor: Auth) -> Record:
-        actor.require("RateLimit.Gateway")
-        return await get_engine().release(body.reservation_id)
-
-    @app.post("/api/operations/bind")
-    async def bind(body: OperationBind, actor: Auth) -> Record:
-        actor.require("RateLimit.Gateway")
-        return await get_engine().bind_operation(body.model_dump(mode="json"))
-
-    @app.post("/api/operations/check")
-    async def check(body: OperationCheck, actor: Auth) -> Record:
-        actor.require("RateLimit.Gateway")
-        return await get_engine().check_operation(body.model_dump(mode="json"))
-
-    @app.post("/api/reconciliation/recover")
-    async def recover(actor: Auth) -> Record:
+    @app.post("/api/counters/rebuild")
+    async def rebuild_counters(actor: Auth) -> Record:
         actor.require("RateLimit.Admin")
-        return await get_engine().recover()
+        count = await get_engine().rebuild_counters()
+        emit("counter_projection_rebuilt", records=count)
+        return {"records": count, "status": "rebuilt"}
 
     @app.get("/api/models")
     async def registered_models(actor: Auth) -> list[Record]:
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        if "RateLimit.Admin" not in actor.roles and not await reader_assignments(actor):
-            return []
+        if "RateLimit.Admin" not in actor.roles:
+            assignment = await get_engine()._assignment(actor.tenant_id, actor.principal_id)
+            if assignment is None:
+                return []
         return [
             {
                 "id": key,
@@ -176,195 +147,90 @@ def create_app(
             for key, deployment in sorted(config.model_registry.items())
         ]
 
-    @app.get("/api/usage/summary")
-    async def usage_summary(
-        actor: Auth,
-        period: Literal["hour", "day"] = "day",
-    ) -> list[UsageSummary]:
-        """Derive UTC admission-time ledger totals, applying available settlements.
-
-        Unresolved admitted requests contribute conservative reserved maxima.
-        These are not live Redis balances; unconfirmed intents without an
-        admission event are excluded.
-        """
+    @app.get("/api/usage")
+    async def usage(actor: Auth) -> list[Record]:
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        return await UsageSummaryService(get_engine().repository).summarize(
-            period,
-            actor.tenant_id,
-            actor.principal_id,
-            "RateLimit.Admin" in actor.roles,
+        return await get_engine().usage(
+            actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
         )
 
-    @app.get("/api/usage/callers")
-    async def caller_usage(
-        actor: Auth,
-        period: Literal["hour", "day"] = "day",
-    ) -> list[CallerUsage]:
-        """UTC application-subscription totals; actuals replace conservative liability.
-
-        Identity is selected only by the authenticated actor, never by query parameters.
-        Only durable usage events are counted; validation/configuration failures without
-        such an event remain observable through telemetry, not this ledger report.
-        """
+    @app.get("/api/budgets/status")
+    async def budget_status(actor: Auth) -> list[Record]:
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        return await CallerUsageService(get_engine().repository).summarize(
-            period, actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
+        return await get_engine().budget_status(
+            actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
         )
 
-    async def reader_assignments(actor: Identity) -> list[Assignment]:
-        assignments: list[Assignment] = []
-        for record in await get_engine().configuration("assignments"):
-            try:
-                assignment = Assignment.model_validate(record)
-            except ValidationError:
-                # Legacy principal-scoped assignments are not app access grants.
-                continue
-            if (
-                assignment.tenant_id == actor.tenant_id
-                and actor.principal_id in assignment.reader_principal_ids
-            ):
-                assignments.append(assignment)
-        return assignments
-
-    @app.get("/api/subscriptions")
-    async def subscriptions(actor: Auth) -> list[Record]:
+    @app.get("/api/chargeback", response_model=None)
+    async def chargeback(
+        actor: Auth,
+        month: str,
+        format: Literal["json", "csv"] = "json",
+    ) -> list[Record] | Response:
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        allowed = None
-        if "RateLimit.Admin" not in actor.roles:
-            allowed = {
-                (assignment.tenant_id, assignment.subscription_id)
-                for assignment in await reader_assignments(actor)
-            }
-        return [
-            {
-                "id": subscription_id,
-                "tenant_id": application.tenant_id,
-                "display_name": application.display_name,
-            }
-            for subscription_id, application in sorted(config.application_registry.items())
-            if allowed is None or (application.tenant_id, subscription_id) in allowed
+        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None:
+            raise HTTPException(400, "Month must use YYYY-MM")
+        principal = None if "RateLimit.Admin" in actor.roles else actor.principal_id
+        rows = await get_engine().chargeback(actor.tenant_id, month, principal)
+        if format == "json":
+            return rows
+        output = io.StringIO(newline="")
+        fields = [
+            "business_unit",
+            "cost_center",
+            "department_id",
+            "team_id",
+            "user_ref",
+            "subscription_id",
+            "model",
+            "month",
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "cost_micro_usd",
+            "unknown_requests",
         ]
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="chargeback-{month}.csv"'},
+        )
 
     @app.get("/api/{collection}")
     async def listing(collection: str, actor: Auth) -> list[Record]:
-        if collection not in (
-            "policies",
-            "prices",
-            "assignments",
-            "usage",
-            "audit",
-            "reconciliation",
-        ):
+        if collection not in ("budgets", "organizations", "assignments", "prices"):
             raise HTTPException(404)
-        actor.require("RateLimit.Admin", "RateLimit.Reader")
-        service = get_engine()
-        admin = "RateLimit.Admin" in actor.roles
-        if collection in ("usage", "audit", "reconciliation"):
-            return await service.report(collection, actor.tenant_id, actor.principal_id, admin)
-        records = await service.configuration(collection)
-        if admin:
-            if collection in ("policies", "assignments"):
-                return [
-                    record
-                    for record in records
-                    if record.get("subscription_id") and "principal_id" not in record
-                ]
-            return records
-        if collection == "prices":
-            return records if admin or await reader_assignments(actor) else []
-        visible_assignments = await reader_assignments(actor)
-        if collection == "assignments":
-            return [
-                assignment.model_dump(mode="json", exclude_none=True)
-                for assignment in visible_assignments
-            ]
-        assignments = []
-        for raw in await service.configuration("assignments"):
-            try:
-                assignments.append(Assignment.model_validate(raw))
-            except ValidationError:
-                continue
-        bound = {p for a in assignments for p in a.policy_ids}
-        assigned = {p for a in visible_assignments for p in a.policy_ids}
-        subscriptions = {a.subscription_id for a in visible_assignments}
-        policies: list[Policy] = []
-        for raw in records:
-            try:
-                policies.append(Policy.model_validate(raw))
-            except ValidationError:
-                # Legacy principal-scoped policies are deliberately not widened.
-                continue
+        actor.require("RateLimit.Admin")
         return [
-            policy.model_dump(mode="json")
-            for policy in policies
-            if policy.tenant_id in ("*", actor.tenant_id)
-            and any(
-                policy.subscription_id in ("*", subscription_id)
-                for subscription_id in subscriptions
-            )
-            and (policy.id not in bound or policy.id in assigned)
+            row
+            for row in await get_engine().configuration(collection)
+            if row.get("tenant_id", actor.tenant_id) == actor.tenant_id
         ]
 
-    models: dict[str, type[Contract]] = {
-        "policies": Policy,
-        "prices": Price,
-        "assignments": Assignment,
-    }
-
-    async def save(collection: str, record_id: str, body: Contract, actor: Identity) -> Record:
+    @app.put("/api/{collection}/{record_id}")
+    async def save_configuration(
+        collection: str, record_id: str, body: Record, actor: Auth
+    ) -> Record:
         actor.require("RateLimit.Admin")
-        record = body.model_dump(mode="json")
-        if isinstance(body, Assignment) and body.display_label is None:
-            record.pop("display_label")
-        if record["id"] != record_id:
-            raise HTTPException(400, "Path ID must match body ID")
-        audit = event(
-            "configuration",
-            uuid4().hex,
-            actor.tenant_id,
-            actor.principal_id,
-            {
-                "action": "put",
-                "collection": collection,
-                "record_id": record_id,
-                "actor_id": actor.principal_id,
-                "record": record,
-            },
+        if collection not in ("budgets", "organizations", "assignments", "prices"):
+            raise HTTPException(404)
+        result = await get_engine().save_configuration(
+            collection, record_id, body, actor.tenant_id, actor.principal_id
         )
-        await get_engine().repository.mutate(collection, record_id, record, audit)
         emit("configuration_written", action="put", collection=collection, status="ok")
-        return record
-
-    @app.put("/api/policies/{record_id}")
-    async def put_policy(record_id: str, body: Policy, actor: Auth) -> Record:
-        return await save("policies", record_id, body, actor)
-
-    @app.put("/api/prices/{record_id}")
-    async def put_price(record_id: str, body: Price, actor: Auth) -> Record:
-        return await save("prices", record_id, body, actor)
-
-    @app.put("/api/assignments/{record_id}")
-    async def put_assignment(record_id: str, body: Assignment, actor: Auth) -> Record:
-        return await save("assignments", record_id, body, actor)
+        return result
 
     @app.delete("/api/{collection}/{record_id}")
-    async def delete(collection: str, record_id: str, actor: Auth) -> Record:
+    async def delete_configuration(collection: str, record_id: str, actor: Auth) -> Record:
         actor.require("RateLimit.Admin")
-        if collection not in models:
+        if collection not in ("budgets", "organizations", "assignments", "prices"):
             raise HTTPException(404)
-        audit = event(
-            "configuration",
-            uuid4().hex,
-            actor.tenant_id,
-            actor.principal_id,
-            {
-                "action": "delete",
-                "collection": collection,
-                "record_id": record_id,
-                "actor_id": actor.principal_id,
-            },
+        await get_engine().delete_configuration(
+            collection, record_id, actor.tenant_id, actor.principal_id
         )
-        await get_engine().repository.mutate(collection, record_id, None, audit)
         emit("configuration_written", action="delete", collection=collection, status="ok")
         return {"deleted": record_id}
 

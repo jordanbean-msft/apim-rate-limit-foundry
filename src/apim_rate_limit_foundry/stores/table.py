@@ -45,15 +45,22 @@ class TableRepository:
 
     @observe_dependency("table", "create")
     async def create(self, collection: str, record_id: str, record: Record) -> Record:
+        saved, _ = await self.create_if_absent(collection, record_id, record)
+        return saved
+
+    @observe_dependency("table", "create_if_absent")
+    async def create_if_absent(
+        self, collection: str, record_id: str, record: Record
+    ) -> tuple[Record, bool]:
         try:
             await self.client.create_entity(self.entity(collection, record_id, record))
-            return record
+            return record, True
         except ResourceExistsError:
             emit("durable_record_replayed", collection=collection, replayed=True)
             existing = await self.get(collection, record_id)
             if existing is None:
                 raise RuntimeError("Durable record disappeared") from None
-            return existing
+            return existing, False
 
     @observe_dependency("table", "mutate")
     async def mutate(

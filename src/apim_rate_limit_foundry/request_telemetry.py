@@ -18,17 +18,15 @@ _TRACEPARENT = re.compile(r"00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}\Z")
 _ROUTES = frozenset(
     {
         "/api/health",
-        "/api/decisions/reserve",
-        "/api/decisions/settle",
-        "/api/decisions/release",
-        "/api/operations/bind",
-        "/api/operations/check",
-        "/api/reconciliation/recover",
-        "/api/usage/summary",
+        "/api/dashboard",
+        "/api/budgets/check",
+        "/api/usage/record",
+        "/api/counters/rebuild",
+        "/api/models",
+        "/api/usage",
+        "/api/budgets/status",
+        "/api/chargeback",
         "/api/{collection}",
-        "/api/policies/{record_id}",
-        "/api/prices/{record_id}",
-        "/api/assignments/{record_id}",
         "/api/{collection}/{record_id}",
     }
 )

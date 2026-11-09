@@ -5,10 +5,8 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from apim_rate_limit_foundry.models.application_registration import ApplicationRegistration
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
-from apim_rate_limit_foundry.models.stream_backend import StreamBackend
-from apim_rate_limit_foundry.models.types import ApiProtocol, SubscriptionIdentifier
+from apim_rate_limit_foundry.models.types import ApiProtocol
 
 
 class Settings(BaseSettings):
@@ -34,17 +32,14 @@ class Settings(BaseSettings):
     website_auth_enabled: bool = False
     max_input_tokens: int = 131072
     max_output_tokens: int = 32768
-    max_pages: int = 2000
-    max_text_records: int = 1000
     applicationinsights_connection_string: SecretStr | None = None
     telemetry_enabled: bool = True
     otel_service_name: str = "rate-limiter"
     otel_traces_sampler_arg: float = Field(default=1.0, ge=0, le=1)
-    stream_backends: dict[ApiProtocol, StreamBackend] = Field(default_factory=dict)
     model_registry: dict[str, ModelDeployment] = Field(default_factory=dict)
-    application_registry: dict[SubscriptionIdentifier, ApplicationRegistration] = Field(
-        default_factory=dict
-    )
+    apim_usage_event_url: str = ""
+    api_audience: str = ""
+    gateway_client_id: str = ""
     stream_max_event_bytes: int = Field(default=65536, ge=8192, le=1048576)
     stream_max_body_bytes: int = Field(default=131072, ge=1024, le=1048576)
     stream_timeout_seconds: int = Field(default=180, ge=10, le=210)
@@ -68,8 +63,8 @@ class Settings(BaseSettings):
             raise ValueError("Local bypass is prohibited in Azure")
         if self.in_azure and not self.website_auth_enabled:
             raise ValueError("Platform Easy Auth must be required")
-        if self.in_azure and not self.application_registry:
-            raise ValueError("APPLICATION_REGISTRY is required in Azure")
+        if self.in_azure and not self.model_registry:
+            raise ValueError("MODEL_REGISTRY is required in Azure")
         if has_local_redis != has_local_table:
             raise ValueError(
                 "LOCAL_REDIS_URL and LOCAL_TABLE_CONNECTION_STRING are required together"
@@ -114,30 +109,17 @@ class Settings(BaseSettings):
                 or deployment.max_output_tokens > self.max_output_tokens
             ):
                 raise ValueError("Registered model limits must not exceed the Function limits")
-            if self.azure_cloud == "government":
-                if protocol == "anthropic-messages":
-                    raise ValueError("Anthropic models are not enabled in Azure Government")
-                if (
-                    not deployment.endpoint.host
-                    or not deployment.endpoint.host.endswith(
-                        (".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us")
-                    )
-                    or deployment.audience.host != "cognitiveservices.azure.us"
-                ):
-                    raise ValueError(
-                        "Government models require sovereign endpoints and Cognitive Services audience"
-                    )
+            if self.azure_cloud == "government" and (
+                not deployment.endpoint.host
+                or not deployment.endpoint.host.endswith(
+                    (".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us")
+                )
+                or deployment.audience.host != "cognitiveservices.azure.us"
+            ):
+                raise ValueError(
+                    "Government models require sovereign endpoints and Cognitive Services audience"
+                )
         return self
-
-    def application_name(self, tenant_id: str, subscription_id: str) -> str:
-        if not self.application_registry:
-            if self.local_auth_enabled and self.local_store_enabled and not self.in_azure:
-                return subscription_id
-            raise ValueError("APPLICATION_REGISTRY is required for application accounting")
-        application = self.application_registry.get(subscription_id)
-        if application is None or application.tenant_id != tenant_id:
-            raise ValueError("Unknown application subscription or tenant")
-        return application.display_name
 
     def registered_model(self, protocol: ApiProtocol, alias: str) -> ModelDeployment:
         deployment = self.model_registry.get(f"{protocol}:{alias}")

@@ -1,9 +1,9 @@
 import asyncio
-import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from copy import deepcopy
-from uuid import uuid4
 
-from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
+from apim_rate_limit_foundry.stores.contracts import Record
 
 
 class MemoryRepository:
@@ -21,20 +21,31 @@ class MemoryRepository:
 
     async def list(self, collection: str) -> list[Record]:
         self.check()
-        return [deepcopy(v) for (c, _), v in self.records.items() if c == collection]
+        return [deepcopy(value) for (name, _), value in self.records.items() if name == collection]
 
     async def create(self, collection: str, record_id: str, record: Record) -> Record:
+        saved, _ = await self.create_if_absent(collection, record_id, record)
+        return saved
+
+    async def create_if_absent(
+        self, collection: str, record_id: str, record: Record
+    ) -> tuple[Record, bool]:
         self.check()
-        return deepcopy(self.records.setdefault((collection, record_id), deepcopy(record)))
+        key = (collection, record_id)
+        existing = self.records.get(key)
+        if existing is not None:
+            return deepcopy(existing), False
+        self.records[key] = deepcopy(record)
+        return deepcopy(record), True
 
     async def mutate(
         self, collection: str, record_id: str, record: Record | None, audit: Record
     ) -> None:
         self.check()
-        if record is None:
-            self.records.pop((collection, record_id), None)
-        else:
-            self.records[collection, record_id] = deepcopy(record)
+        key = (collection, record_id)
+        self.records[key] = (
+            deepcopy(record) if record is not None else {"id": record_id, "_deleted": True}
+        )
         self.records["audit", audit["id"]] = deepcopy(audit)
 
     async def close(self) -> None:
@@ -42,99 +53,27 @@ class MemoryRepository:
 
 
 class MemoryCounters:
-    def __init__(self, ready: bool = True) -> None:
-        self.ready = ready
-        self.token = ""
-        self.recovering_until = 0.0
+    def __init__(self) -> None:
         self.counts: dict[str, int] = {}
-        self.reservations: dict[str, Record] = {}
         self.lock = asyncio.Lock()
+        self.ready = True
 
-    def check(self) -> None:
+    @asynccontextmanager
+    async def locked(self) -> AsyncIterator[None]:
         if not self.ready:
-            raise RecoveryRequired("Redis recovery required")
-
-    async def reserve(
-        self, reservation_id: str, fingerprint: str, debits: list[Record], decision: Record
-    ) -> Record:
+            raise OSError("Counter projection unavailable")
         async with self.lock:
-            self.check()
-            if old := self.reservations.get(reservation_id):
-                if old["fingerprint"] != fingerprint:
-                    raise Conflict("Request ID reused with different request")
-                return deepcopy(old["decision"])
-            allowed = all(self.counts.get(d["key"], 0) + d["amount"] <= d["limit"] for d in debits)
-            blocked = [d for d in debits if self.counts.get(d["key"], 0) + d["amount"] > d["limit"]]
-            remaining = min(
-                d["limit"] - self.counts.get(d["key"], 0) - (d["amount"] if allowed else 0)
-                for d in debits
-            )
-            result = {
-                **decision,
-                "allowed": allowed,
-                "remaining": max(0, remaining),
-                "reason": "reserved" if allowed else "budget_exhausted",
-                "reset_at": max(d["reset_at"] for d in blocked)
-                if blocked
-                else decision["reset_at"],
-                "matched_policy_ids": [d["policy_id"] for d in debits],
-                "denied_policy_ids": [d["policy_id"] for d in blocked],
-                "remaining_by_policy": {
-                    d["policy_id"]: max(
-                        0,
-                        d["limit"] - self.counts.get(d["key"], 0) - (d["amount"] if allowed else 0),
-                    )
-                    for d in debits
-                },
-            }
-            self.reservations[reservation_id] = {
-                "fingerprint": fingerprint,
-                "debits": debits if allowed else [],
-                "decision": result,
-                "final": "",
-            }
-            if allowed:
-                for d in debits:
-                    self.counts[d["key"]] = self.counts.get(d["key"], 0) + d["amount"]
-            return deepcopy(result)
+            yield
 
-    async def finalize(self, reservation_id: str, debits: list[Record], fingerprint: str) -> Record:
-        async with self.lock:
-            self.check()
-            old = self.reservations.get(reservation_id)
-            if old is None or not old["decision"]["allowed"]:
-                raise Conflict("Unknown reservation")
-            if old["final"]:
-                if old["final"] != fingerprint:
-                    raise Conflict("Reservation already finalized differently")
-                return deepcopy(old)
-            for before, after in zip(old["debits"], debits, strict=True):
-                self.counts[before["key"]] += after["amount"] - before["amount"]
-            old["debits"] = deepcopy(debits)
-            old["final"] = fingerprint
-            return deepcopy(old)
-
-    async def begin_recovery(self) -> str:
-        async with self.lock:
-            if self.token and self.recovering_until > time.monotonic():
-                raise Conflict("Recovery already in progress")
-            self.ready = False
-            self.token = uuid4().hex
-            self.recovering_until = time.monotonic() + 300
-            return self.token
-
-    async def recover(self, token: str, records: list[Record]) -> None:
-        async with self.lock:
-            if token != self.token:
-                raise Conflict("Recovery lock lost")
-            self.counts.clear()
-            self.reservations.clear()
-            for record in records:
-                self.reservations[record["id"]] = deepcopy(record["counter"])
-                for d in record["counter"]["debits"]:
-                    self.counts[d["key"]] = self.counts.get(d["key"], 0) + d["amount"]
-            self.token = ""
-            self.ready = True
+    async def project(self, records: list[Record]) -> None:
+        self.counts.clear()
+        for record in records:
+            data = record.get("data", {})
+            amount = data.get("cost_micro_usd")
+            if not isinstance(amount, int):
+                continue
+            for key in data.get("projection_keys", []):
+                self.counts[key] = self.counts.get(key, 0) + amount
 
     async def close(self) -> None:
         pass
