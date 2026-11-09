@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@v8.0.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - uses: hashicorp/setup-terraform@v3
       - uses: Azure/setup-azd@v2
       - uses: azure/login@v2
