@@ -159,6 +159,30 @@
       "problemMatcher": []
     },
     {
+      "label": "seed:preview",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "python", "scripts/seed.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "archive:legacy",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run", "python", "scripts/archive_legacy_config.py",
+        "--input", "${input:legacyExport}", "--output", "${input:legacyArchive}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "format:check",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "ruff", "format", "--check", "."],
+      "problemMatcher": []
+    },
+    {
       "label": "web:build",
       "type": "process",
       "command": "npm",
@@ -231,10 +255,14 @@
     {
       "label": "validate",
       "dependsOn": [
-        "lint", "type-check", "test-strict", "web:lint", "web:type-check",
+        "lint", "format:check", "type-check", "test-strict", "web:lint", "web:type-check",
         "web:test", "web:build", "infra:fmt", "infra:validate", "infra:test", "gateway:test"
       ],
       "problemMatcher": []
     }
+  ],
+  "inputs": [
+    {"id": "legacyExport", "type": "promptString", "description": "Path to exported legacy JSON"},
+    {"id": "legacyArchive", "type": "promptString", "description": "New archive path (must not exist)"}
   ]
 }

@@ -45,6 +45,28 @@
       "console": "integratedTerminal"
     },
     {
+      "name": "Seed: preview configuration",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/seed.py",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "sync-venv",
+      "justMyCode": true
+    },
+    {
+      "name": "Archive: legacy JSON",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/archive_legacy_config.py",
+      "args": ["--input", "${input:legacyExport}", "--output", "${input:legacyArchive}"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "sync-venv",
+      "justMyCode": true
+    },
+    {
       "name": "Tests: all (pytest)",
       "type": "debugpy",
       "request": "launch",
@@ -55,5 +77,9 @@
       "preLaunchTask": "sync-venv",
       "justMyCode": false
     }
+  ],
+  "inputs": [
+    {"id": "legacyExport", "type": "promptString", "description": "Path to exported legacy JSON"},
+    {"id": "legacyArchive", "type": "promptString", "description": "New archive path (must not exist)"}
   ]
 }
