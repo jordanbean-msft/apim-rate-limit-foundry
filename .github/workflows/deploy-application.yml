@@ -29,7 +29,7 @@ jobs:
       AZURE_ENV_NAME: ${{ inputs.azd_env_name }}
       AZD_ENV_JSON: ${{ vars.AZD_ENV_JSON }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
