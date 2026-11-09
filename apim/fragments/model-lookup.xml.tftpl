@@ -20,10 +20,14 @@
   <set-variable name="model" value='@((string)context.Variables["model-alias"])' />
   <set-variable name="model-provider" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["model"])' />
   <set-variable name="model-endpoint" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["endpoint"])' />
+  <set-variable name="model-backend-id" value='@{
+    var key = (string)context.Variables["model-key"];
+    var hash = BitConverter.ToString(System.Security.Cryptography.SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant();
+    return "ai-model-" + hash.Substring(0, 12);
+  }' />
   <set-variable name="model-path" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["path"])' />
   <set-variable name="model-audience" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["audience"])' />
   <set-variable name="model-api-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["api_version"])' />
-  <set-variable name="model-anthropic-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["anthropic_version"])' />
   <set-variable name="price-version" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["price_version"])' />
   <set-variable name="model-max-input-tokens" value='@((int)JObject.Parse((string)context.Variables["model-entry"])["max_input_tokens"])' />
   <set-variable name="model-max-output-tokens" value='@((int)JObject.Parse((string)context.Variables["model-entry"])["max_output_tokens"])' />

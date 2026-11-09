@@ -27,7 +27,7 @@ variable "subnet_id" {
   type        = string
 }
 variable "config" {
-  description = "Gateway capability, identity and conservative admission settings."
+  description = "Gateway capability, identity and bounded text-request settings."
   type = object({
     sku_name                       = string
     publisher_name                 = string
@@ -37,8 +37,6 @@ variable "config" {
     burst_seconds                  = number
     max_body_bytes                 = number
     max_output_tokens              = number
-    max_document_pages             = number
-    max_language_characters        = number
     send_request_timeout           = number
     enable_optional_llm_policy     = bool
     llm_policy_verified            = bool
@@ -74,31 +72,27 @@ variable "web_url" {
 variable "ai" {
   description = "Enabled exact AI backend references."
   type = map(object({
-    id                   = string
-    endpoint             = string
-    audience             = string
-    model                = string
-    api_version          = string
-    price_version        = string
-    created              = bool
-    api_protocol         = string
-    context_input_tokens = number
-    anthropic_version    = string
+    id            = string
+    endpoint      = string
+    audience      = string
+    model         = string
+    api_version   = string
+    price_version = string
+    created       = bool
+    api_protocol  = string
   }))
 }
 variable "route_backends" {
   description = "Protocol API sentinels required by the effective registry; never used as implicit model defaults."
   type = map(object({
-    id                   = string
-    endpoint             = string
-    audience             = string
-    model                = string
-    api_version          = string
-    price_version        = string
-    created              = bool
-    api_protocol         = string
-    context_input_tokens = number
-    anthropic_version    = string
+    id            = string
+    endpoint      = string
+    audience      = string
+    model         = string
+    api_version   = string
+    price_version = string
+    created       = bool
+    api_protocol  = string
   }))
 }
 variable "model_registry" {
@@ -110,11 +104,18 @@ variable "model_registry" {
     model             = string
     audience          = string
     api_version       = string
-    anthropic_version = string
     price_version     = string
     max_input_tokens  = number
     max_output_tokens = number
   }))
+}
+variable "function_identity" {
+  description = "Only this Function workload may invoke the internal usage callback."
+  type        = object({ client_id = string, principal_id = string })
+}
+variable "event_hub" {
+  description = "Secretless native usage logger destination, after hub-scoped RBAC propagation."
+  type        = object({ id = string, name = string, endpoint_address = string })
 }
 variable "legacy_defaults" {
   description = "Explicit legacy default aliases only; additional model entries never become implicit defaults."

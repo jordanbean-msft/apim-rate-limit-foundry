@@ -1,0 +1,46 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer" output-token-variable-name="callback-jwt">
+      <openid-config url="${authority}/${tenant_id}/v2.0/.well-known/openid-configuration" />
+      <audiences><audience>${api_client_id}</audience><audience>${api_audience}</audience></audiences>
+      <required-claims>
+        <claim name="tid" match="all"><value>${tenant_id}</value></claim>
+        <claim name="oid" match="all"><value>${function_principal_id}</value></claim>
+        <claim name="azp" match="all"><value>${function_client_id}</value></claim>
+        <claim name="roles" match="any"><value>RateLimit.Gateway</value></claim>
+      </required-claims>
+    </validate-jwt>
+    <choose>
+      <when condition='@(!String.IsNullOrEmpty(((Jwt)context.Variables["callback-jwt"]).Claims.GetValueOrDefault("scp", "")))'>
+        <return-response><set-status code="403" reason="Workload identity only" /></return-response>
+      </when>
+    </choose>
+    <set-variable name="usage-event" value="@(context.Request.Body.As&lt;string&gt;())" />
+    <set-variable name="valid-event" value='@{
+      try {
+        var text = (string)context.Variables["usage-event"];
+        if (System.Text.Encoding.UTF8.GetByteCount(text) &gt; 16384) { return false; }
+        var item = JObject.Parse(text);
+        return (int?)item["event_version"] == 2 &amp;&amp; (string)item["event_name"] == "usage_recorded"
+          &amp;&amp; !String.IsNullOrEmpty((string)item["tenant_ref"]) &amp;&amp; !String.IsNullOrEmpty((string)item["user_ref"]);
+      } catch { return false; }
+    }' />
+    <choose>
+      <when condition='@(!(bool)context.Variables["valid-event"])'>
+        <return-response><set-status code="400" reason="Invalid compact usage event" /></return-response>
+      </when>
+    </choose>
+    <log-to-eventhub logger-id="usage-events" partition-key='@{
+      var item = JObject.Parse((string)context.Variables["usage-event"]);
+      return (string)item["tenant_ref"] + ":" + (string)item["user_ref"];
+    }'>@((string)context.Variables["usage-event"])</log-to-eventhub>
+    <return-response><set-status code="204" reason="Accepted" /></return-response>
+  </inbound>
+  <backend />
+  <outbound />
+  <on-error>
+    <trace source="usage-accounting" severity="error"><message>usage_event_publish_failed</message><metadata name="error_type" value="@(context.LastError.Source)" /></trace>
+    <return-response><set-status code="503" reason="Usage event publishing unavailable" /></return-response>
+  </on-error>
+</policies>

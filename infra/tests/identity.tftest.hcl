@@ -52,6 +52,14 @@ run "commercial_portal_federation" {
   }
   assert {
     condition = (
+      azuread_app_role_assignment.usage_callback.app_role_id == local.role_ids.Gateway &&
+      azuread_app_role_assignment.usage_callback.principal_object_id == azurerm_user_assigned_identity.workload["function"].principal_id &&
+      azuread_app_role_assignment.usage_callback.resource_object_id == azuread_service_principal.api.object_id
+    )
+    error_message = "The internal APIM callback needs the existing Gateway API role granted specifically to the Function workload."
+  }
+  assert {
+    condition = (
       azuread_service_principal_delegated_permission_grant.graph_profile.claim_values == toset(["User.Read"]) &&
       azuread_service_principal_delegated_permission_grant.graph_profile.resource_service_principal_object_id == data.azuread_service_principal.graph.object_id &&
       length([for access in azuread_application.web.required_resource_access : access

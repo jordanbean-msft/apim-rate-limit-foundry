@@ -1,0 +1,8 @@
+AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| where tostring(Properties.status) == "actual"
+| summarize arg_max(TimeGenerated, *) by EventId = tostring(Properties.event_id)
+| summarize UncachedInputTokens = sum(tolong(Properties.input_tokens) - tolong(Properties.cached_input_tokens)),
+    CachedInputTokens = sum(tolong(Properties.cached_input_tokens)),
+    OutputTokens = sum(tolong(Properties.output_tokens)) by Model = tostring(Properties.model)
+| order by UncachedInputTokens desc

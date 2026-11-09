@@ -131,6 +131,12 @@ resource "azuread_app_role_assignment" "gateway" {
   resource_object_id  = azuread_service_principal.api.object_id
   depends_on          = [time_sleep.propagation]
 }
+resource "azuread_app_role_assignment" "usage_callback" {
+  app_role_id         = local.role_ids.Gateway
+  principal_object_id = azurerm_user_assigned_identity.workload["function"].principal_id
+  resource_object_id  = azuread_service_principal.api.object_id
+  depends_on          = [time_sleep.propagation]
+}
 resource "azuread_app_role_assignment" "admin" {
   for_each            = setunion(var.config.admin_object_ids, toset([var.deployer_object_id]))
   app_role_id         = local.role_ids.Admin

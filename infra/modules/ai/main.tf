@@ -1,7 +1,7 @@
 locals {
   enabled         = { for key, value in var.config : key => value if value.enabled }
   created         = { for key, value in local.enabled : key => value if value.create }
-  kinds           = { foundry = "AIServices", document-intelligence = "FormRecognizer", language = "TextAnalytics" }
+  kinds           = { foundry = "OpenAI" }
   created_foundry = { for key, value in local.created : key => value if key == "foundry" }
   created_endpoints = {
     for key, account in azurerm_cognitive_account.this : key => (
@@ -13,18 +13,11 @@ locals {
   protocol_backends = {
     for key, protocol in {
       responses = {
-        enabled           = var.protocols.responses.enabled, id = var.protocols.responses.resource_id,
-        endpoint          = var.protocols.responses.endpoint, audience = var.protocols.responses.audience,
-        model             = var.protocols.responses.deployment_name, price_version = var.protocols.responses.price_version,
-        api_version       = var.protocols.responses.api_version, api_protocol = "openai-responses", context_input_tokens = 0,
-        anthropic_version = "", role = var.protocols.responses.role_definition_name
-      }
-      anthropic = {
-        enabled           = var.protocols.anthropic.enabled, id = var.protocols.anthropic.resource_id,
-        endpoint          = var.protocols.anthropic.endpoint, audience = var.protocols.anthropic.audience,
-        model             = var.protocols.anthropic.deployment_name, price_version = var.protocols.anthropic.price_version,
-        api_version       = "", api_protocol = "anthropic-messages", context_input_tokens = var.protocols.anthropic.context_input_tokens,
-        anthropic_version = var.protocols.anthropic.anthropic_version, role = var.protocols.anthropic.role_definition_name
+        enabled     = var.protocols.responses.enabled, id = var.protocols.responses.resource_id,
+        endpoint    = var.protocols.responses.endpoint, audience = var.protocols.responses.audience,
+        model       = var.protocols.responses.deployment_name, price_version = var.protocols.responses.price_version,
+        api_version = var.protocols.responses.api_version, api_protocol = "openai-responses",
+        role        = var.protocols.responses.role_definition_name
       }
     } : key => protocol if protocol.enabled
   }
@@ -113,7 +106,7 @@ resource "azurerm_cognitive_account" "this" {
   kind                          = local.kinds[each.key]
   sku_name                      = each.value.sku_name
   local_auth_enabled            = false
-  project_management_enabled    = each.key == "foundry"
+  project_management_enabled    = false
   public_network_access_enabled = var.public_network_access_enabled
   tags                          = var.tags
   dynamic "identity" {

@@ -12,15 +12,15 @@
     <required-claims><claim name="tid" match="all"><value>${tenant_id}</value></claim></required-claims>
   </validate-jwt>
   <set-variable name="tenant-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("tid", ""))' />
-  <set-variable name="principal-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("oid", ((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("azp", "")))' />
+  <set-variable name="principal-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("oid", ""))' />
   <set-variable name="subscription-id" value="@(context.Subscription.Id)" />
   <choose>
-    <when condition='@(String.IsNullOrEmpty((string)context.Variables["principal-id"]) || String.IsNullOrEmpty((string)context.Variables["tenant-id"]) || String.IsNullOrEmpty((string)context.Variables["subscription-id"]))'>
-      <return-response><set-status code="401" reason="Authenticated application required" /></return-response>
+    <when condition='@(String.IsNullOrEmpty((string)context.Variables["principal-id"]) || String.IsNullOrEmpty(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("scp", "")) || ((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("idtyp", "") == "app" || String.IsNullOrEmpty((string)context.Variables["tenant-id"]) || String.IsNullOrEmpty((string)context.Variables["subscription-id"]))'>
+      <return-response><set-status code="401" reason="Delegated person identity required" /></return-response>
     </when>
   </choose>
   <set-variable name="caller-ref" value='@{
-    var identity = (string)context.Variables["tenant-id"] + "\n" + (string)context.Variables["subscription-id"];
+    var identity = (string)context.Variables["tenant-id"] + "\n" + (string)context.Variables["principal-id"];
     return BitConverter.ToString(System.Security.Cryptography.SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(identity))).Replace("-", "").ToLowerInvariant();
   }' />
   <trace source="rate-limiter" severity="information">
@@ -28,7 +28,6 @@
     <metadata name="correlation_id" value="@(context.RequestId.ToString())" />
     <metadata name="caller_ref" value='@((string)context.Variables["caller-ref"])' />
     <metadata name="subscription_id" value='@((string)context.Variables["subscription-id"])' />
-    <metadata name="application_name" value="@(context.Subscription.Name)" />
     <metadata name="product_id" value="@(context.Product.Id)" />
     <metadata name="api_id" value="@(context.Api.Id)" />
     <metadata name="operation_id" value="@(context.Operation.Id)" />

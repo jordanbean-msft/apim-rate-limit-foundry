@@ -85,7 +85,19 @@ output "APPLICATION_SUBSCRIPTIONS" {
   description = "Safe inference application metadata only; excludes subscription keys and the server-side portal subscription."
   value       = jsonencode(local.application_registry)
 }
-output "APPLICATION_REGISTRY" {
-  description = "Validated subscription-ID to tenant/display-name map used by both Function hosts."
-  value       = jsonencode(local.application_registry)
+output "EVENT_HUB_NAMESPACE_NAME" {
+  description = "Native APIM usage telemetry namespace."
+  value       = module.event_hubs.namespace_name
+}
+output "EVENT_HUB_NAME" {
+  description = "Native APIM finalized usage export hub."
+  value       = module.event_hubs.name
+}
+output "EVENT_HUB_RESOURCE_ID" {
+  description = "Hub-scoped producer authorization and consumer onboarding."
+  value       = module.event_hubs.id
+}
+output "APIM_USAGE_EVENT_URL" {
+  description = "Function-only managed-identity callback; not a public client API."
+  value       = "${module.apim.gateway_url}/internal/usage-events"
 }

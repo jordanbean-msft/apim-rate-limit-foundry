@@ -1,0 +1,13 @@
+AppTraces
+| where TimeGenerated >= startofmonth(now())
+| where Message == "budget_status"
+| where tostring(Properties.month) == format_datetime(now(), "yyyy-MM")
+| summarize arg_max(TimeGenerated, *) by BudgetId = tostring(Properties.budget_id)
+| project ObservedAt = TimeGenerated, BudgetId, Month = tostring(Properties.month),
+    Hierarchy = tostring(Properties.subject_type), Subject = tostring(Properties.subject_id),
+    Model = tostring(Properties.model), LimitUSD = tolong(Properties.limit_micro_usd) / 1000000.0,
+    SpentUSD = tolong(Properties.spent_micro_usd) / 1000000.0,
+    RemainingUSD = tolong(Properties.remaining_micro_usd) / 1000000.0,
+    UtilizationPercent = iff(tolong(Properties.limit_micro_usd) == 0, real(null),
+      100.0 * tolong(Properties.spent_micro_usd) / tolong(Properties.limit_micro_usd))
+| order by Hierarchy asc, SpentUSD desc

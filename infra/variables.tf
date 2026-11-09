@@ -134,8 +134,6 @@ variable "gateway" {
     burst_seconds                  = number
     max_body_bytes                 = number
     max_output_tokens              = number
-    max_document_pages             = number
-    max_language_characters        = number
     send_request_timeout           = number
     enable_optional_llm_policy     = bool
     llm_policy_verified            = bool
@@ -161,9 +159,7 @@ variable "gateway" {
   }
   validation {
     condition = (
-      var.gateway.max_document_pages >= 1 && var.gateway.max_document_pages <= 20 &&
       var.gateway.max_output_tokens >= 1 && var.gateway.max_output_tokens <= 999999 &&
-      var.gateway.max_language_characters >= 1 && var.gateway.max_language_characters <= 5120 &&
       var.gateway.burst_calls >= 1 && var.gateway.burst_seconds >= 1 && var.gateway.burst_seconds <= 300 &&
       var.gateway.max_body_bytes >= 1 && var.gateway.send_request_timeout >= 1 && var.gateway.send_request_timeout <= 240
     )
@@ -196,8 +192,8 @@ variable "ai" {
     price_version       = string
   }))
   validation {
-    condition     = toset(keys(var.ai)) == toset(["foundry", "document-intelligence", "language"])
-    error_message = "Specify foundry, document-intelligence, and language, including disabled entries."
+    condition     = toset(keys(var.ai)) == toset(["foundry"])
+    error_message = "Specify only the preserved foundry OpenAI account."
   }
   validation {
     condition = alltrue([for key, item in var.ai : !item.enabled || (
@@ -246,22 +242,6 @@ variable "llm_protocols" {
       role_definition_name      = string
       api_version               = string
     })
-    anthropic = object({
-      enabled                   = bool
-      capability_verified       = bool
-      private_endpoint_verified = bool
-      hard_input_cap_verified   = bool
-      input_cap_evidence        = string
-      context_input_tokens      = number
-      resource_id               = string
-      endpoint                  = string
-      audience                  = string
-      location                  = string
-      deployment_name           = string
-      price_version             = string
-      anthropic_version         = string
-      role_definition_name      = string
-    })
   })
   validation {
     condition = !var.llm_protocols.responses.enabled || (
@@ -276,19 +256,7 @@ variable "llm_protocols" {
     error_message = "Responses requires a verified regional v1 endpoint/tokenizer; Government additionally requires explicit sovereign availability verification and a sovereign endpoint."
   }
   validation {
-    condition = !var.llm_protocols.anthropic.enabled || (
-      var.azure_cloud == "AzureCloud" && var.llm_protocols.anthropic.capability_verified &&
-      var.llm_protocols.anthropic.hard_input_cap_verified && length(trimspace(var.llm_protocols.anthropic.input_cap_evidence)) > 0 &&
-      var.llm_protocols.anthropic.context_input_tokens >= 1 &&
-      floor(var.llm_protocols.anthropic.context_input_tokens) == var.llm_protocols.anthropic.context_input_tokens &&
-      var.llm_protocols.anthropic.context_input_tokens <= var.hosting.max_input_tokens &&
-      can(regex("^https://[a-z0-9-]+\\.services\\.ai\\.azure\\.com/?$", var.llm_protocols.anthropic.endpoint)) &&
-      can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.llm_protocols.anthropic.anthropic_version))
-    )
-    error_message = "Claude requires a separately referenced Commercial Foundry endpoint, verified hard input ceiling/evidence <= Function MAX_INPUT_TOKENS, and a pinned anthropic-version; Government Claude is not enabled by this sample."
-  }
-  validation {
-    condition = alltrue([for protocol in [var.llm_protocols.responses, var.llm_protocols.anthropic] : !protocol.enabled || (
+    condition = alltrue([for protocol in [var.llm_protocols.responses] : !protocol.enabled || (
       startswith(protocol.resource_id, "/subscriptions/") &&
       can(regex("^https://[a-z0-9.-]+$", protocol.audience)) &&
       (var.azure_cloud != "AzureUSGovernment" || protocol.audience == "https://cognitiveservices.azure.us") &&
@@ -299,10 +267,6 @@ variable "llm_protocols" {
       (var.azure_cloud == "AzureUSGovernment" ? contains(["usgovvirginia", "usgovarizona", "usgovtexas"], lower(protocol.location)) : !startswith(lower(protocol.location), "usgov"))
     )])
     error_message = "Enabled protocol references require verified same-cloud resource/endpoint/audience, private connectivity, role, model and price pins."
-  }
-  validation {
-    condition     = !var.llm_protocols.anthropic.enabled || contains(["Cognitive Services User", "Azure AI User", "Foundry User"], var.llm_protocols.anthropic.role_definition_name)
-    error_message = "Claude requires a Foundry/AI User or Cognitive Services User role, not an OpenAI-only role."
   }
 }
 variable "llm_models" {
@@ -323,14 +287,11 @@ variable "llm_models" {
     byte_tokenizer_verified   = bool
     private_endpoint_verified = bool
     api_version               = string
-    anthropic_version         = string
-    hard_input_cap_verified   = bool
-    input_cap_evidence        = string
   }))
   validation {
     condition = alltrue([for key, model in var.llm_models : (
       length(split(":", key)) == 2 &&
-      contains(["openai-chat", "openai-responses", "anthropic-messages"], model.api_protocol) &&
+      contains(["openai-chat", "openai-responses"], model.api_protocol) &&
       split(":", key)[0] == model.api_protocol &&
       can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", try(split(":", key)[1], ""))) &&
       startswith(model.resource_id, "/subscriptions/") &&
@@ -349,30 +310,19 @@ variable "llm_models" {
       (var.azure_cloud == "AzureUSGovernment" ?
         contains(["usgovvirginia", "usgovarizona", "usgovtexas"], lower(model.location)) :
       !startswith(lower(model.location), "usgov")) &&
-      (model.api_protocol == "anthropic-messages" ?
-        (var.azure_cloud == "AzureCloud" &&
-          model.capability_verified && model.hard_input_cap_verified &&
-          length(trimspace(model.input_cap_evidence)) > 0 &&
-          model.max_input_tokens <= var.hosting.max_input_tokens &&
-          contains(["Cognitive Services User", "Azure AI User", "Foundry User"], model.role_definition_name) &&
-          can(regex("^https://[a-z0-9-]+\\.services\\.ai\\.azure\\.com/?$", lower(model.endpoint))) &&
-          can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", model.anthropic_version)) &&
-        model.api_version == "" && !model.government_verified && !model.byte_tokenizer_verified) :
-        (model.hard_input_cap_verified == false && model.input_cap_evidence == "" &&
-          model.anthropic_version == "" &&
-          (model.api_protocol == "openai-responses" ?
-            (model.capability_verified && model.byte_tokenizer_verified &&
-              contains(["v1", "preview"], model.api_version) &&
-              (var.azure_cloud != "AzureUSGovernment" || model.government_verified) &&
-              can(regex(var.azure_cloud == "AzureUSGovernment" ?
-                "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
-            "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(model.endpoint)))) :
-            (model.capability_verified && model.byte_tokenizer_verified &&
-              can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}(-preview)?$", model.api_version)) &&
-              !model.government_verified &&
-              can(regex(var.azure_cloud == "AzureUSGovernment" ?
-                "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
-      "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(model.endpoint)))))))
+      (model.api_protocol == "openai-responses" ?
+        (model.capability_verified && model.byte_tokenizer_verified &&
+          contains(["v1", "preview"], model.api_version) &&
+          (var.azure_cloud != "AzureUSGovernment" || model.government_verified) &&
+          can(regex(var.azure_cloud == "AzureUSGovernment" ?
+            "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
+        "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(model.endpoint)))) :
+        (model.capability_verified && model.byte_tokenizer_verified &&
+          can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}(-preview)?$", model.api_version)) &&
+          !model.government_verified &&
+          can(regex(var.azure_cloud == "AzureUSGovernment" ?
+            "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
+      "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(model.endpoint)))))
     )])
     error_message = "Additional model keys, aliases, HTTPS origins, cloud/role attestations, private networking, version pins, and integer token bounds must match the selected protocol."
   }
@@ -380,12 +330,22 @@ variable "llm_models" {
     condition = alltrue([for key, model in var.llm_models :
       !contains(concat(
         var.ai["foundry"].enabled ? ["openai-chat:${var.ai["foundry"].deployment_name}"] : [],
-        var.llm_protocols.responses.enabled ? ["openai-responses:${var.llm_protocols.responses.deployment_name}"] : [],
-        var.llm_protocols.anthropic.enabled ? ["anthropic-messages:${var.llm_protocols.anthropic.deployment_name}"] : []
+        var.llm_protocols.responses.enabled ? ["openai-responses:${var.llm_protocols.responses.deployment_name}"] : []
       ), key)
     ])
     error_message = "llm_models keys must not duplicate an enabled legacy protocol deployment."
   }
+}
+variable "event_hubs" {
+  description = "Explicit Standard usage export sizing and identity propagation; no credentials."
+  type = object({
+    sku                       = string
+    capacity                  = number
+    partition_count           = number
+    message_retention         = number
+    minimum_tls_version       = string
+    propagation_wait_duration = string
+  })
 }
 variable "streaming" {
   description = "Trusted stream observer deployment and bounded SSE runtime."

@@ -1,0 +1,12 @@
+union isfuzzy=true
+  (ApiManagementGatewayLogs
+   | where ApiId has "foundry"
+   | summarize Requests = count(), Errors = countif(ResponseCode >= 400),
+       P50Milliseconds = percentile(todouble(TotalTime), 50), P95Milliseconds = percentile(todouble(TotalTime), 95)
+       by OperationName, ResultCode = tostring(ResponseCode), Component = "APIM inference"),
+  (AppRequests
+   | where AppRoleName in ("rate-limiter", "rate-limiter-stream")
+   | summarize Requests = count(), Errors = countif(Success == false),
+       P50Milliseconds = percentile(todouble(DurationMs), 50), P95Milliseconds = percentile(todouble(DurationMs), 95)
+       by OperationName = Name, ResultCode, Component = AppRoleName)
+| order by Errors desc, P95Milliseconds desc

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-for name in AZURE_CLOUD ARM_ENVIRONMENT AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_LOCATION AZURE_RESOURCE_GROUP AZURE_PRINCIPAL_ID PUBLIC_NETWORK_ACCESS_ENABLED RS_RESOURCE_GROUP RS_STORAGE_ACCOUNT RS_CONTAINER_NAME GATEWAY_CLIENT_AUDIENCE APIM_PUBLISHER_NAME APIM_PUBLISHER_EMAIL REDIS_TOKEN_SCOPE MAX_INPUT_TOKENS OPENAI_BYTE_TOKENIZER_VERIFIED LLM_MODELS MANAGED_MODELS APPLICATION_SUBSCRIPTIONS_CONFIG; do
+for name in AZURE_CLOUD ARM_ENVIRONMENT AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_LOCATION AZURE_RESOURCE_GROUP AZURE_PRINCIPAL_ID PUBLIC_NETWORK_ACCESS_ENABLED RS_RESOURCE_GROUP RS_STORAGE_ACCOUNT RS_CONTAINER_NAME GATEWAY_CLIENT_AUDIENCE APIM_PUBLISHER_NAME APIM_PUBLISHER_EMAIL REDIS_TOKEN_SCOPE MAX_INPUT_TOKENS OPENAI_BYTE_TOKENIZER_VERIFIED LLM_MODELS MANAGED_MODELS APPLICATION_SUBSCRIPTIONS_CONFIG EVENT_HUB_CAPACITY EVENT_HUB_PARTITIONS EVENT_HUB_RETENTION_DAYS; do
   value=$(printenv "$name" || true)
   [ -n "$value" ] || { echo "Missing required azd environment value: $name" >&2; exit 1; }
 done
@@ -32,7 +32,7 @@ case "$PUBLIC_NETWORK_ACCESS_ENABLED" in
   *) echo "PUBLIC_NETWORK_ACCESS_ENABLED must be explicitly true or false." >&2; exit 1 ;;
 esac
 
-for service in FOUNDRY DOCUMENT_INTELLIGENCE LANGUAGE; do
+for service in FOUNDRY; do
   enabled=$(printenv "ENABLE_$service" || true)
   create=$(printenv "CREATE_$service" || true)
   case "$enabled:$create" in true:true|true:false|false:true|false:false) ;; *) echo "Set ENABLE_$service and CREATE_$service explicitly." >&2; exit 1 ;; esac
@@ -55,7 +55,7 @@ for service in FOUNDRY DOCUMENT_INTELLIGENCE LANGUAGE; do
     case "$audience" in https://cognitiveservices.azure.com|https://cognitiveservices.azure.us) ;; *) echo "Explicit verified ${service}_TOKEN_AUDIENCE is required; do not infer it from DNS." >&2; exit 1 ;; esac
   fi
 done
-for protocol in RESPONSES ANTHROPIC; do
+for protocol in RESPONSES; do
   enabled=$(printenv "ENABLE_$protocol" || true)
   case "$enabled" in true|false) ;; *) echo "Set ENABLE_$protocol explicitly." >&2; exit 1 ;; esac
   [ "$enabled" = "true" ] || continue
@@ -75,7 +75,6 @@ for protocol in RESPONSES ANTHROPIC; do
       [ "$(printenv RESPONSES_GOVERNMENT_VERIFIED || true)" = "true" ] || {
         echo "Revalidate Responses Government availability before enabling it." >&2; exit 1;
       } ;;
-    ANTHROPIC:AzureCloud:https://*.services.ai.azure.com) ;;
     *) echo "$protocol endpoint is not verified for the selected cloud; no cross-cloud fallback." >&2; exit 1 ;;
   esac
   az resource show --ids "$resource" --output none
@@ -90,21 +89,9 @@ for protocol in RESPONSES ANTHROPIC; do
       echo "$protocol must be private-only in private deployment mode." >&2; exit 1;
     }
   fi
-  if [ "$protocol" = "ANTHROPIC" ]; then
-    [ "$(printenv ANTHROPIC_HARD_INPUT_CAP_VERIFIED || true)" = "true" ] &&
-      [ -n "$(printenv ANTHROPIC_INPUT_CAP_EVIDENCE || true)" ] || {
-      echo "Anthropic requires recorded backend hard-context-cap verification." >&2; exit 1;
-    }
-    ceiling=$(printenv ANTHROPIC_CONTEXT_INPUT_TOKENS || true)
-    case "$ceiling:$MAX_INPUT_TOKENS" in *[!0-9:]*|:*|*:) echo "Context ceilings must be positive integers." >&2; exit 1 ;; esac
-    [ "$ceiling" -gt 0 ] && [ "$ceiling" -le "$MAX_INPUT_TOKENS" ] || {
-      echo "Function MAX_INPUT_TOKENS must cover the entire verified Anthropic input ceiling." >&2; exit 1;
-    }
-  else
-    [ "$(printenv RESPONSES_BYTE_TOKENIZER_VERIFIED || true)" = "true" ] || {
-      echo "Responses byte-tokenizer bound must be explicitly verified." >&2; exit 1;
-    }
-  fi
+  [ "$(printenv RESPONSES_BYTE_TOKENIZER_VERIFIED || true)" = "true" ] || {
+    echo "Responses native token-limit compatibility must be explicitly verified." >&2; exit 1;
+  }
 done
 model_references=$(uv run --no-sync python -c '
 import json
@@ -131,10 +118,10 @@ for key, model in sorted(models.items()):
     if not isinstance(model, dict):
         raise SystemExit(f"{key}: model entry must be an object")
     parts = key.split(":")
-    if len(parts) != 2 or parts[0] not in {"openai-chat", "openai-responses", "anthropic-messages"} or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", parts[1]) is None:
+    if len(parts) != 2 or parts[0] not in {"openai-chat", "openai-responses"} or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", parts[1]) is None:
         raise SystemExit(f"{key}: expected a safe protocol:alias key")
     protocol = parts[0]
-    required = ("api_protocol", "resource_id", "endpoint", "audience", "location", "deployment_name", "price_version", "max_input_tokens", "max_output_tokens", "role_definition_name", "capability_verified", "government_verified", "byte_tokenizer_verified", "private_endpoint_verified", "api_version", "anthropic_version", "hard_input_cap_verified", "input_cap_evidence")
+    required = ("api_protocol", "resource_id", "endpoint", "audience", "location", "deployment_name", "price_version", "max_input_tokens", "max_output_tokens", "role_definition_name", "capability_verified", "government_verified", "byte_tokenizer_verified", "private_endpoint_verified", "api_version")
     if any(field not in model for field in required) or model["api_protocol"] != protocol:
         raise SystemExit(f"{key}: missing required fields or api_protocol does not match the key")
     if not isinstance(model["resource_id"], str) or not model["resource_id"].startswith("/subscriptions/"):
@@ -159,28 +146,22 @@ for key, model in sorted(models.items()):
         raise SystemExit(f"{key}: audience must be an HTTPS origin")
     host = endpoint.hostname.lower()
     if cloud == "AzureUSGovernment":
-        if protocol == "anthropic-messages":
-            raise SystemExit("Anthropic models are not enabled in Azure Government")
         allowed = host.endswith((".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us"))
         if not allowed or audience.geturl().rstrip("/").lower() != "https://cognitiveservices.azure.us":
             raise SystemExit(f"{key}: endpoint and Cognitive Services audience must be Government resources")
     else:
-        if protocol == "anthropic-messages":
-            allowed = host.endswith(".services.ai.azure.com")
-            if model["hard_input_cap_verified"] is not True or not model["capability_verified"] or not isinstance(model["input_cap_evidence"], str) or not model["input_cap_evidence"].strip() or re.fullmatch(r"\d{4}-\d{2}-\d{2}", model["anthropic_version"]) is None or model["api_version"] != "":
-                raise SystemExit(f"{key}: Messages requires capability and hard input-ceiling evidence plus a pinned anthropic_version")
-            if model["role_definition_name"] == "Cognitive Services OpenAI User":
-                raise SystemExit(f"{key}: Messages cannot use an OpenAI-only role")
-        else:
-            allowed = host.endswith((".openai.azure.com", ".cognitiveservices.azure.com", ".services.ai.azure.com"))
-            if re.fullmatch(r"\d{4}-\d{2}-\d{2}(-preview)?", model["api_version"]) is None and not (protocol == "openai-responses" and model["api_version"] in {"v1", "preview"}):
-                raise SystemExit(f"{key}: OpenAI API version is required")
-            if model["anthropic_version"] != "":
-                raise SystemExit(f"{key}: OpenAI entries must not set anthropic_version")
+        allowed = host.endswith((".openai.azure.com", ".cognitiveservices.azure.com", ".services.ai.azure.com"))
         if not allowed or audience.geturl().rstrip("/").lower() not in {"https://ai.azure.com", "https://cognitiveservices.azure.com"}:
             raise SystemExit(f"{key}: endpoint and audience must be supported Commercial origins")
     if model["capability_verified"] is not True:
         raise SystemExit(f"{key}: capability verification is required")
+    if model["byte_tokenizer_verified"] is not True:
+        raise SystemExit(f"{key}: native token-limit verification is required")
+    if protocol == "openai-responses":
+        if model["api_version"] not in {"v1", "preview"} or (cloud == "AzureUSGovernment" and model["government_verified"] is not True):
+            raise SystemExit(f"{key}: Responses version and sovereign capability must be verified")
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}(-preview)?", model["api_version"]) is None:
+        raise SystemExit(f"{key}: Chat API version is required")
     print("\t".join((model["resource_id"], protocol, str(model["private_endpoint_verified"]).lower())))
 ' "$LLM_MODELS" "$AZURE_CLOUD" "$PUBLIC_NETWORK_ACCESS_ENABLED" "$MAX_INPUT_TOKENS") || {
   echo "Invalid LLM_MODELS configuration." >&2; exit 1;

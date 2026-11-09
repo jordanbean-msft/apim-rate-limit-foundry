@@ -90,8 +90,8 @@
           selected["name"] == null || selected["name"].Type != JTokenType.String) { return "tool_choice must select a client function"; }
     }
   }
-  var estimate = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + 128 * 64 + 128;
-  if (estimate &gt; (int)context.Variables["model-max-input-tokens"]) { return "conservative input bound exceeds the selected model bound"; }
+  var inputBound = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + 128 * 64 + 128;
+  if (inputBound &gt; (int)context.Variables["model-max-input-tokens"]) { return "input exceeds the selected model bound"; }
   return "";
   } catch { return "malformed Responses request fields"; }
 }' />
@@ -101,11 +101,6 @@
   </when>
 </choose>
 <set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />
-<set-variable name="usage" value='@{
-  var body = JObject.Parse((string)context.Variables["request-body"]);
-  return new JObject(new JProperty("input_tokens", System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + 128 * 64 + 128),
-    new JProperty("output_tokens", (int)body["max_output_tokens"]), new JProperty("cached_input_tokens", 0), new JProperty("requests", 1)).ToString();
-}' />
 <set-body>@{
   var body = JObject.Parse((string)context.Variables["request-body"]);
   body["store"] = false;

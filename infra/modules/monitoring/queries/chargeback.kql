@@ -1,0 +1,10 @@
+AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| summarize arg_max(TimeGenerated, *) by EventId = tostring(Properties.event_id)
+| summarize ActualUSD = sumif(tolong(Properties.cost_micro_usd), tostring(Properties.status) == "actual") / 1000000.0,
+    UnknownRequests = countif(tostring(Properties.status) == "usage_unknown")
+    by Month = tostring(Properties.month), BusinessUnit = tostring(Properties.business_unit),
+    CostCenter = tostring(Properties.cost_center), Department = tostring(Properties.department_id),
+    Team = tostring(Properties.team_id), UserRef = tostring(Properties.user_ref),
+    SubscriptionId = tostring(Properties.subscription_id), Model = tostring(Properties.model)
+| order by ActualUSD desc

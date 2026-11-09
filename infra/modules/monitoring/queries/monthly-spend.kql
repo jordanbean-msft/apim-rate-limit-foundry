@@ -1,0 +1,12 @@
+// Monthly scope is explicit; clients must not intersect this with a shorter API timespan.
+AppTraces
+| where TimeGenerated >= startofmonth(now())
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| where tostring(Properties.month) == format_datetime(now(), "yyyy-MM")
+| extend EventId = tostring(Properties.event_id)
+| where isnotempty(EventId)
+| summarize arg_max(TimeGenerated, *) by EventId
+| summarize ActualUSD = sumif(tolong(Properties.cost_micro_usd), tostring(Properties.status) == "actual") / 1000000.0,
+    UnknownRequests = countif(tostring(Properties.status) == "usage_unknown")
+    by Month = tostring(Properties.month), Model = tostring(Properties.model)
+| order by ActualUSD desc

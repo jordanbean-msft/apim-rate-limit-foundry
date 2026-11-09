@@ -1,0 +1,9 @@
+AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| summarize arg_max(TimeGenerated, *) by EventId = tostring(Properties.event_id)
+| where tostring(Properties.status) == "usage_unknown"
+| project TimeGenerated, RequestId = tostring(Properties.request_id), Model = tostring(Properties.model),
+    Protocol = tostring(Properties.api_protocol), Streaming = tobool(Properties.streaming),
+    UserRef = tostring(Properties.user_ref), Team = tostring(Properties.team_id),
+    Department = tostring(Properties.department_id), SubscriptionId = tostring(Properties.subscription_id)
+| order by TimeGenerated desc

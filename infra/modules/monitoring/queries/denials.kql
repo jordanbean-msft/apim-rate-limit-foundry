@@ -1,17 +1,17 @@
-// Keep historical denied_policy_ids as display text; older exporters used tuple-like strings.
+let BudgetHierarchy = AppTraces
+| where Message == "budget_status"
+| summarize arg_max(TimeGenerated, *) by BudgetId = tostring(Properties.budget_id)
+| project BudgetId, Hierarchy = tostring(Properties.subject_type);
 AppTraces
-| where AppRoleName in ("rate-limiter", "rate-limiter-stream") and Message == "rate_decision"
-| where isnotempty(tostring(Properties.subscription_id))
-| extend ReservationId = tostring(Properties.reservation_id)
-| where isnotempty(ReservationId)
-| summarize arg_min(TimeGenerated, *) by ReservationId
-| where tobool(Properties.allowed) == false
-| project TimeGenerated, ReservationId, CallerRef = tostring(Properties.caller_ref),
-    SubscriptionId = tostring(Properties.subscription_id), Application = tostring(Properties.application_name),
-    Streaming = tobool(Properties.streaming), Service = tostring(Properties.service),
-    Protocol = tostring(Properties.api_protocol), Model = tostring(Properties.model),
-    Reason = tostring(Properties.reason), DeniedPolicies = tostring(Properties.denied_policy_ids),
-    Remaining = tolong(Properties.remaining), RetryAfterSeconds = tolong(Properties.retry_after),
-    ResetAt = tostring(Properties.reset_at),
-    RequestedConservativeUSD = todouble(Properties.reserved_cost_micro_usd) / 1000000.0
-| top 100 by TimeGenerated desc
+| where Message == "budget_decision" and tobool(Properties.allowed) == false
+| extend RequestId = coalesce(tostring(Properties.request_id), tostring(Properties.correlation_id))
+| where isnotempty(RequestId)
+| summarize arg_max(TimeGenerated, *) by RequestId
+| mv-expand BudgetId = extract_all(@"([A-Za-z0-9][A-Za-z0-9._-]*)", tostring(Properties.denied_budget_ids))
+| extend BudgetId = tostring(BudgetId)
+| join kind=leftouter BudgetHierarchy on BudgetId
+| summarize DeniedRequests = count() by BudgetId, Hierarchy,
+    Model = tostring(Properties.model), Reason = tostring(Properties.reason),
+    UserRef = tostring(Properties.user_ref), Team = tostring(Properties.team_id),
+    Department = tostring(Properties.department_id)
+| order by DeniedRequests desc

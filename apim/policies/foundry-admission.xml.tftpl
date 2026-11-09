@@ -90,8 +90,8 @@
           function == null || function.Properties().Any(field =&gt; field.Name != "name") || function["name"] == null || function["name"].Type != JTokenType.String) { return "tool_choice must select a client function"; }
     }
   }
-  var estimate = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + messages.Count * 32 + 128 * 32 + 128;
-  if (estimate &gt; (int)context.Variables["model-max-input-tokens"]) { return "conservative input bound exceeds the selected model bound"; }
+  var inputBound = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + messages.Count * 32 + 128 * 32 + 128;
+  if (inputBound &gt; (int)context.Variables["model-max-input-tokens"]) { return "input exceeds the selected model bound"; }
   return "";
   } catch { return "malformed chat request fields"; }
 }' />
@@ -101,9 +101,3 @@
   </when>
 </choose>
 <set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />
-<set-variable name="usage" value='@{
-  var body = JObject.Parse((string)context.Variables["request-body"]);
-  var input = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + ((JArray)body["messages"]).Count * 32 + 128 * 32 + 128;
-  return new JObject(new JProperty("input_tokens", input), new JProperty("output_tokens", (int)(body["max_tokens"] ?? body["max_completion_tokens"])),
-    new JProperty("cached_input_tokens", 0), new JProperty("requests", 1)).ToString();
-}' />

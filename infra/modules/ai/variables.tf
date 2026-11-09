@@ -63,22 +63,6 @@ variable "protocols" {
       role_definition_name      = string
       api_version               = string
     })
-    anthropic = object({
-      enabled                   = bool
-      capability_verified       = bool
-      private_endpoint_verified = bool
-      hard_input_cap_verified   = bool
-      input_cap_evidence        = string
-      context_input_tokens      = number
-      resource_id               = string
-      endpoint                  = string
-      audience                  = string
-      location                  = string
-      deployment_name           = string
-      price_version             = string
-      anthropic_version         = string
-      role_definition_name      = string
-    })
   })
 }
 variable "llm_models" {
@@ -99,9 +83,6 @@ variable "llm_models" {
     byte_tokenizer_verified   = bool
     private_endpoint_verified = bool
     api_version               = string
-    anthropic_version         = string
-    hard_input_cap_verified   = bool
-    input_cap_evidence        = string
   }))
 }
 variable "streaming_enabled" {

@@ -27,28 +27,16 @@ locals {
   names        = { for key, name in azurecaf_name.resource : key => name.result }
   function_url = "https://${local.names.function}.${local.web_suffix}"
   stream_url   = "https://${local.names.stream}.${local.web_suffix}"
-  stream_paths = {
-    foundry   = "/openai/deployments/${try(module.ai.backends["foundry"].model, "")}/chat/completions"
-    responses = "/openai/v1/responses"
-    anthropic = "/anthropic/v1/messages"
-  }
-  stream_backends = {
-    for key, backend in module.ai.backends : backend.api_protocol => {
-      endpoint = backend.endpoint, path = local.stream_paths[key], model = backend.model,
-      audience = backend.audience, api_version = backend.api_version, anthropic_version = backend.anthropic_version
-    } if contains(keys(local.stream_paths), key)
-  }
   legacy_model_registry = {
     for key, backend in module.ai.backends : "${backend.api_protocol}:${backend.model}" => {
       api_protocol      = backend.api_protocol
       endpoint          = backend.endpoint
-      path              = backend.api_protocol == "openai-chat" ? "/openai/deployments/${backend.model}/chat/completions" : (backend.api_protocol == "openai-responses" ? "/openai/v1/responses" : "/anthropic/v1/messages")
+      path              = backend.api_protocol == "openai-chat" ? "/openai/deployments/${backend.model}/chat/completions" : "/openai/v1/responses"
       model             = backend.model
       audience          = backend.audience
       api_version       = backend.api_version
-      anthropic_version = backend.anthropic_version
       price_version     = backend.price_version
-      max_input_tokens  = backend.api_protocol == "anthropic-messages" ? backend.context_input_tokens : var.hosting.max_input_tokens
+      max_input_tokens  = var.hosting.max_input_tokens
       max_output_tokens = var.gateway.max_output_tokens
       } if backend.api_protocol != "" && !(
       length(var.managed_models) > 0 &&
@@ -60,11 +48,10 @@ locals {
     for key, model in var.llm_models : key => {
       api_protocol      = model.api_protocol
       endpoint          = trimsuffix(model.endpoint, "/")
-      path              = model.api_protocol == "openai-chat" ? "/openai/deployments/${model.deployment_name}/chat/completions" : (model.api_protocol == "openai-responses" ? "/openai/v1/responses" : "/anthropic/v1/messages")
+      path              = model.api_protocol == "openai-chat" ? "/openai/deployments/${model.deployment_name}/chat/completions" : "/openai/v1/responses"
       model             = model.deployment_name
       audience          = model.audience
       api_version       = model.api_version
-      anthropic_version = model.anthropic_version
       price_version     = model.price_version
       max_input_tokens  = model.max_input_tokens
       max_output_tokens = model.max_output_tokens
@@ -79,7 +66,6 @@ locals {
         model             = alias
         audience          = var.ai.foundry.audience
         api_version       = config.api_version
-        anthropic_version = ""
         price_version     = config.price_version
         max_input_tokens  = config.max_input_tokens
         max_output_tokens = config.max_output_tokens
@@ -102,18 +88,15 @@ locals {
     for route, protocol in {
       foundry   = "openai-chat"
       responses = "openai-responses"
-      anthropic = "anthropic-messages"
       } : route => {
-      id                   = ""
-      endpoint             = local.first_registry_models[protocol].endpoint
-      audience             = local.first_registry_models[protocol].audience
-      model                = local.first_registry_models[protocol].model
-      api_version          = local.first_registry_models[protocol].api_version
-      price_version        = local.first_registry_models[protocol].price_version
-      created              = false
-      api_protocol         = protocol
-      context_input_tokens = local.first_registry_models[protocol].max_input_tokens
-      anthropic_version    = local.first_registry_models[protocol].anthropic_version
+      id            = ""
+      endpoint      = local.first_registry_models[protocol].endpoint
+      audience      = local.first_registry_models[protocol].audience
+      model         = local.first_registry_models[protocol].model
+      api_version   = local.first_registry_models[protocol].api_version
+      price_version = local.first_registry_models[protocol].price_version
+      created       = false
+      api_protocol  = protocol
     } if contains(keys(local.first_registry_models), protocol) && !contains(keys(module.ai.backends), route)
   }
   ai_diagnostic_backends = merge(
@@ -131,8 +114,8 @@ locals {
   ai_diagnostic_representatives = {
     for resource_key, keys in local.ai_diagnostic_groups :
     resource_key => coalescelist(
-      sort([for key in keys : key if startswith(key, "legacy:") && !contains(["legacy:responses", "legacy:anthropic"], key)]),
-      [for key in ["legacy:responses", "legacy:anthropic"] : key if contains(keys, key)],
+      sort([for key in keys : key if startswith(key, "legacy:") && key != "legacy:responses"]),
+      [for key in ["legacy:responses"] : key if contains(keys, key)],
       sort(keys)
     )[0]
   }
@@ -233,7 +216,6 @@ module "hosting" {
   streaming_enabled = var.streaming.enabled
   stream_settings = {
     PYTHON_ENABLE_INIT_INDEXING = "1"
-    STREAM_BACKENDS             = jsonencode(local.stream_backends)
     MODEL_REGISTRY              = jsonencode(local.model_registry)
     STREAM_MAX_EVENT_BYTES      = tostring(var.streaming.max_event_bytes)
     STREAM_MAX_BODY_BYTES       = tostring(var.gateway.max_body_bytes)
@@ -265,8 +247,10 @@ module "hosting" {
     LOCAL_STORE_ENABLED                   = "false"
     MAX_INPUT_TOKENS                      = tostring(var.hosting.max_input_tokens)
     MAX_OUTPUT_TOKENS                     = tostring(var.gateway.max_output_tokens)
+    API_AUDIENCE                          = module.identity.api_audience
+    GATEWAY_CLIENT_ID                     = module.identity.gateway.client_id
+    APIM_USAGE_EVENT_URL                  = "${module.apim.gateway_url}/internal/usage-events"
     MODEL_REGISTRY                        = jsonencode(local.model_registry)
-    APPLICATION_REGISTRY                  = jsonencode(local.application_registry)
     AZURE_DASHBOARD_ID                    = module.monitoring.dashboard_id
     LOG_ANALYTICS_WORKSPACE_ID            = module.monitoring.workspace_customer_id
     LOG_ANALYTICS_WORKSPACE_RESOURCE_ID   = module.monitoring.workspace_id
@@ -305,6 +289,8 @@ module "apim" {
   config                        = var.gateway
   applications                  = var.applications
   identity                      = module.identity.gateway
+  function_identity             = module.identity.function
+  event_hub                     = module.event_hubs
   authority                     = local.authority
   tenant_id                     = var.azure.tenant_id
   function_url                  = local.function_url
@@ -318,12 +304,24 @@ module "apim" {
   legacy_defaults = {
     foundry   = length(var.managed_models) == 0 ? try(module.ai.backends["foundry"].model, "") : ""
     responses = length(var.managed_models) > 0 && try(module.ai.backends["responses"].model, "") == var.ai.foundry.deployment_name ? "" : try(module.ai.backends["responses"].model, "")
-    anthropic = try(module.ai.backends["anthropic"].model, "")
   }
   application_insights_id = module.monitoring.app_insights_id
   instrumentation_key     = module.monitoring.app_insights_instrumentation_key
   max_input_tokens        = var.hosting.max_input_tokens
   depends_on              = [module.identity]
+}
+module "event_hubs" {
+  source                        = "./modules/event_hubs"
+  resource_token                = local.resource_token
+  resource_group_name           = data.azurerm_resource_group.rg.name
+  location                      = data.azurerm_resource_group.rg.location
+  tags                          = local.default_tags
+  azure_cloud                   = local.cloud
+  public_network_access_enabled = var.public_network_access_enabled
+  private_endpoint_subnet_id    = var.network.private_endpoint_subnet_id
+  workspace_id                  = module.monitoring.workspace_id
+  gateway_principal_id          = module.identity.gateway.principal_id
+  config                        = var.event_hubs
 }
 module "portal_key_vault" {
   source                        = "./modules/portal_key_vault"
