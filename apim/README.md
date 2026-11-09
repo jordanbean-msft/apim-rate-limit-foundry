@@ -1,197 +1,133 @@
-# Gateway surface and supported bounds
+# OpenAI gateway contracts
 
-Terraform creates explicit APIM operations; there are no catch-all backend routes.
-Only enabled AI services are published. The portal API is always published.
-This guide owns the wire/policy contract. For deployment inputs use
-[infrastructure](../infra/README.md); for token audiences and role trust use
-[Azure topology](../docs/azure-topology.md#identity-and-token-boundaries).
+Terraform publishes explicit operations, not catch-all backend routes.
+Only OpenAI Chat Completions and Responses are supported.
 
-The managed model backend is a native Foundry `AIServices` account. Its
-OpenAI-compatible Chat/Responses URLs and OpenAI User roles remain valid after
-the [in-place account upgrade](../docs/deployment.md#upgrade-an-existing-openai-account);
-do not replace inference origins with Foundry project URLs. Model lookup,
-versioned pricing and Messages' separately verified identity/endpoint are unchanged.
-
-| Route | Request / accounting model |
+| Route | Contract |
 |---|---|
-| `POST /foundry/chat/completions` | Bounded inline Chat text/client functions; exactly one `max_tokens` or `max_completion_tokens`, `n=1` |
-| `POST /foundry/responses` | Bounded inline Responses text/client functions; required `max_output_tokens`; stateless foreground only |
-| `POST /anthropic/v1/messages` | Bounded Messages text/system/client tools/cache controls; required `max_tokens`; full verified context input reserved |
-| `POST /document-intelligence/analyze?pages=1-N` | Inline JSON `base64Source` PDF, `N` 1–20; configured `prebuilt-read` model; remote URLs, images and unspecified pages rejected |
-| `GET /document-intelligence/analyzeResults/{operationId}` | Owned analysis polling only; no new reserve/debit; forwarded `Operation-Location` never exposes the raw AI endpoint |
-| `POST /language/sentiment` | JSON `documents`: 1–10 `{id,text,language?}` records, each 1–5120 characters; model `sentiment` |
-| `GET /portal/{collection}` | `health`, `models`, `subscriptions`, `policies`, `prices`, `assignments`, `usage`, `audit`, `reconciliation` |
-| `GET /portal/usage/summary?period=hour\|day` | Derived scoped usage/cost rollups; default period `day` |
-| `GET /portal/usage/callers` | Authorized application-subscription/service/model usage summaries |
-| `PUT`, `DELETE /portal/{collection}/{id}` | `policies`, `prices`, `assignments`; Function independently enforces Admin |
-| `POST /portal/reconciliation/recover` | Explicit Admin cache-recovery operation |
+| `POST /foundry/chat/completions` | Inline text/client functions; exactly one positive `max_tokens` or `max_completion_tokens`, `n=1` |
+| `POST /foundry/responses` | Inline text/client functions; positive `max_output_tokens`; stateless foreground only |
+| `GET /portal/{collection}` | `health`, `dashboard`, `models`, `budgets`, `organizations`, `prices`, `assignments`, `usage`, `audit`, `chargeback` |
+| `GET /portal/budgets/status` | Authorized month-to-date user/team/department budget balances |
+| `PUT`, `DELETE /portal/{collection}/{id}` | `budgets`, `organizations`, `prices`, `assignments`; Function independently enforces Admin |
+| `POST /portal/counters/rebuild` | Admin-only durable-ledger counter rebuild |
+| `POST /internal/usage-events` | Function workload only; native Event Hub logger callback, never inference |
 
-Every APIM client supplies **both** an Entra bearer token and
-`Ocp-Apim-Subscription-Key`. Inference tokens target `GATEWAY_CLIENT_AUDIENCE`;
-portal tokens target the limiter API audience. APIM validates the tenant/JWT
-before reading claims and natively validates the product subscription. All-access
-and API-scoped subscriptions are rejected: the provisioned product must contain
-the requested API. Do not put keys in URLs.
+## Trust boundaries
 
-Application limits, burst counters, discovery and reports use
-**`context.Subscription.Id`**, never the key value or Entra user. Primary and
-secondary keys, rotation and different users share that app's limits. Keys alone
-are not authorization; user tokens alone are insufficient. The Function also
-validates registered application/tenant membership. The authenticated principal
-remains an audit actor. The portal uses a distinct control-plane product and a
-server-only Key Vault-backed key; the browser never receives an APIM key.
+Inference and portal APIs require **both** a native product subscription key and
+an Entra bearer token. All-access/API-scoped subscriptions are rejected; the
+requested API must belong to the provisioned product. Never put keys in URLs.
+The portal's product key remains server-only in Key Vault.
 
-Before native burst enforcement, `gateway_caller` traces correlate requests without
-raw key values or user identities. Non-secret subscription IDs/application labels
-are permitted operational dimensions. The reference algorithm and log joins are
-defined in [observability](../docs/observability.md#resolve-a-caller-without-logging-names).
+APIM validates inference token signature, audience and tenant before reading
+`tid`/`oid`. Inference requires a delegated person (`scp` present, `idtyp` not
+`app`); application-only tokens and missing `oid` are rejected rather than
+reinterpreted as people. The Function resolves an explicit enabled assignment
+for that tenant/person. Caller user/team/department headers are never trusted.
+`context.Subscription.Id` remains application attribution and the native RPM/TPM
+key, **not** the monthly budget identity.
 
-The gateway generates request IDs. It never accepts caller prices, limits, usage
-estimates or assumed cached-input discounts. LLM requests reject unknown/unsupported
-properties rather than silently dropping their semantics. The gateway preserves supported
-fields, pins backend model/API version, limits bodies to 1 MiB, enforces requested output/page
-caps, and reserves before dispatch. LLM aliases are resolved exactly as `<api_protocol>:<alias>`
-from Terraform's shared `MODEL_REGISTRY`; unknown or wrong-protocol models are rejected before
-admission. The request body and reserve keep the client alias for accounting while APIM rewrites
-the provider's deployment name before stream payload hashing and upstream dispatch. Each entry
-applies its own price pin and token caps, bounded by the Function/gateway global limits. A missing
-model uses only an explicitly configured legacy deployment; no additional model becomes an
-implicit default. Output caps are positive integers up to each selected model's cap.
-Language records use **sum of per-document ceiling(chars/1000)**, not ceiling of a batch.
-Each AI route pins the operator's `*_PRICE_VERSION`; caller-supplied catalog versions
-are ignored. Publish and validate a catalog version before deploying a route pin to it.
+Backend selection preserves explicit APIM backend entities and managed-identity
+authentication. `<protocol>:<alias>` resolves through the shared `MODEL_REGISTRY`;
+the provider receives the registered deployment, not an arbitrary URL/model.
+Only explicitly configured legacy aliases can be implicit defaults.
+Verified UTF-8/framing input bounds and explicit output caps still bound the text
+request subset; those safety caps do not estimate or debit monetary usage.
+Direct OpenAI accounts use their official `.openai.azure.com` (or sovereign)
+inference origins, not Foundry project URLs.
 
-Policy fragments contain only statements, not sections or `<base>`. Native
-`rate-limit-by-key` burst protection executes before the external reservation.
-Optional `llm-token-limit` is disabled unless Commercial capability has been explicitly
-verified; it executes before reservation with a tenant-qualified subscription ID, so native
-denials cannot debit the budget ledger. It applies to Chat only, never Responses or Messages.
-Unknown prices are rejected by the limiter.
+## Monthly soft caps and actual accounting
 
-## Trusted streaming relay
+1. Native RPM and optional verified TPM controls run first.
+2. `limiter-budget-check` calls gateway-only `POST /api/budgets/check` with
+   `{request_id, tenant_id, principal_id, subscription_id, model, api_protocol,
+   streaming}`. The gateway generates the request ID.
+3. The response's `request_id` must match. Errors fail closed; an exhausted
+   configured user, team **or** department budget returns `429` and `Retry-After`.
+4. The request is dispatched without predicting/debiting cost.
+5. Nonstreaming outbound processing calls gateway-only `POST /api/usage/record`
+   with `{request_id, provider_usage, status:"actual"}` using the complete provider
+   `usage` object unchanged. Missing usage sends `status:"usage_unknown"` without
+   invented tokens.
+6. Python normalizes cached/uncached input and output and calculates the pinned
+   version's actual micro-USD cost. APIM performs **no price math**. The immutable
+   record and hierarchy counters remain authoritative.
+7. Only a successful record response with `replayed:false` logs its returned
+   `event` through native `log-to-eventhub`.
 
-With `streaming.enabled=true` (the default), streaming LLM calls reserve first,
-then route to a separate managed-identity-protected Function at `POST /api/stream`.
-APIM pins the registry selection and forces Chat `stream_options.include_usage=true`; clients may
-provide only a boolean `include_usage` in that object. The reserve request includes
-`payload_sha256`, the lowercase SHA256 of the exact final UTF8 JSON sent to the relay.
-The relay selects the same `protocol:alias` from `MODEL_REGISTRY`, verifies the actual provider
-deployment in the rewritten body, and never accepts a caller URL. `STREAM_BACKENDS` remains
-available only for legacy runtime compatibility when `MODEL_REGISTRY` is empty.
-APIM overwrites reservation/correlation headers, removes caller credentials and provider
-headers, drops unmatched query parameters and authenticates to the API audience using
-the gateway identity. Nonstreaming dispatch still uses the provider audience.
+**These are soft monthly UTC-calendar USD caps.** Concurrent in-flight requests
+can overshoot; the next request is denied. They are not strict financial ceilings.
+The budget check snapshots the month, organization and price metadata required
+for trusted recording, with no monetary hold. Completed request IDs cannot
+dispatch another inference. Unknown usage is visible and unpriced, never zero.
 
-Streaming remains unbuffered. `X-RateLimit-Admission: conservative` describes admission;
-`X-RateLimit-Accounting: provider-stream` identifies the trusted observer, not completed
-settlement. `X-RateLimit-Estimated: true` remains conservative when headers are sent,
-before terminal provider usage can be observed. APIM never reads streaming response bodies.
-Disabling the explicit feature gate restores direct provider streaming and conservative
-reservation liability, without deploying the observer or its AI grants.
+Accounting callout/publish failures emit safe failure telemetry but preserve the
+provider response. No Event Hub retries or Function-side Event Hubs SDK are used.
+The gateway strips client credentials/EasyAuth identity headers before upstream
+dispatch and never sends prompts/completions to accounting routes.
 
-Known OpenAI latency checkpoints are validated but never counted as billable units.
-Responses' zero-valued cache-write counter is accepted; nonzero OpenAI cache writes
-remain conservatively reserved until a supported pricing contract is configured.
+## Streaming
 
-## LLM wire formats
+APIM policies cannot reliably inspect terminal SSE usage without consuming the
+response body. The narrow, dedicated Function relay is retained:
 
-All three routes account as `service=foundry`, with explicit reserve `api_protocol`
-values `openai-chat`, `openai-responses`, and `anthropic-messages`. The original
-reservation determines settlement protocol; clients cannot override it later.
+- APIM forces Chat `stream_options.include_usage=true`.
+- APIM routes streaming requests to `POST /api/stream`, overwrites
+  `X-Usage-Request-ID`, and authenticates with its Gateway managed identity.
+- The relay looks up trusted request metadata, validates the registered
+  deployment/body, and incrementally forwards SSE.
+- Chat uses the final cumulative usage-only chunk before `[DONE]`; Responses
+  uses usage on `response.completed`. Never sum token deltas.
+- Missing terminal usage, interruption or disconnect records `usage_unknown`.
+- After durable recording the relay makes one best-effort call to the internal
+  APIM callback with the returned event, only when not replayed.
 
-| Protocol | Operator-pinned upstream route | Version/auth contract |
-|---|---|---|
-| Chat | `/openai/deployments/{deployment}/chat/completions` | Existing configured dated `api-version`; explicit resource audience |
-| Responses | `/openai/v1/responses` | Its own `RESPONSES_API_VERSION=v1\|preview`; explicit audience, commonly `https://ai.azure.com` |
-| Messages | `/anthropic/v1/messages` | `ANTHROPIC_VERSION` becomes `anthropic-version`; no `api-version`; explicit audience, commonly `https://ai.azure.com` |
+`forward-request buffer-response="false"` is retained. Outbound policy body
+inspection occurs **only** on the nonstream branch. Disabling the relay rejects
+streaming requests rather than silently permitting unobserved streaming.
 
-Managed identity supplies upstream Authorization. Caller query parameters are not copied;
-caller API keys, `anthropic-beta`, organization and browser-access headers are removed.
-Messages uses a separately referenced Foundry AI Services account, not an OpenAI-kind
-resource created for Claude. Responses may reference the same account as Chat.
+The callback does not require a subscription key. It instead validates the API
+audience, tenant, **specific Function managed identity `oid` and `azp`**, and
+`RateLimit.Gateway` app role; delegated scopes are forbidden. Browser/client
+tokens, including Admin tokens, cannot forge usage. It has no backend forwarding.
+Function callback settings are `APIM_USAGE_EVENT_URL` and `API_AUDIENCE`.
 
-**Chat:** 1–128 system/developer/user/assistant/tool messages, string or inline text
-blocks, optional names, assistant function calls and inline tool results.
-Up to 128 inline function definitions/calls per array; function parameters are inline JSON.
-Supports `tool_choice`, `parallel_tool_calls`, numeric `temperature`, `top_p`,
-presence/frequency penalties, integer `seed`, bounded textual `stop`, and enumerated
-`reasoning_effort`. Exactly one output cap is required; `n`, when supplied, must be 1.
-`store=true`, legacy function formats, structured-output extensions, media and opaque
-references are unsupported.
+## Native Event Hub projection
 
-**Responses:** `input` is text or 1–128 inline messages/function-call/function-call-output
-items; message content is text or up to 128 `input_text`/assistant `output_text` blocks.
-Self-contained message/function-call items may preserve optional nonempty IDs (up to 200
-characters) and `status="completed"` from native SDK `response.output`; IDs never replace
-required inline content/arguments. Only empty output annotations and output-text `logprobs`
-arrays are accepted. Optional text `instructions`, inline function
-definitions, `tool_choice`, `parallel_tool_calls`, temperature/top-p and enumerated reasoning
-effort are preserved. Sends `store=false` and `background=false`; supplied true values reject.
-History IDs, `previous_response_id`, item references, encrypted reasoning, automatic
-truncation, media/files and provider-built-in tools are rejected.
-This bounded inline subset follows the [Responses REST input schemas](https://learn.microsoft.com/rest/api/microsoft-foundry/azureopenai/responses)
-and [SDK input union](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_input_param.py);
-preserving an item ID does not enable server-side history lookup.
+`event_version:2`, `event_name:"usage_recorded"` flat events contain request/event
+IDs, UTC month/time, opaque tenant/user references, team/department, business
+unit/cost center, application subscription, model/protocol/stream flag, actual or
+unknown status, normalized token categories, pinned price version and actual
+micro-USD (null for unknown). No prompts, completions, human names, raw principal
+IDs, bearer tokens or subscription keys are included.
 
-**Messages:** 1–128 user/assistant messages; text system prompt or up to 128 text system
-blocks; string content or up to 128 text/tool-use/tool-result blocks.
-Assistant `tool_use` has inline JSON input; user `tool_result` has inline text/string
-blocks. Up to 128 inline custom tools, supported `tool_choice`, temperature/top-p/top-k,
-up to 16 stop sequences and textual `metadata.user_id` are preserved.
-`cache_control` accepts only `{type:"ephemeral", ttl:"5m"|"1h"}` (TTL optional).
-Media, citations, thinking, provider-executed tools and other fields reject.
+The partition key is `tenant_ref:user_ref`. APIM is the only producer, using its
+user-assigned managed identity and **hub-scoped Azure Event Hubs Data Sender**.
+The logger is buffered and delivery is best effort, not a billing ledger or
+exactly-once export. Only new durable records attempt publication.
 
-All protocols reject caller pricing-tier, batch, speed and inference-geography overrides.
-Only standard-tier text inference is covered by the pinned price baseline. A provider
-validation error is not proof of no work and never automatically refunds a reservation.
+Microsoft documents that `log-to-eventhub` is **not affected by Application
+Insights sampling**, and messages over **200 KB are automatically truncated**.
+The callback rejects events over 16 KiB; the normalized event is compact and must
+remain below that bound. Do not log request/response payloads to work around it.
+See the [policy reference](https://learn.microsoft.com/azure/api-management/log-to-eventhub-policy)
+and [managed-identity logger guide](https://learn.microsoft.com/azure/api-management/api-management-howto-log-event-hubs).
 
-Chat/Responses reserve UTF-8 bytes of the **entire** JSON (including schemas/tool arguments)
-plus framing overhead, not just prompt strings. Operators must verify the selected deployment's
-byte tokenizer/framing bound before setting the explicit verification flags. Requests whose
-conservative bound exceeds Function `MAX_INPUT_TOKENS` reject before reserve. This is not a
-universal tokenizer claim. Messages instead reserves the entire operator-verified
-`ANTHROPIC_CONTEXT_INPUT_TOKENS`, even for a short request; see the mandatory hard-cap
-verification in [the infrastructure notes](../infra/README.md#protocol-enablement-and-hard-input-cap-verification).
-Anthropic admission requires explicit uncached/read/write-5m/write-1h prices and uses the
-most expensive possible input dimension, never an assumed cache discount.
+## Validation and cutover
 
-Limiter backend URLs are exactly `/api/decisions/reserve`, `/settle`, `/release` under
-`/api/decisions` (release is intentionally **not** invoked by these policies).
-Trusted operation binding/checking calls are `/api/operations/bind` and `/check` under
-`/api/operations`, using the gateway application role. Document owner metadata includes
-tenant, application subscription, model and reservation. Authenticated users of the
-same application can poll; another subscription cannot. Bind failures are fail-closed and
-do not leak the backend `Operation-Location`.
+```sh
+uv run python -m pytest apim/tests -W error
+uv run ruff check apim/tests
+terraform -chdir=infra fmt -check -recursive
+terraform -chdir=infra validate
+terraform -chdir=infra test
+```
 
-Nonstreaming successful JSON response usage is read with `preserveContent: true`.
-Only the small backend `usage` object (at most 8192 UTF-8 bytes), never prompt/response
-content, is forwarded as `provider_usage`; DI/Language continue sending normalized `usage`.
-Known integer counters/details and bounded tier/geography metadata are forwarded; unknown
-dimensions or malformed values skip settlement rather than being silently discarded.
-Known optional token-detail/cache-creation/server-tool objects may be JSON null and are
-forwarded unchanged; null required counters remain conservative, never invented as zero.
-Function normalizes Chat/Responses counts or Anthropic uncached + cache-read + both cache-write
-TTLs from the reserved protocol. Incomplete counters, unsupported billable dimensions and
-ambiguous TTL totals remain conservative; they are never replaced with zero.
-An absent OpenAI cached-token count is never fabricated as zero:
-the limiter retains estimated cost and the gateway preserves its `data.estimated` flag,
-even when settlement returns HTTP 200. Streaming responses are forwarded with
-`buffer-response=false` and **never read by outbound policies** (including an unexpected
-event-stream response to a nonstream request). The dedicated observer settles complete,
-validated provider terminal usage; missing or ambiguous usage, interrupted streams and
-the disabled-relay fallback retain worst-case liability until trusted reconciliation or
-conservative timer finalization. Transport errors and ambiguous backend errors never auto-refund.
-Language HTTP 200 settles trusted `showStats=true` transaction counts; if those statistics
-are absent the submitted per-document reservation remains conservative (including Unicode
-UTF-16 overestimation rather than undercharging). Document polling settles only successful result page
-counts. All other outcomes retain their conservative charge.
-
-Headers: `RateLimit-Remaining`, `RateLimit-Reset`, `X-RateLimit-Reservation`,
-`X-RateLimit-Estimated`; denials additionally return `Retry-After` and the decision JSON.
-Remaining is a last-decision snapshot, not an independently queried live balance.
-No prompt text, document bytes, subscription secrets, or auth tokens enter limiter calls.
-
-Offline checks render every service policy and verify XML and key contract invariants:
-`uv run python -W error -m unittest discover -s apim/tests -v`.
-APIM's live policy compiler and sovereign service API versions still require a configured
-deployment smoke test; the structural tests do not pretend to emulate APIM execution.
+Offline tests render the complete XML and check trust/routing/accounting
+contracts; they do not emulate APIM's C# policy runtime. Live policy compilation,
+stream delivery, callback rejection and forced Event Hub failure acceptance must
+be performed in an approved test environment. No live provisioning is part of
+this change. Review the destructive cutover and archive legacy configuration/
+usage before applying Terraform, because removed service resources/APIs may be
+destroyed rather than disabled.

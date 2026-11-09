@@ -1,207 +1,103 @@
-# System architecture
+# Architecture
 
-This guide owns the component boundaries, service-specific flows and storage design.
-The [reservation guide](docs/reservation-system.md) owns admission/settlement
-sequences, lifecycle diagrams, cache-price math and failure semantics.
-The [Azure topology guide](docs/azure-topology.md) owns networking and identity.
+The sample enforces **monthly, calendar-UTC dollar budgets** for an authenticated
+user and their configured team and department. It supports Azure OpenAI Chat
+Completions and Responses, with incremental streaming and non-streaming requests.
 
-## System overview
+## Responsibilities
 
-![Logical architecture showing request, accounting, portal and observation paths](docs/diagrams/logical-architecture.svg)
+| Component | Owns |
+| --- | --- |
+| APIM | Entra/product-key validation, native RPM/TPM protection, model alias/backend routing, budget-check and usage-record callouts, native Event Hub publication |
+| Budget Function | Membership, all-level budget decisions, price snapshots, actual accounting, audit, scoped reports and dashboard query API |
+| Streaming Function | Bounded incremental OpenAI SSE relay, trusted terminal usage and internal APIM event callback |
+| Table Storage | Authoritative configuration, request accounting context, finalized usage and audit |
+| Redis | Disposable projection/coordination for monthly counters, never historical authority |
+| React/Node portal | Authenticated administration, actual spend, chargeback and shared Azure dashboard |
+| Event Hubs | Best-effort downstream usage transport; not budget enforcement |
+| Application Insights/Log Analytics | Operational traces and the Azure dashboard, not canonical billing |
 
-[Full-size SVG](docs/diagrams/logical-architecture.svg) |
-[Editable draw.io source](docs/diagrams/logical-architecture.drawio) |
-[Diagram editing and physical views](docs/diagrams/README.md).
+The portal's same-origin Node proxy preserves the user's delegated API token and
+adds a server-only APIM product key resolved through managed identity and Key
+Vault. Readers do not gain workspace-wide Azure Monitor access.
 
-Blue arrows show request/accounting paths, purple dashed arrows the portal path,
-and gray dotted arrows telemetry. The Engine is shared code in both Function
-hosts, not a third deployed service; stream-to-Engine settlement is in-process.
-Only enabled services/protocols are published. Browser API calls use the portal's
-same-origin Node proxy, then APIM `/portal`, never an unauthenticated Function.
-The proxy preserves the user's delegated token and adds a server-only product
-subscription key resolved from Key Vault using the web managed identity. Resource-level identity
-and network details belong to the [physical views](docs/azure-topology.md).
-
-The [model registry](docs/model-registry.md) maps protocol/alias pairs to
-approved fixed deployments and pinned prices for APIM and both Functions. It
-changes logical routing, not physical topology; the portal discovers a
-redacted read-only inventory. Accounting and policy selection use the alias.
-
-The Terraform-managed model account is Microsoft Foundry (`AIServices`, S0),
-not an OpenAI-kind account or an ML hub. Account-level inference does not require
-a Foundry project. Chat and Responses keep the native OpenAI-compatible endpoints
-and their existing caller roles; Messages uses its separately approved Foundry
-endpoint and role. A dedicated account identity enables Foundry resource features
-without sharing or broadening APIM/Function workload permissions. Existing
-OpenAI accounts can be [upgraded in place](docs/deployment.md#upgrade-an-existing-openai-account).
-
-## Responsibility boundaries
-
-| Component | Owns | Does not own |
-| --- | --- | --- |
-| APIM | Identity, supported request bounds, native throttling, protocol/alias lookup and approved deployment routing, managed-identity callouts | Price arithmetic or the durable budget ledger |
-| Control-plane Function | Rule selection, reserve/settle/recovery, configuration, audit, authorized reports and Admin-only dashboard queries | Model generation or portal static hosting |
-| Streaming Function | Registered-deployment SSE transport, trusted usage observation and shared Engine settlement | Client-reported usage or arbitrary proxy destinations |
-| Redis | Atomic all-or-none check/debit and idempotent finalization | Durable configuration or invoice history |
-| Table Storage | Configuration, pinned intents, admissions, settlements, ownership and recovery evidence | A cross-service ACID transaction with Redis |
-| React portal / Node server | Admin editing, native dashboard charts, model inventory, app-subscription views, own Graph photo and same-origin authenticated control-plane proxy | Inference execution, backend authorization or live Redis balances |
-| Key Vault | Server-only portal APIM key, resolved by the web managed identity | Browser credentials, model authentication or budget identity |
-| Azure Monitor | Operational traces, metrics and charts | Admission decisions or canonical billing |
-
-Native APIM counters remain gateway-scoped. Shared custom limits require gateways
-to use the same configured store; active-active cross-region ledger replication
-is not implemented. Dynamically rotating APIM keys is not a replacement for atomic
-cost accounting. The [client-driven throttling article](https://learn.microsoft.com/azure/api-management/api-management-sample-flexible-throttling#client-driven-throttling)
-demonstrates scoping, not financial consistency.
-
-### Application identity, not user identity
-
-Inference requires **both** a tenant-validated Entra access token and a native
-product subscription key. `context.Subscription.Id` is the canonical application
-identity. The primary and secondary key, key rotation and different authenticated
-users all use that same budget; another subscription gets a separate budget.
-The authenticated Entra principal remains audit metadata, never a counter key.
-Assignments bind policies and explicitly authorized Reader principals to an app.
-The portal's separate product subscription is control-plane access, not an
-inference application or a shared end-user budget.
-
-```mermaid
-flowchart LR
-    C[Calling application: Entra token + product key] --> G[APIM: validate both]
-    G --> R[Reserve by tenant + subscription + model]
-    G --> M[Approved real Foundry deployments]
-    M --> S[Trusted usage settlement at pinned prices]
-    R --> D[(Redis counters and durable Table ledger)]
-    S --> D
-    B[Signed-in browser] --> W[Node 24 portal proxy]
-    W -->|delegated user token + server key| P[APIM portal product]
-    K[Key Vault] -->|web managed identity| W
-    P --> V[Admin or explicitly assigned Reader views]
-    V --> D
-    V -->|Admin only| E[Read-only telemetry endpoint]
-    E -->|Function identity: Reader| A[Deployed Azure dashboard definitions]
-    E -->|Function identity: Log Analytics Reader| L[Fixed workspace]
-    B -->|separate User.Read token| H[Same-cloud Microsoft Graph own photo]
-```
-
-See [rule/counter semantics](docs/configuration-reference.md#policy-selection-and-counter-scope)
-and [supported gateway contracts](apim/README.md).
-
-The telemetry endpoint reads the native dashboard's 22 query definitions rather
-than maintaining a second catalog. It runs outside admission/settlement, rejects
-client-supplied query destinations, and never grants workspace-wide data to
-application-scoped Readers. See [in-app chart access](docs/observability.md#charts-inside-the-application).
-
-## Document Intelligence and Language
-
-Document analysis is asynchronous. Submission reserves the enforced page bound;
-polling checks ownership and settles the **original** reservation, without
-reserving another analysis.
+## Request and accounting flow
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant G as APIM
-    participant F as Limiter Function
-    participant B as Document Intelligence
-    C->>G: Analyze inline PDF with pages=1-N
-    G->>F: Reserve hard page bound
-    F-->>G: Admitted reservation
-    G->>B: Submit bounded analysis
-    B-->>G: 202 and operation URL
-    G->>F: Bind operation to tenant, application subscription, model and reservation
-    F-->>G: Ownership persisted
-    G-->>C: 202 and APIM operation URL
-    loop Until complete
-        C->>G: Poll APIM operation URL
-        G->>F: Check authenticated application subscription
-        F-->>G: Owner and original reservation
-        G->>B: Poll provider operation
-        B-->>G: Status or completed result
-        opt Successful analysis
-            G->>F: Settle original reservation with analyzed pages
-        end
-        G-->>C: Status or result
+    participant C as User application
+    participant A as APIM
+    participant F as Budget Function
+    participant T as Durable ledger
+    participant O as Azure OpenAI
+    participant E as Event Hub
+    C->>A: Entra user token + product key
+    A->>A: Authenticate, resolve alias, native burst controls
+    A->>F: Check current user/team/department spend
+    F->>T: Resolve assignment, budgets and price version
+    alt Any configured budget exhausted
+        F-->>A: Denied with limiting budgets and UTC reset
+        A-->>C: 429, no model request
+    else Budget available
+        F-->>A: Allowed, no predicted debit
+        A->>O: Execute request (relay for streaming)
+        O-->>A: Response and cumulative token usage
+        A->>F: Record trusted actual usage
+        F->>T: Idempotent finalized usage
+        F-->>A: Safe versioned event projection
+        A->>E: Native log-to-eventhub (best effort)
+        A-->>C: Provider response
     end
 ```
 
-Bind failures fail closed without leaking the backend operation URL. The supported
-operation accepts bounded inline PDFs, not arbitrary remote URLs or general uploads.
-Language instead uses synchronous sentiment analysis and per-document text-record
-rounding; backend transaction statistics settle the submitted bound.
+The relay performs the record/callback steps after observing the stream's
+terminal usage. It does not buffer the complete response, parse prompts into
+estimated charges, or publish directly to Event Hubs.
 
-Exact payload limits and unit rules belong to the [APIM contract](apim/README.md).
-The implementation is in [document submission](apim/policies/document-submit.xml.tftpl),
-[document polling](apim/policies/document-poll.xml.tftpl),
-[Language settlement](apim/policies/language-settlement.xml.tftpl), and
-[`Engine` ownership methods](src/apim_rate_limit_foundry/engine.py).
+## Identity and hierarchy
 
-## Why Redis, and why not Redis alone?
+Tenant plus validated Entra object ID identifies the user. An APIM subscription
+is application attribution, not an alternative budget identity. Explicit managed
+configuration maps the user to one team and department; teams belong to the same
+tenant and their assigned department. Membership must be unambiguous and enabled.
 
-| Option | Useful property | Limitation for this design |
-| --- | --- | --- |
-| Redis scripts | Atomic check/reserve across matching counters with few network trips | Cache loss, hot keys, topology and cloud lifecycle constraints |
-| Table Storage | Durable, inexpensive records and partition transactions | Contention and extra trips for hot multi-rule decisions |
-| Cosmos DB | Durable low-latency partition transactions | RU/partition design and cost; not automatically better for contended counters |
-| Azure SQL | Mature durable transactions | Additional schema/operational cost and contention tradeoffs |
-| Function memory | Deterministic local test doubles | Not shared across workers |
-| APIM counters | Efficient native burst controls | Gateway-scoped and no differentiated price catalog |
+All matching budgets apply, including model-specific and wildcard budgets.
+Unconfigured levels impose no implicit financial cap. Each request contributes
+to the relevant user/team/department totals but remains **one financial charge**:
+never add three hierarchy totals together as if they were separate consumption.
+Business-unit and cost-center dimensions are snapshotted for historical chargeback.
 
-The sample deliberately combines Redis for the hot decision with Table Storage
-for durability. The third-party Python `redis` client is necessary because there
-is no suitable Microsoft-maintained Python Redis data-plane client.
+## Financial meaning and failures
 
-Redis and Table writes are not a distributed ACID transaction. Ambiguous writes
-retain liability instead of reopening allowance. One Redis hash/slot and one
-Table partition make the reference implementation comprehensible, but limit
-horizontal scaling. Historical records are not automatically expired or archived.
-Table access is on the admission path; Redis-only latency numbers are not
-end-to-end latency claims.
+There are no monetary reservations, holds, refunds or settlement deltas. A check
+only tests already-recorded spend; concurrent work can overshoot. An `$80` monthly
+budget means `80,000,000` micro-USD. Cost uses decimal price arithmetic and integer
+micro-USD, not binary floating point.
 
-### Cache loss and recovery
+Usage and its original price/membership context remain durable and idempotent.
+Redis loss must not reopen an empty budget: reconstruct from finalized records
+before allowing checks. Redis/Table are not a distributed ACID transaction.
+This sample rebuilds the disposable projection and reads authoritative finalized
+records during each check. It favors simple crash recovery over a high-throughput
+hot path; validate ledger size and latency before production use.
+Missing or malformed terminal usage is **unknown**, never a zero-cost success.
+Unknown usage limits financial completeness; see [token accounting](docs/token-accounting.md).
 
-```mermaid
-sequenceDiagram
-    participant O as Authorized operator
-    participant F as Limiter Function
-    participant R as Redis
-    participant T as Table Storage
-    Note over F,R: Missing readiness marker blocks admission and finalization
-    O->>F: Protected recovery request
-    F->>R: Acquire recovery token and close readiness gate
-    F->>T: Read intents, admissions and settlements
-    F->>F: Prefer final records and retain ambiguous liability
-    F->>T: Persist recovery audit
-    F->>R: Atomically rebuild counters and mark ready
-    R-->>F: Ready
-    F-->>O: Recovery result
-```
+Event Hub failure must not change an inference response. No application retry
+queue or outbox is introduced. Lost export events can be found by reconciling
+against the durable ledger; this is deliberately not exactly-once delivery.
 
-Proven denials rebuild with no debit. Unconfirmed intents can consume allowance
-conservatively even if backend execution cannot be proved. Recovery does not ask
-providers to discover unreported usage and is not a budget-reset operation.
-Use the [operations runbook](docs/operations.md#recovery), not direct Redis edits.
+## Dashboard and deployment
 
-## Configuration and reporting
+The Terraform-managed Azure dashboard contains finalized spend, hierarchy
+utilization/denials, tokens, chargeback and Event Hub health views. The Admin-only
+portal dashboard reads that same persisted layout and KQL rather than duplicating
+queries. Scoped chargeback reports use the durable ledger.
 
-Configuration changes and their audit records are committed together in the
-Table partition. New reservations read configuration; in-flight requests keep
-their original snapshots. Reports derive UTC admission-time cohorts from durable
-records, replacing estimates with available settlements rather than maintaining
-a second materialized accounting ledger.
+Azure Commercial and Government are explicit deployment configurations, not
+interchangeable DNS suffixes. The resource group/network are pre-created.
+Terraform does not manage policy-owned private DNS zone groups. A reviewed
+cutover is required before applying resource deletions from the old sample.
 
-Readers are scoped by the server to their authenticated tenant/principal; browser
-filters and role hints are not authorization. Detailed trust boundaries are in
-[Azure topology and identity](docs/azure-topology.md#identity-and-token-boundaries).
-
-Large histories require designed retention, pagination, partitioning and possibly
-incremental projections before production use. Also establish load/latency,
-availability, recovery and pricing-governance objectives.
-
-## Further reading
-
-- [Reservation system](docs/reservation-system.md): per-request mechanics and detailed sequence/lifecycle diagrams.
-- [Code guide](docs/code-guide.md): entry points, dependency injection, persistence and extension points.
-- [Observability](docs/observability.md): telemetry paths, dashboard inventory and correlation.
-- [Deployment](docs/deployment.md) and [infrastructure reference](infra/README.md): execution and inputs.
+See [topology](docs/azure-topology.md), [migration](docs/migration.md),
+[observability](docs/observability.md) and [implementation](docs/code-guide.md).
