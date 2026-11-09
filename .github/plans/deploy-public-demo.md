@@ -40,9 +40,8 @@ Keep managed identity, TLS, authentication and authorization enabled.
   Interactive portal sign-in/MFA is not verified and remains operator-owned.
 - [x] Record endpoints, evidence, limitations and any provider-availability blockers.
   Commercial East US 2 deployment, environment `publicdemo`, model `sample-model`
-  (GPT-5.4-mini, version `2026-03-17`). Portal:
-  <https://ailimit-app-ndbhzjvlnze1y.azurewebsites.net>;
-  gateway: <https://ailimit-apim-ndbhzjvlnze1y.azure-api.net>.
+  (GPT-5.4-mini, version `2026-03-17`). Portal and gateway endpoints are available
+  through the deployment's `WEB_URL` and `GATEWAY_URL` azd environment outputs.
   Authenticated admin APIs, durable summaries, live RBAC, Redis recovery and
   Application Insights HTTP/timer telemetry pass. `azd show` discovers both apps after
   tagging the pre-created application group with `azd-env-name=publicdemo`.

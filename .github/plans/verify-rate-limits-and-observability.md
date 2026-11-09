@@ -8,7 +8,7 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   Parent owns live queries and evidence under ignored `.azure/publicdemo/`.
   Read-only operator inspection confirms a ready ledger and exact shared request counters:
   Chat + Responses consume two units; denied calls leave the counter unchanged.
-  Correlation 5b966a1c-ce3b-47a6-969a-4c26d261a311 joins a Function denial to APIM 429
+  A captured correlation ID joins a Function denial to APIM 429
   with no backend response. Live REDConnectionEvents, StorageTableLogs, FunctionAppLogs,
   AppServiceConsoleLogs, AppTraces, AppEvents and AppDependencies reach the workspace.
 - [x] Add comprehensive structured Function decision, settlement, dependency, configuration,
@@ -71,8 +71,8 @@ Keep infrastructure updates in Terraform and preserve the demo resource tags.
   GatewayLogs/custom traces and browser/Function correlation in Application Insights
   and Log Analytics. SDK payload/Authorization/raw-identity fields and browser
   user/session/URL context are absent. Six baseline policies and four prices remain.
-  Portal: https://ailimit-app-ndbhzjvlnze1y.azurewebsites.net
-  Gateway: https://ailimit-apim-ndbhzjvlnze1y.azure-api.net
+  Portal: use the deployment's `WEB_URL` azd environment output.
+  Gateway: use the deployment's `GATEWAY_URL` azd environment output.
   Demo prices are illustrative, not invoices. GUI used approved delegated MSAL tokens;
   no interactive MFA or live Claude backend was tested. Government was not redeployed.
 

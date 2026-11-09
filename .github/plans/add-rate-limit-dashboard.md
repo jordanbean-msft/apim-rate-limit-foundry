@@ -38,7 +38,7 @@ Commercial/Government compatibility, authentication and all accounting behavior.
   ARM persistence and actual workspace query execution were verified instead.
 - [x] Record dashboard link, verification evidence and limitations. Depends on
   live verification.
-  Dashboard: https://portal.azure.com/#dashboard/arm/subscriptions/0ec6c427-01d3-4462-ae56-fd9656157157/resourceGroups/rg-apim-ai-demo-eus2/providers/Microsoft.Portal/dashboards/dsb-ndbhzjvlnze1y-rate-limiter
+  Dashboard: use the deployment's `AZURE_DASHBOARD_URL` azd environment output.
   Evidence: ignored `.azure/publicdemo/rate-dashboard-evidence.json`, provision log
   and refreshed smoke results. Telemetry has ingestion/windowing limitations and
   is not billing/accounting truth. Government compatibility is structurally tested,

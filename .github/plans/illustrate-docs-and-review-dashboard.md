@@ -5,7 +5,7 @@
 Improve the existing canonical guides instead of duplicating them. Add real browser
 captures with explicit live/demo provenance, readable diagrams, and executable
 examples without secrets. Review the deployed Commercial dashboard's persisted
-queries, axes and results against Cody's cost/model, cache economics, caller
+queries, axes and results against the documented cost/model, cache economics, caller
 attribution and shared-service requirements. Do not imply Government certification
 or claim signed-in Azure portal rendering from ARM/query inspection alone.
 
