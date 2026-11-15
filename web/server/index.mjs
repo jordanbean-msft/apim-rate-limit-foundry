@@ -6,6 +6,7 @@ import { authorityFor, buildConfig } from './runtime-config.mjs';
 import { createApiProxy } from './api-proxy.mjs';
 import { observeRequest, writeLog } from './logging.mjs';
 import { publicAppInsights } from './telemetry-config.mjs';
+import { createServerTelemetry } from './telemetry.mjs';
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -17,6 +18,10 @@ const mime = {
   '.woff2': 'font/woff2',
 };
 
+/**
+ * Host public runtime settings, the built SPA, and an optional fixed-upstream API proxy.
+ * Authentication/session enforcement is supplied by hosting and the API, not this static server.
+ */
 export function createPortalServer(
   config,
   root = resolve('dist'),
@@ -33,6 +38,7 @@ export function createPortalServer(
   const apiProxy = config.apiProxyEnabled ? createApiProxy(proxyOptions) : null;
   const ingestionOrigin =
     publicAppInsights(config.appInsights?.connectionString, config.cloud)?.ingestionOrigin || '';
+  // Browser connections are limited to configured API, cloud identity/Graph, and validated telemetry.
   const csp = [
     "default-src 'self'",
     "script-src 'self'",
@@ -47,7 +53,7 @@ export function createPortalServer(
     "form-action 'self'",
   ].join('; ');
   return createServer(async (req, res) => {
-    const outcome = observeRequest(req, res, logger);
+    const outcome = observeRequest(req, res, logger, proxyOptions.telemetry);
     res.setHeader('Content-Security-Policy', csp);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -77,6 +83,7 @@ export function createPortalServer(
       return;
     }
     try {
+      // Only buildConfig's public allowlist belongs here; deployment secrets stay in proxy options.
       if (pathname === '/config.json') {
         outcome.route = 'runtime_config';
         res.writeHead(200, {
@@ -95,6 +102,7 @@ export function createPortalServer(
         res.writeHead(400).end('Invalid path');
         return;
       }
+      // Check both lexical containment and resolved filesystem paths to prevent symlink escapes.
       let filename = resolve(root, `.${pathname}`);
       if (!filename.startsWith(`${root}${sep}`) && filename !== root) {
         outcome.errorCategory = 'invalid_path';
@@ -106,6 +114,7 @@ export function createPortalServer(
       try {
         if (!(await stat(filename)).isFile()) throw new Error('Not a file');
       } catch {
+        // Only extensionless HTML navigations receive SPA fallback; missing assets remain 404.
         if (extname(pathname) || !req.headers.accept?.includes('text/html')) {
           outcome.errorCategory = 'not_found';
           res.writeHead(404).end('Not found');
@@ -133,20 +142,33 @@ export function createPortalServer(
   });
 }
 
+// Importing this module does not bind a listener; only direct execution starts the HTTP host.
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  let telemetry;
   try {
     const config = buildConfig();
+    telemetry = createServerTelemetry(config);
+    const logger = (record) => {
+      writeLog(record);
+      try {
+        telemetry?.log(record);
+      } catch {
+        // Export failures must not affect hosting.
+      }
+    };
     const port = Number(process.env.PORT || 8080);
     const server = createPortalServer(config, resolve('dist'), writeLog, {
       upstreamUrl: process.env.API_BASE_URL,
       subscriptionKey: process.env.PORTAL_APIM_SUBSCRIPTION_KEY,
+      telemetry,
     });
     server.on('error', () => {
-      writeLog({ event: 'portal_server_error', errorCategory: 'listen_error' });
+      logger({ event: 'portal_server_error', errorCategory: 'listen_error' });
       process.exitCode = 1;
+      void telemetry?.shutdown();
     });
     server.listen(port, '0.0.0.0', () => {
-      writeLog({
+      logger({
         event: 'portal_started',
         port,
         cloud: config.cloud,
@@ -154,8 +176,33 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
         browserTelemetry: Boolean(config.appInsights),
       });
     });
+    let stopping = false;
+    // Drain active requests with a finite deadline, then shut down best-effort telemetry providers.
+    const shutdown = () => {
+      if (stopping) return;
+      stopping = true;
+      const deadline = setTimeout(() => {
+        server.closeAllConnections();
+        void telemetry?.shutdown();
+      }, 5000);
+      deadline.unref();
+      server.close(() => {
+        clearTimeout(deadline);
+        void telemetry?.shutdown();
+      });
+      server.closeIdleConnections();
+    };
+    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', shutdown);
   } catch {
-    writeLog({ event: 'portal_server_error', errorCategory: 'startup_configuration' });
+    const record = { event: 'portal_server_error', errorCategory: 'startup_configuration' };
+    writeLog(record);
+    try {
+      telemetry?.log(record);
+    } catch {
+      // Best-effort startup diagnostics.
+    }
+    void telemetry?.shutdown();
     process.exitCode = 1;
   }
 }

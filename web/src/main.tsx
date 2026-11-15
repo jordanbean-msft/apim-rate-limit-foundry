@@ -29,12 +29,14 @@ const portalTheme = {
   shadow64: 'none',
 };
 
+/** Load public runtime settings before enabling either explicit demo mode or Entra sign-in. */
 function Bootstrap() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [msalReady, setMsalReady] = useState(false);
   useEffect(() => {
+    // Retries/unmounts invalidate prior completions without cancelling the configuration fetch.
     let active = true;
     fetch('/config.json', { cache: 'no-store', credentials: 'same-origin' })
       .then(async (response) => {
@@ -65,6 +67,7 @@ function Bootstrap() {
       active = false;
     };
   }, [attempt]);
+  // Never initialize authentication against missing settings or silently fall back to demo data.
   const msal = useMemo(() => (config && !config.demoMode ? createMsal(config) : null), [config]);
   useEffect(() => {
     if (!msal) {

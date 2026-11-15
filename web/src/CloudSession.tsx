@@ -7,8 +7,9 @@ import { tokenRoles } from './auth';
 import type { Role, RuntimeConfig } from './contracts';
 import { ProfileGreeting } from './components/ProfileGreeting';
 import { Portal } from './Portal';
-import { track } from './telemetry';
+import { observeIdentity, track } from './telemetry';
 
+/** Coordinate MSAL identity, API-role hints, and optional Graph profile access after bootstrap. */
 export function CloudSession({ config }: { config: RuntimeConfig }) {
   const { instance, accounts, inProgress } = useMsal();
   const account = useMemo(() => instance.getActiveAccount() ?? accounts[0], [instance, accounts]);
@@ -23,10 +24,12 @@ export function CloudSession({ config }: { config: RuntimeConfig }) {
         config.apiBaseUrl,
         async () => {
           if (!account) throw new Error('Sign in before calling the API.');
-          const result = await instance.acquireTokenSilent({
-            account,
-            scopes: [config.apiScope],
-          });
+          const result = await observeIdentity('token_api', () =>
+            instance.acquireTokenSilent({
+              account,
+              scopes: [config.apiScope],
+            }),
+          );
           return result.accessToken;
         },
         track,
@@ -34,13 +37,16 @@ export function CloudSession({ config }: { config: RuntimeConfig }) {
       ),
     [instance, account, config],
   );
+  // Graph has its own audience/scope; an API access token must never be reused for profile calls.
   const graphScope =
     config.cloud === 'government'
       ? 'https://graph.microsoft.us/User.Read'
       : 'https://graph.microsoft.com/User.Read';
   const getGraphToken = useCallback(async () => {
     if (!account) throw new Error('Sign in before accessing the profile.');
-    const result = await instance.acquireTokenSilent({ account, scopes: [graphScope] });
+    const result = await observeIdentity('token_graph', () =>
+      instance.acquireTokenSilent({ account, scopes: [graphScope] }),
+    );
     return result.accessToken;
   }, [account, graphScope, instance]);
 
@@ -69,6 +75,7 @@ export function CloudSession({ config }: { config: RuntimeConfig }) {
 
   useEffect(() => {
     if (!account || inProgress !== InteractionStatus.None) return;
+    // Silent acquisition is not cancelled; ignore completion after account/scope changes.
     let active = true;
     setRoles(null);
     instance

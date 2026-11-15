@@ -1,0 +1,4 @@
+.azure/
+.git/
+.env*
+*.log

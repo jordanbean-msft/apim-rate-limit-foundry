@@ -7,8 +7,9 @@ import type {
   EditableCollection,
   PortalApi,
 } from './contracts';
-import { track, type Telemetry } from './telemetry';
+import { beginDependency, track, type Telemetry } from './telemetry';
 
+/** Safe user-facing HTTP failure; upstream response bodies are deliberately not exposed. */
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -19,12 +20,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Adapt portal routes to the injected token provider and optional same-origin APIM proxy.
+ * Collection responses are checked as arrays, not validated field by field at runtime.
+ */
 export function createApi(
   baseUrl: string,
   getAccessToken: () => Promise<string>,
   telemetry: Telemetry = track,
   proxyEnabled = false,
 ): PortalApi {
+  /** Send JSON mutations, decode JSON/CSV reads, and record bounded outcome metadata. */
   async function request(
     path: string,
     method = 'GET',
@@ -44,10 +50,14 @@ export function createApi(
     let errorCategory = 'authentication';
     let outcome = 'failure';
     const resource = path.split(/[/?]/, 1)[0] || 'api';
+    let dependency: ReturnType<typeof beginDependency> | undefined;
     try {
       const token = await getAccessToken();
       errorCategory = 'network';
       requestCount = 1;
+      dependency = beginDependency(resource, method);
+      // The proxy needs the platform session cookie but receives the API token separately.
+      // Direct API calls send only the bearer token; neither path follows token-bearing redirects.
       const response = await fetch(`${baseUrl}/${path}`, {
         method,
         headers: {
@@ -55,11 +65,13 @@ export function createApi(
             ? { 'X-Portal-Access-Token': token }
             : { Authorization: `Bearer ${token}` }),
           ...(correlationId ? { 'X-Correlation-ID': correlationId } : {}),
+          ...(dependency.traceparent ? { traceparent: dependency.traceparent } : {}),
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         credentials: proxyEnabled ? 'same-origin' : 'omit',
         cache: 'no-store',
+        redirect: 'error',
       });
       status = response.status;
       if (!response.ok) {
@@ -73,6 +85,7 @@ export function createApi(
         throw new ApiError(message, response.status);
       }
       errorCategory = 'invalid_response';
+      // DELETE may be bodyless; CSV exports bypass JSON decoding.
       const result: unknown =
         response.status === 204
           ? undefined
@@ -85,6 +98,7 @@ export function createApi(
       errorCategory = 'none';
       return result;
     } finally {
+      dependency?.finish(status, outcome === 'success' ? 'success' : 'failure');
       try {
         telemetry(
           'portal_api',
@@ -110,6 +124,7 @@ export function createApi(
     async list<K extends Collection>(collection: K): Promise<Collections[K][]> {
       return (await request(collection, 'GET', undefined, 'json', true)) as Collections[K][];
     },
+    // Live Redis-backed spend is separate from asynchronously persisted usage/chargeback history.
     async budgetStatus() {
       return (await request('budgets/status', 'GET', undefined, 'json', true)) as BudgetStatus[];
     },
@@ -124,6 +139,7 @@ export function createApi(
       );
       return result as ChargebackRow[] | string;
     },
+    // PUT replaces the identified configuration record; the API owns validation and authorization.
     async save<K extends EditableCollection>(collection: K, record: Collections[K]): Promise<void> {
       await request(`${collection}/${encodeURIComponent(record.id)}`, 'PUT', record);
     },

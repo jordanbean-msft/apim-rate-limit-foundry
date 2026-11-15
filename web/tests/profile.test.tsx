@@ -2,6 +2,7 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components';
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProfileGreeting } from '../src/components/ProfileGreeting';
+import * as telemetry from '../src/telemetry';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -17,6 +18,32 @@ function renderProfile(
 }
 
 describe('Graph profile greeting', () => {
+  it('records only fixed Graph dependency operations and never forwards tracing headers', async () => {
+    const finish = vi.fn();
+    const begin = vi.spyOn(telemetry, 'beginDependency').mockReturnValue({
+      traceparent: '00-safe-but-must-not-be-sent',
+      finish,
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockRejectedValueOnce(new Error('private Graph error'));
+    vi.stubGlobal('fetch', fetchImpl);
+    const view = renderProfile(async () => 'private-token');
+    await waitFor(() => expect(finish).toHaveBeenCalledTimes(2));
+    expect(begin.mock.calls).toEqual([['graph_profile'], ['graph_photo']]);
+    expect(finish.mock.calls).toEqual([
+      [403, 'failure'],
+      [0, 'failure'],
+    ]);
+    for (const [, options] of fetchImpl.mock.calls) {
+      expect(Object.keys(options.headers)).toEqual(['Authorization']);
+      expect(options.redirect).toBe('error');
+    }
+    expect(JSON.stringify([...begin.mock.calls, ...finish.mock.calls])).not.toContain('private');
+    view.unmount();
+  });
+
   it('uses the cloud-specific Graph token for profile/photo and revokes the in-memory photo URL', async () => {
     const getGraphToken = vi.fn().mockResolvedValue('distinct-graph-token');
     const fetchMock = vi

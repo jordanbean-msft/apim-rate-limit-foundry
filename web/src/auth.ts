@@ -6,6 +6,7 @@ const hosts = {
   government: 'login.microsoftonline.us',
 };
 
+/** Configure tenant-specific Entra sign-in for the selected cloud, separate from platform auth. */
 export function createMsal(config: RuntimeConfig): PublicClientApplication {
   if (!Object.hasOwn(hosts, config.cloud)) throw new Error('Unsupported Azure cloud');
   const host = hosts[config.cloud];
@@ -20,6 +21,7 @@ export function createMsal(config: RuntimeConfig): PublicClientApplication {
         : window.location.origin,
       navigateToLoginRequestUrl: false,
     },
+    // MSAL manages its persistent token cache; application telemetry must never read or export it.
     cache: { cacheLocation: 'localStorage' },
   });
   instance.addEventCallback((event) => {

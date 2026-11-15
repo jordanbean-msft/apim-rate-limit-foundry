@@ -6,7 +6,10 @@ const authorities = {
 };
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Only explicitly allowlisted, public settings ever reach the browser. */
+/**
+ * Validate deployment settings and construct the public /config.json response.
+ * No spread of process.env: subscription secrets and hosting session data must stay server-side.
+ */
 export function buildConfig(env = process.env) {
   const demoMode = env.WEB_DEMO_MODE === 'true';
   const cloud = env.AZURE_CLOUD || (demoMode ? 'commercial' : '');
@@ -26,6 +29,7 @@ export function buildConfig(env = process.env) {
   const apiAudience = env.API_AUDIENCE || '';
   const apiScope = env.API_SCOPE || '';
   const apiBaseUrl = (env.API_BASE_URL || '').replace(/\/+$/, '');
+  // Demo must be explicitly enabled; incomplete production identity/API settings fail closed.
   if (!demoMode) {
     if (!guid.test(tenantId) || !guid.test(clientId)) {
       throw new Error('AZURE_TENANT_ID and WEB_CLIENT_ID must be tenant-specific GUIDs');
@@ -56,6 +60,7 @@ export function buildConfig(env = process.env) {
     clientId,
     apiAudience,
     apiScope,
+    // The browser targets this host in proxy mode; the real APIM endpoint stays in server options.
     apiBaseUrl: apiProxyEnabled ? '/api' : apiBaseUrl,
     apiProxyEnabled,
     demoMode,
@@ -64,6 +69,7 @@ export function buildConfig(env = process.env) {
   };
 }
 
+/** Return only a known sovereign-cloud Entra origin for authentication and CSP construction. */
 export function authorityFor(cloud) {
   if (!Object.hasOwn(authorities, cloud)) throw new Error('Unsupported Azure cloud');
   return authorities[cloud];

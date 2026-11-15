@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { beginDependency } from '../telemetry';
 
+/** Derive an avatar fallback entirely in-browser when optional Graph details are unavailable. */
 function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   return parts.length > 1
@@ -7,6 +9,7 @@ function initials(name: string) {
     : (parts[0]?.slice(0, 2).toUpperCase() ?? '?');
 }
 
+/** Enrich the signed-in label with optional cloud-specific Graph name/photo calls, not API tokens. */
 export function ProfileGreeting({
   name,
   cloud,
@@ -27,21 +30,33 @@ export function ProfileGreeting({
     const graphOrigin =
       cloud === 'government' ? 'https://graph.microsoft.us' : 'https://graph.microsoft.com';
 
+    /** Fetch independent profile resources so unavailable photos do not suppress a valid name. */
     async function loadProfile() {
       try {
         const token = await getGraphToken();
         const headers = { Authorization: `Bearer ${token}` };
+        // Graph receives only its bearer token, not portal cookies or manual trace/correlation IDs.
+        async function graphRequest(operation: 'graph_profile' | 'graph_photo', path: string) {
+          const dependency = beginDependency(operation);
+          let status = 0;
+          let outcome: 'success' | 'failure' = 'failure';
+          try {
+            const response = await fetch(`${graphOrigin}${path}`, {
+              headers,
+              credentials: 'omit',
+              cache: 'no-store',
+              redirect: 'error',
+            });
+            status = response.status;
+            outcome = response.ok ? 'success' : 'failure';
+            return response;
+          } finally {
+            dependency.finish(status, outcome);
+          }
+        }
         const [profileResult, photoResult] = await Promise.allSettled([
-          fetch(`${graphOrigin}/v1.0/me?$select=displayName`, {
-            headers,
-            credentials: 'omit',
-            cache: 'no-store',
-          }),
-          fetch(`${graphOrigin}/v1.0/me/photo/$value`, {
-            headers,
-            credentials: 'omit',
-            cache: 'no-store',
-          }),
+          graphRequest('graph_profile', '/v1.0/me?$select=displayName'),
+          graphRequest('graph_photo', '/v1.0/me/photo/$value'),
         ]);
         if (active && profileResult.status === 'fulfilled' && profileResult.value.ok) {
           try {
@@ -61,6 +76,7 @@ export function ProfileGreeting({
           }
         }
         if (active && photoResult.status === 'fulfilled' && photoResult.value.ok) {
+          // Accept bounded image payloads before creating a local URL; never persist the photo.
           const photo = await photoResult.value.blob();
           if (
             active &&
@@ -79,6 +95,7 @@ export function ProfileGreeting({
 
     void loadProfile();
     return () => {
+      // Requests are not aborted; stale completions cannot update identity or retain object URLs.
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };

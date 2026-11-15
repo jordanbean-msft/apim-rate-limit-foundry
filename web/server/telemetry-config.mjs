@@ -1,6 +1,9 @@
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Invalid optional telemetry disables export, never authentication or the portal. */
+/**
+ * Reduce an optional Application Insights connection string to public ingestion settings.
+ * Invalid/duplicate fields or non-cloud HTTPS endpoints disable export, not portal access.
+ */
 export function publicAppInsights(connectionString, cloud) {
   if (typeof connectionString !== 'string' || connectionString.length > 4096) return undefined;
   const fields = new Map();
@@ -33,6 +36,7 @@ export function publicAppInsights(connectionString, cloud) {
       !suffixes.some((suffix) => url.hostname === suffix || url.hostname.endsWith(`.${suffix}`))
     )
       return undefined;
+    // Drop extra connection-string fields so no auxiliary endpoints/settings reach either SDK.
     return {
       connectionString: `InstrumentationKey=${key};IngestionEndpoint=${url.origin}/`,
       ingestionOrigin: url.origin,

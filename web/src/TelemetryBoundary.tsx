@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react';
 import { Button } from '@fluentui/react-components';
 import { track } from './telemetry';
 
+/** Contain render failures with a reload path and category-only, privacy-filtered diagnostics. */
 export class TelemetryBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
 
@@ -9,6 +10,7 @@ export class TelemetryBoundary extends Component<{ children: ReactNode }, { fail
     return { failed: true };
   }
 
+  /** The telemetry allowlist drops undeclared errorName; no message or stack is submitted. */
   componentDidCatch(error: Error): void {
     track(
       'portal_browser_error',

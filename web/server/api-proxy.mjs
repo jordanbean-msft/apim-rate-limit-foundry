@@ -15,6 +15,7 @@ const dashboardMaxResponseBytes = 4 * 1024 * 1024;
 const requestTimeoutMs = 10_000;
 const dashboardTimeoutMs = 45_000;
 
+/** Accept a deployment-configured HTTPS APIM portal origin/path, never a browser-selected host. */
 function configuredEndpoint(value) {
   if (typeof value !== 'string' || !value) throw new Error('Proxy upstream is required');
   const endpoint = new URL(value);
@@ -31,6 +32,7 @@ function configuredEndpoint(value) {
   return endpoint;
 }
 
+/** Fail startup if the server-only subscription secret is missing or still a Key Vault reference. */
 function configuredKey(value) {
   const key = typeof value === 'string' ? value.trim() : '';
   if (
@@ -47,6 +49,10 @@ function configuredKey(value) {
   return key;
 }
 
+/**
+ * Translate only known method/path/query combinations from /api to the fixed /portal upstream.
+ * Decoding before validation rejects traversal and encoded attempts to escape the route allowlist.
+ */
 function apiTarget(req, endpoint) {
   let url;
   try {
@@ -108,6 +114,7 @@ function apiTarget(req, endpoint) {
   return new URL(`${endpoint.pathname.replace(/\/+$/, '')}/${upstreamPath}`, endpoint.origin);
 }
 
+/** Buffer a bounded JSON PUT body; parse only for valid JSON, leaving record validation to the API. */
 async function requestBody(req) {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] || '')) {
     throw new Error('invalid_content_type');
@@ -117,6 +124,7 @@ async function requestBody(req) {
   }
   let size = 0;
   const chunks = [];
+  // Enforce the limit on actual bytes as well as the untrusted Content-Length header.
   for await (const chunk of req) {
     const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += value.length;
@@ -133,6 +141,7 @@ async function requestBody(req) {
   return body;
 }
 
+/** Bound streamed upstream bytes before committing a browser response, cancelling oversized bodies. */
 async function responseBody(response, limit) {
   const length = Number(response.headers.get('content-length') || 0);
   if (length > limit) throw new Error('upstream_response_too_large');
@@ -157,6 +166,7 @@ async function responseBody(response, limit) {
   return Buffer.concat(chunks);
 }
 
+/** Return non-cacheable API data or a sanitized error, never upstream response headers/cookies. */
 function send(res, status, body = '', contentType = 'application/json; charset=utf-8') {
   res.writeHead(status, {
     'Content-Type': contentType,
@@ -166,7 +176,11 @@ function send(res, status, body = '', contentType = 'application/json; charset=u
   res.end(body);
 }
 
-export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch }) {
+/**
+ * Build a narrow server-side APIM adapter that keeps the subscription key out of the browser.
+ * Platform session enforcement is external; APIM/API validate the forwarded user's bearer token.
+ */
+export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch, telemetry }) {
   const endpoint = configuredEndpoint(upstreamUrl);
   const key = configuredKey(subscriptionKey);
 
@@ -177,6 +191,7 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
       send(res, 404, JSON.stringify({ error: 'API route not found.' }));
       return;
     }
+    // This is a size/shape check, not JWT signature, issuer, audience, or role validation.
     const accessToken = req.headers['x-portal-access-token'];
     if (
       typeof accessToken !== 'string' ||
@@ -215,16 +230,32 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
       return;
     }
 
+    // Construct fresh upstream headers: never forward browser cookies, platform identity headers,
+    // arbitrary authorization, or caller-supplied subscription keys.
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       'Ocp-Apim-Subscription-Key': key,
     };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const correlationId = req.headers['x-correlation-id'];
+    const correlationId = outcome.correlationId ?? req.headers['x-correlation-id'];
     if (typeof correlationId === 'string' && correlationPattern.test(correlationId)) {
       headers['X-Correlation-ID'] = correlationId;
     }
 
+    let dependency;
+    let upstreamStatus = 0;
+    try {
+      dependency = telemetry?.dependency(outcome.request, req.method);
+    } catch {
+      // Exporters must not change forwarding behavior.
+    }
+    // Link the upstream span to the observed portal request rather than blindly copying traceparent.
+    if (dependency) headers.traceparent = dependency.traceparent;
+    const disconnected = new AbortController();
+    const onClose = () => {
+      if (!res.writableFinished) disconnected.abort();
+    };
+    res.once('close', onClose);
     try {
       const isDashboard = target.pathname.endsWith('/dashboard');
       const response = await fetchImpl(target, {
@@ -232,14 +263,21 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
         headers,
         body,
         redirect: 'manual',
-        signal: AbortSignal.timeout(isDashboard ? dashboardTimeoutMs : requestTimeoutMs),
+        // Stop forwarding on browser disconnect or deadline; dashboard queries get a longer bound.
+        signal: AbortSignal.any([
+          disconnected.signal,
+          AbortSignal.timeout(isDashboard ? dashboardTimeoutMs : requestTimeoutMs),
+        ]),
       });
+      upstreamStatus = response.status;
+      // Following redirects could disclose bearer/subscription credentials to another endpoint.
       if (response.status >= 300 && response.status < 400) {
         outcome.errorCategory = 'api_redirect_blocked';
         await response.body?.cancel();
         send(res, 502, JSON.stringify({ error: 'The API returned an unsupported redirect.' }));
         return;
       }
+      // Preserve the denial status but never expose upstream error details to the browser.
       if (!response.ok) {
         outcome.errorCategory = 'api_upstream_rejected';
         await response.body?.cancel();
@@ -250,6 +288,8 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
         send(res, 204, '');
         return;
       }
+      // Only chargeback CSV may return text; other successful bodies must advertise JSON.
+      // Payload schemas remain the API's responsibility; this proxy does not decode JSON responses.
       const contentType = response.headers.get('content-type') || '';
       const isChargebackCsv =
         target.pathname.endsWith('/chargeback') && target.searchParams.get('format') === 'csv';
@@ -276,6 +316,13 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
     } catch {
       outcome.errorCategory = 'api_upstream_failure';
       send(res, 502, JSON.stringify({ error: 'The API could not complete this request.' }));
+    } finally {
+      res.off('close', onClose);
+      try {
+        dependency?.end(upstreamStatus, outcome.errorCategory ?? 'none');
+      } catch {
+        // Telemetry is best effort, including failed upstream requests.
+      }
     }
   };
 }
