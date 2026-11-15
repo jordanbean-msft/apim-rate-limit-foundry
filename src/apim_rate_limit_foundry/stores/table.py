@@ -1,3 +1,9 @@
+"""Azure Table persistence for configuration, audit and best-effort request history.
+
+This repository is not in the warm admission/accounting path. The engine mirrors
+request and usage records asynchronously, so durable history can be incomplete.
+"""
+
 import json
 from typing import Any
 from uuid import uuid4
@@ -15,10 +21,12 @@ class TableRepository:
     """Single-partition records allow atomic configuration-plus-audit transactions."""
 
     def __init__(self, client: TableClient) -> None:
+        """Bind the Table client whose lifetime is closed with this repository."""
         self.client = client
 
     @staticmethod
     def entity(collection: str, record_id: str, record: Record) -> Record:
+        """Encode a JSON payload under a hashed collection/ID row in the ledger partition."""
         return {
             "PartitionKey": "ledger",
             "RowKey": digest(collection, record_id),
@@ -28,6 +36,7 @@ class TableRepository:
 
     @observe_dependency("table", "get")
     async def get(self, collection: str, record_id: str) -> Record | None:
+        """Return decoded payload or None for a missing entity; other errors propagate."""
         try:
             entity = await self.client.get_entity("ledger", digest(collection, record_id))
         except ResourceNotFoundError:
@@ -37,6 +46,7 @@ class TableRepository:
 
     @observe_dependency("table", "list")
     async def list(self, collection: str) -> list[Record]:
+        """Materialize all matching pages, leaving tombstone and tenant filtering to callers."""
         entities = self.client.query_entities(
             "PartitionKey eq 'ledger' and collection eq @collection",
             parameters={"collection": collection},
@@ -45,6 +55,7 @@ class TableRepository:
 
     @observe_dependency("table", "create")
     async def create(self, collection: str, record_id: str, record: Record) -> Record:
+        """Return the create-once winner; duplicate IDs never overwrite history."""
         saved, _ = await self.create_if_absent(collection, record_id, record)
         return saved
 
@@ -52,6 +63,11 @@ class TableRepository:
     async def create_if_absent(
         self, collection: str, record_id: str, record: Record
     ) -> tuple[Record, bool]:
+        """Create a record or read its existing winner and return a creation flag.
+
+        Duplicate payload equality is not checked here. A record disappearing
+        between conflict and read is an explicit error, not a successful create.
+        """
         try:
             await self.client.create_entity(self.entity(collection, record_id, record))
             return record, True
@@ -66,6 +82,12 @@ class TableRepository:
     async def mutate(
         self, collection: str, record_id: str, record: Record | None, audit: Record
     ) -> None:
+        """Atomically create an audit row and replace configuration in one partition.
+
+        ``None`` writes a tombstone rather than deleting the entity. Cache
+        invalidation is deliberately outside this durable transaction, owned by
+        the engine. Transaction failures propagate without a partial audit pair.
+        """
         operations: list[Any] = [
             ("create", self.entity("audit", audit.get("id", uuid4().hex), audit))
         ]
@@ -78,4 +100,5 @@ class TableRepository:
         await self.client.submit_transaction(operations)
 
     async def close(self) -> None:
+        """Release the injected Table client's transport resources."""
         await self.client.close()

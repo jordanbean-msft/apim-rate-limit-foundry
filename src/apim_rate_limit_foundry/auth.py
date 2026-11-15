@@ -1,3 +1,5 @@
+"""Authorize platform-validated Entra principals or explicit local-only headers."""
+
 import base64
 import binascii
 import json
@@ -10,16 +12,27 @@ from apim_rate_limit_foundry.config import Settings
 
 @dataclass(frozen=True)
 class Identity:
+    """Immutable tenant/object identity and effective application roles."""
+
     tenant_id: str
     principal_id: str
     roles: frozenset[str]
 
     def require(self, *roles: str) -> None:
+        """Require any listed role, raising HTTP 403 if none is present."""
         if not self.roles.intersection(roles):
             raise HTTPException(403, "Role not authorized")
 
 
 def authenticate(request: Request, settings: Settings) -> Identity:
+    """Translate trusted Easy Auth claims to an identity or raise HTTP 401.
+
+    This does not validate bearer JWTs itself: Azure Easy Auth must validate them
+    before injecting x-ms-client-principal. Header-based local identities are
+    available only when explicitly enabled outside Azure. Tenant/object claims
+    must be unambiguous; a gateway role additionally binds the caller application
+    to the configured managed identity, rather than trusting its role alone.
+    """
     if settings.local_auth_enabled and not settings.in_azure:
         tenant = request.headers.get("x-local-tenant-id", "")
         principal = request.headers.get("x-local-principal-id", "")
@@ -44,6 +57,7 @@ def authenticate(request: Request, settings: Settings) -> Identity:
                 ):
                     raise ValueError("Invalid claim")
                 values.setdefault(claim["typ"], []).append(claim["val"])
+            # Easy Auth can expose either short JWT names or mapped claim URIs.
             tenant_values = values.get(
                 "tid", values.get("http://schemas.microsoft.com/identity/claims/tenantid", [])
             )
@@ -59,6 +73,7 @@ def authenticate(request: Request, settings: Settings) -> Identity:
                 + values.get("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", [])
             )
             if "RateLimit.Gateway" in roles:
+                # Reject mixed or unexpected application identities even if a role exists.
                 client_ids = {
                     value.casefold()
                     for claim_type in ("azp", "appid")

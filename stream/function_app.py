@@ -1,3 +1,5 @@
+"""Separate HTTP-streaming Function host; Easy Auth, not function keys, authenticates it."""
+
 import logging
 
 import aiohttp
@@ -14,7 +16,8 @@ from apim_rate_limit_foundry.monitoring import configure_monitoring
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict
 from apim_rate_limit_foundry.streaming.relay import StreamRelay
-from apim_rate_limit_foundry.telemetry import correlation_id, emit, request_correlation, safe_id
+from apim_rate_limit_foundry.streaming.request_telemetry import trace_stream_request
+from apim_rate_limit_foundry.telemetry import emit, safe_id
 
 settings = Settings()
 configure_monitoring(settings)
@@ -23,9 +26,21 @@ runtime: Runtime | None = None
 
 
 @app.route(route="api/stream", methods=[func.HttpMethod.POST])
+@trace_stream_request
 async def stream_provider(req: Request) -> Response:
+    """Relay POST /api/stream only for an already admitted gateway request.
+
+    APIM supplies X-Usage-Request-ID and an OpenAI JSON body with stream=true.
+    The response forwards bounded provider error JSON or unbuffered SSE bytes
+    plus selected provider headers. X-RateLimit-Accounting=post-request means
+    final usage is not yet known when response headers are sent.
+
+    Authentication/role failures retain 401/403; missing ID is 400 and oversized
+    input is 413. Invalid or conflicting admission becomes 409, dependency
+    unavailability 503. Final Redis accounting and best-effort Table/export jobs
+    run as the stream terminates; headers cannot promise their future success.
+    """
     global runtime
-    token = correlation_id.set(request_correlation(req.headers.get("x-correlation-id")))
     try:
         actor = authenticate(req, settings)
         actor.require("RateLimit.Gateway")
@@ -38,6 +53,7 @@ async def stream_provider(req: Request) -> Response:
             if len(body) > settings.stream_max_body_bytes:
                 raise HTTPException(413, "Stream request exceeds bound")
         if runtime is None:
+            # Reuse connections across invocations instead of constructing clients per chunk.
             runtime = Runtime(settings)
         if runtime.credential is None:
             raise HTTPException(503, "Managed identity is required for provider streams")
@@ -63,5 +79,3 @@ async def stream_provider(req: Request) -> Response:
     except (OSError, aiohttp.ClientError, AzureError, RedisError):
         emit("limiter_dependency_unavailable", level=logging.ERROR, streaming=True)
         return JSONResponse({"detail": "Streaming relay unavailable"}, status_code=503)
-    finally:
-        correlation_id.reset(token)

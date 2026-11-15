@@ -1,24 +1,34 @@
+"""Redis operational state with explicit TTLs and atomic incremental accounting.
+
+All keys share the ``{limiter}`` cluster hash tag so usage and monthly spend can
+participate in one Lua invocation. Redis is authoritative for live enforcement:
+errors propagate and lost state is not reconstructed from durable history.
+"""
+
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
 from azure.identity.aio import DefaultAzureCredential
 from redis.asyncio import Redis
-from redis.exceptions import RedisError
 
 from apim_rate_limit_foundry.config import Settings
+from apim_rate_limit_foundry.observed_credential import ObservedCredential
 from apim_rate_limit_foundry.stores.contracts import Record
-from apim_rate_limit_foundry.stores.scripts import REPLACE_PROJECTION
-from apim_rate_limit_foundry.telemetry import emit, observe_dependency
+from apim_rate_limit_foundry.stores.scripts import RECORD_USAGE
+from apim_rate_limit_foundry.telemetry import observe_dependency
 
 
 class RedisCounters:
-    """Redis serializes ledger reads and stores a rebuildable projection only."""
+    """Cache snapshots/context and maintain monthly micro-USD hash projections.
 
-    projection_key = "{limiter}:usage-projection"
-    lock_key = "{limiter}:usage-ledger-lock"
+    Configuration and request/usage lifetimes come from settings; spend hashes
+    expire 62 days after their latest known-cost write. Replay deduplication lasts
+    only for the usage-key lifetime and does not guarantee durable exactly-once work.
+    """
+
+    configuration_key = "{limiter}:configuration:v3"
+    counter_retention_seconds = 62 * 24 * 60 * 60
 
     def __init__(
         self,
@@ -26,8 +36,9 @@ class RedisCounters:
         credential: DefaultAzureCredential | None,
         client: Redis | None = None,
     ) -> None:
+        """Accept an injected client or lazily create an Entra-authenticated connection."""
         self.settings = settings
-        self.credential = credential
+        self.credential = ObservedCredential(credential) if credential is not None else None
         self.client = client
         self.static_client = client is not None
         self.expires = 0
@@ -35,17 +46,22 @@ class RedisCounters:
 
     @classmethod
     def from_url(cls, settings: Settings, url: str) -> "RedisCounters":
+        """Build a URL-based test/local client only when explicit local mode permits it."""
         if not settings.local_store_enabled or settings.in_azure:
             raise ValueError("Redis URLs are only permitted in explicit local store mode")
         return cls(
             settings,
             None,
-            Redis.from_url(
-                url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10
-            ),
+            Redis.from_url(url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2),
         )
 
+    @observe_dependency("redis", "connection")
     async def connection(self) -> Redis:
+        """Serialize client creation and refresh Entra tokens five minutes before expiry.
+
+        Injected clients bypass credential refresh. Redis I/O uses two-second
+        socket/connect timeouts; credential and connection errors reach callers.
+        """
         async with self.connection_lock:
             if self.static_client:
                 assert self.client is not None
@@ -63,45 +79,108 @@ class RedisCounters:
                     password=token.token,
                     ssl=True,
                     decode_responses=True,
-                    socket_timeout=10,
-                    socket_connect_timeout=10,
+                    socket_timeout=2,
+                    socket_connect_timeout=2,
                 )
                 self.expires = token.expires_on
             return self.client
 
-    @asynccontextmanager
-    async def locked(self) -> AsyncIterator[None]:
+    @observe_dependency("redis", "configuration")
+    async def configuration(self) -> Record | None:
+        """Deserialize the shared configuration snapshot, returning None on a cache miss."""
         client = await self.connection()
-        lock = client.lock(self.lock_key, timeout=300, blocking_timeout=30)
-        if not await lock.acquire():
-            raise OSError("Could not acquire usage-ledger lock")
-        try:
-            yield
-        finally:
-            try:
-                await lock.release()
-            except RedisError:
-                # The durable ledger is authoritative; a lost release expires by TTL.
-                emit("counter_lock_release_deferred", error_type="RedisError")
+        value = await client.get(self.configuration_key)
+        return json.loads(value) if value is not None else None
 
-    @observe_dependency("redis", "project")
-    async def project(self, records: list[Record]) -> None:
-        projection: dict[str, int] = {}
-        for record in records:
-            data = record.get("data", {})
-            amount = data.get("cost_micro_usd")
-            if not isinstance(amount, int):
-                continue
-            for key in data.get("projection_keys", []):
-                projection[key] = projection.get(key, 0) + amount
+    async def cache_configuration(self, snapshot: Record) -> None:
+        """Serialize a detached snapshot and reset its configured cache TTL."""
         client = await self.connection()
-        await client.eval(
-            REPLACE_PROJECTION,
-            1,
-            self.projection_key,
-            json.dumps(projection, separators=(",", ":")),
+        await client.set(
+            self.configuration_key,
+            json.dumps(snapshot, separators=(",", ":")),
+            ex=self.settings.configuration_cache_seconds,
         )
 
+    async def invalidate_configuration(self) -> None:
+        """Delete the shared snapshot after durable configuration changes."""
+        client = await self.connection()
+        await client.delete(self.configuration_key)
+
+    @observe_dependency("redis", "request")
+    async def request(self, request_id: str) -> Record | None:
+        """Read admission context directly, without refreshing its expiry or consulting Table."""
+        client = await self.connection()
+        value = await client.get(f"{{limiter}}:request:v3:{request_id}")
+        return json.loads(value) if value is not None else None
+
+    @observe_dependency("redis", "admit")
+    async def admit(self, request_id: str, record: Record) -> tuple[Record, bool]:
+        """Use SET NX with TTL to choose one admission snapshot per raw request ID.
+
+        A duplicate returns the winner for engine-level fingerprint validation.
+        If the winner expires before that read, fail explicitly instead of
+        treating the duplicate as a fresh successful admission.
+        """
+        client = await self.connection()
+        created = await client.set(
+            f"{{limiter}}:request:v3:{request_id}",
+            json.dumps(record, separators=(",", ":")),
+            ex=self.settings.request_cache_seconds,
+            nx=True,
+        )
+        if created:
+            return record, True
+        prior = await self.request(request_id)
+        if prior is None:
+            raise OSError("Admission context expired during replay")
+        return prior, False
+
+    @observe_dependency("redis", "usage")
+    async def usage(self, request_id: str) -> Record | None:
+        """Read the finalized usage replay value without extending the replay window."""
+        client = await self.connection()
+        value = await client.get(f"{{limiter}}:usage:v3:{request_id}")
+        return json.loads(value) if value is not None else None
+
+    @observe_dependency("redis", "record")
+    async def record(self, request_id: str, record: Record) -> tuple[Record, bool]:
+        """Execute first-usage deduplication and all hierarchy increments in one script.
+
+        Supply a usage key, monthly hash and serialized record/TTLs/cost/fields.
+        Unknown cost supplies no fields: it finalizes replay state without spend.
+        Return (winning record, created); payload compatibility is checked by the
+        engine. Atomic execution prevents interleaving, not Redis error rollback.
+        """
+        data = record["data"]
+        amount = data.get("cost_micro_usd")
+        keys = data["counter_keys"] if isinstance(amount, int) else []
+        client = await self.connection()
+        result = await client.eval(
+            RECORD_USAGE,
+            2,
+            f"{{limiter}}:usage:v3:{request_id}",
+            f"{{limiter}}:spend:v3:{data['month']}",
+            json.dumps(record, separators=(",", ":")),
+            self.settings.request_cache_seconds,
+            self.counter_retention_seconds,
+            str(amount if isinstance(amount, int) else 0),
+            json.dumps(keys, separators=(",", ":")),
+        )
+        return json.loads(result[0]), bool(result[1])
+
+    @observe_dependency("redis", "totals")
+    async def totals(self, month: str, keys: list[str]) -> dict[str, int]:
+        """Fetch requested monthly hash fields in one call, treating missing spend as zero."""
+        if not keys:
+            return {}
+        client = await self.connection()
+        values = await client.hmget(f"{{limiter}}:spend:v3:{month}", keys)
+        return {
+            key: int(value) if value is not None else 0
+            for key, value in zip(keys, values, strict=True)
+        }
+
     async def close(self) -> None:
+        """Close the current Redis client; the shared credential remains caller-owned."""
         if self.client:
             await self.client.aclose()

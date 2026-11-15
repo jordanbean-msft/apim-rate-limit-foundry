@@ -1,3 +1,5 @@
+"""Loopback development entry point for the budget API (not the streaming host)."""
+
 import uvicorn
 
 from apim_rate_limit_foundry.api import create_app
@@ -6,6 +8,7 @@ from apim_rate_limit_foundry.monitoring import configure_monitoring
 
 
 def main() -> None:
+    """Load validated settings, configure telemetry and run the local Uvicorn API."""
     settings = Settings()
     configure_monitoring(settings)
     uvicorn.run(create_app(settings), host="127.0.0.1", port=settings.port)

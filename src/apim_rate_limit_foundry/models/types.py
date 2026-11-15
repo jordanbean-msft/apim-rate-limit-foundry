@@ -1,3 +1,5 @@
+"""Shared JSON scalar constraints, including decimal-string-only monetary rates."""
+
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -8,6 +10,7 @@ ApiProtocol = Literal["openai-chat", "openai-responses"]
 
 
 def _decimal_string(value: object) -> object:
+    """Reject numeric JSON prices before Decimal conversion can preserve float error."""
     if not isinstance(value, str | Decimal):
         raise ValueError("Prices must be decimal USD strings, never floats")
     return value

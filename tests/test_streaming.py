@@ -83,6 +83,7 @@ async def test_stream_host_uses_saved_user_context_not_gateway_workload_principa
     response = await handler(request)
 
     assert response.status_code == 200
+    assert [chunk async for chunk in response.body_iterator] == [b"data: [DONE]\n\n"]
     upstream.assert_awaited_once()
 
 
@@ -187,6 +188,7 @@ async def test_client_disconnect_preserves_already_observed_terminal_usage(
     await anext(stream)
     await stream.aclose()
 
+    await engine.background.flush()
     records = await engine.repository.list("usage_v2")
     assert len(records) == 1
     usage = records[0]["data"]
@@ -284,6 +286,7 @@ async def test_relay_preserves_incremental_chunks_and_records_terminal_usage(
 
     assert status == 200 and content_type == "text/event-stream"
     assert delivered == chunks
+    await engine.background.flush()
     records = await engine.repository.list("usage_v2")
     assert len(records) == 1
     assert records[0]["data"]["status"] == "actual"

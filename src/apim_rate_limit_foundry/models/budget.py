@@ -7,6 +7,14 @@ from apim_rate_limit_foundry.models.types import Identifier
 
 
 class Budget(Contract):
+    """UTC-month spending cap for one user, team or department.
+
+    model="*" aggregates all models; a named alias caps only that model. Limits
+    are integer micro-USD (1 USD = 1,000,000 micro-USD), not floating-point dollars.
+    Zero is an immediate cap. Admission does not reserve the next call's cost, so
+    actual usage and concurrent in-flight calls can take spend above the limit.
+    """
+
     id: Identifier
     tenant_id: Identifier
     name: str = Field(min_length=1, max_length=200)

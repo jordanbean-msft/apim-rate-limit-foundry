@@ -9,6 +9,6 @@
     "http": {"routePrefix": ""}
   },
   "logging": {
-    "applicationInsights": {"samplingSettings": {"isEnabled": true}}
+    "applicationInsights": {"samplingSettings": {"isEnabled": false}}
   }
 }

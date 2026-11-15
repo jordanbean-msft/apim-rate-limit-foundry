@@ -1,3 +1,9 @@
+"""Azure Functions ASGI entry point for the budget and portal API.
+
+Function-key auth is anonymous because Easy Auth performs Entra validation and
+the application enforces roles; this does not make the deployed API public.
+"""
+
 import azure.functions as func
 
 from apim_rate_limit_foundry.api import create_app

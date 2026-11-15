@@ -1,5 +1,7 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -126,6 +128,7 @@ async def test_month_rollover_resets_budgets_and_preserves_inflight_accounting_m
 
     assert late_record["event"]["month"] == "2030-12"
     assert january["allowed"]
+    await engine.background.flush()
     assert (
         sum(row["cost_micro_usd"] for row in await engine.chargeback("tenant-1", "2030-12", None))
         == 200
@@ -157,7 +160,7 @@ async def test_wildcard_budget_accumulates_spend_across_models(engine: Engine) -
     assert not (await engine.check(check("request-3")))["allowed"]
 
 
-async def test_usage_record_is_durable_first_idempotent_and_conflict_checked(
+async def test_usage_record_is_redis_first_idempotent_and_conflict_checked(
     engine: Engine,
 ) -> None:
     await engine.check(check())
@@ -165,6 +168,7 @@ async def test_usage_record_is_durable_first_idempotent_and_conflict_checked(
     replay = await engine.record_usage(actual())
     assert first["event"] == replay["event"]
     assert first["replayed"] is False and replay["replayed"] is True
+    await engine.background.flush()
     assert len(await engine.repository.list("usage_v2")) == 1
 
     with pytest.raises(Conflict, match="different provider usage"):
@@ -177,16 +181,15 @@ async def test_usage_record_is_durable_first_idempotent_and_conflict_checked(
         )
 
 
-async def test_usage_commit_survives_redis_loss_and_duplicate_writers_charge_once(
+async def test_usage_requires_redis_even_when_table_is_available(
     engine: Engine,
 ) -> None:
     await engine.check(check())
     counters = engine.counters
     assert isinstance(counters, MemoryCounters)
     counters.ready = False
-    results = await asyncio.gather(engine.record_usage(actual()), engine.record_usage(actual()))
-    assert sorted(result["replayed"] for result in results) == [False, True]
-    assert len(await engine.repository.list("usage_v2")) == 1
+    with pytest.raises(OSError):
+        await engine.record_usage(actual())
     with pytest.raises(OSError):
         await engine.check(check("next"))
 
@@ -200,6 +203,7 @@ async def test_unknown_usage_is_explicit_and_never_charged_as_zero(engine: Engin
     assert event["status"] == "usage_unknown"
     assert event["input_tokens"] is None
     assert event["cost_micro_usd"] is None
+    await engine.background.flush()
     rows = await engine.chargeback("tenant-1", event["month"], "user-1")
     assert len(rows) == 1
     assert rows[0]["unknown_requests"] == 1
@@ -251,38 +255,87 @@ async def test_usage_outside_snapshotted_model_price_bounds_is_unknown(engine: E
     assert result["event"]["output_tokens"] is None
 
 
-async def test_counter_projection_rebuilds_from_the_authoritative_ledger(engine: Engine) -> None:
+async def test_redis_counter_loss_resets_live_spend_without_a_ledger_rebuild(
+    engine: Engine,
+) -> None:
     counters = engine.counters
     assert isinstance(counters, MemoryCounters)
     await engine.check(check())
     await engine.record_usage(actual())
     counters.counts.clear()
-    denied = await engine.check(check("next"))
-    assert denied["allowed"] is False
-    assert counters.counts
-    assert await engine.rebuild_counters() == 1
+    allowed = await engine.check(check("next"))
+    assert allowed["allowed"] is True
+    assert not counters.counts
 
 
-async def test_projection_failure_after_durable_write_is_repaired_on_next_check(
+async def test_warm_admission_and_usage_do_not_wait_for_table_io(
     engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    await engine.check(check("warmup"))
+    await engine.background.flush()
+    release = asyncio.Event()
+    started = asyncio.Event()
+    blocked_write = AsyncMock(side_effect=lambda *args: None)
+
+    async def write(*args):
+        started.set()
+        await release.wait()
+        return args[-1]
+
+    blocked_write.side_effect = write
+    monkeypatch.setattr(engine.repository, "create", blocked_write)
+    no_reads = AsyncMock(side_effect=AssertionError("Table read on the warm path"))
+    monkeypatch.setattr(engine.repository, "get", no_reads)
+    monkeypatch.setattr(engine.repository, "list", no_reads)
+    try:
+        async with asyncio.timeout(1):
+            assert (await engine.check(check()))["allowed"]
+            await started.wait()
+            assert blocked_write.await_count == 1
+            recorded = await engine.record_usage(actual())
+            assert recorded["event"]["cost_micro_usd"] == 100
+            assert not (await engine.check(check("next")))["allowed"]
+        no_reads.assert_not_awaited()
+    finally:
+        release.set()
+        await engine.background.flush()
+
+
+async def test_table_write_failure_does_not_change_live_budget(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(logging.getLogger("apim_rate_limit_foundry"), "propagate", True)
     await engine.check(check())
-
-    async def fail_projection(records):
-        raise OSError("simulated crash gap")
-
-    monkeypatch.setattr(engine.counters, "project", fail_projection)
-    recorded = await engine.record_usage(actual())
-    assert recorded["event"]["cost_micro_usd"] == 100
-    assert len(await engine.repository.list("usage_v2")) == 1
-    monkeypatch.undo()
+    await engine.background.flush()
+    monkeypatch.setattr(engine.repository, "create", AsyncMock(side_effect=OSError("offline")))
+    await engine.record_usage(actual())
+    await engine.background.flush()
     assert not (await engine.check(check("next")))["allowed"]
+    assert "background_write_failed" in caplog.text
+
+
+async def test_concurrent_duplicate_usage_increments_hierarchy_only_once(engine: Engine) -> None:
+    await engine.check(check())
+    results = await asyncio.gather(*(engine.record_usage(actual()) for _ in range(10)))
+    assert sum(not row["replayed"] for row in results) == 1
+    statuses = await engine.budget_status("tenant-1", "user-1")
+    assert all(row["spent_micro_usd"] == 100 for row in statuses)
+
+
+async def test_config_api_invalidates_shared_cache(engine: Engine) -> None:
+    assert (await engine.check(check()))["allowed"]
+    budget = await engine.repository.get("budgets", "budget-team")
+    assert budget is not None
+    budget["limit_micro_usd"] = 0
+    await engine.save_configuration("budgets", "budget-team", budget, "tenant-1", "admin")
+    assert (await engine.check(check("updated")))["denied_budget_ids"] == ["budget-team"]
 
 
 async def test_unassigned_principal_and_missing_price_fail_closed(engine: Engine) -> None:
     with pytest.raises(ValueError, match="unassigned"):
         await engine.check(check("unknown-user", principal_id="intruder"))
     await engine.repository.mutate("prices", "price-1", None, {"id": "audit-1"})
+    await engine.counters.invalidate_configuration()
     with pytest.raises(ValueError, match="price card"):
         await engine.check(check("no-price"))
 

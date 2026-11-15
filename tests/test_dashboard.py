@@ -112,6 +112,24 @@ async def test_unexpected_workspace_is_rejected_before_any_query() -> None:
     service.logs.query_batch.assert_not_called()
 
 
+async def test_chart_axes_and_split_series_survive_the_persisted_dashboard_contract() -> None:
+    part = dashboard_part(0, chart="StackedColumn")
+    for item in part["metadata"]["inputs"]:
+        if item["name"] == "Dimensions":
+            item["value"] = {
+                "xAxis": {"name": "Model", "type": "string"},
+                "yAxis": [{"name": "Tokens", "type": "long"}],
+                "splitBy": [{"name": "TokenType", "type": "string"}],
+            }
+    service = dashboard_service({"0": part})
+    service.logs.query_batch.return_value = [query_result([["Cached input", 1200]])]
+    tiles = await service.fetch("24h")
+    assert tiles[0]["chart"] == "StackedColumn"
+    assert tiles[0]["x_axis"] == "Model"
+    assert tiles[0]["y_axis"] == "Tokens"
+    assert tiles[0]["split_by"] == "TokenType"
+
+
 async def test_arm_array_lenses_and_parts_match_the_native_rest_representation() -> None:
     service = dashboard_service({})
     service.arm.send_request.return_value.text = lambda: json.dumps(

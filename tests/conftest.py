@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 import pytest
 
 from apim_rate_limit_foundry.config import Settings
@@ -18,7 +20,7 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-async def engine(settings: Settings) -> Engine:
+async def engine(settings: Settings) -> AsyncIterator[Engine]:
     repository = MemoryRepository()
     await repository.create(
         "organizations",
@@ -77,4 +79,6 @@ async def engine(settings: Settings) -> Engine:
             limit_micro_usd=100,
         )
         await repository.create("budgets", budget.id, budget.model_dump(mode="json"))
-    return Engine(repository, MemoryCounters(), settings)
+    instance = Engine(repository, MemoryCounters(settings), settings)
+    yield instance
+    await instance.background.close()

@@ -1,5 +1,13 @@
+"""Read deployed dashboard metadata and execute its fixed Log Analytics queries.
+
+The configured ARM dashboard, not caller-provided KQL, defines the tiles. Results
+are bounded tabular telemetry for portal rendering, not durable chargeback history
+or a claim that telemetry ingestion is complete.
+"""
+
 import asyncio
 import json
+import logging
 import re
 from datetime import timedelta
 from typing import Literal
@@ -10,31 +18,50 @@ from azure.core.exceptions import AzureError, HttpResponseError
 from azure.core.pipeline.policies import AsyncBearerTokenCredentialPolicy
 from azure.monitor.query import LogsBatchQuery, LogsQueryResult
 from azure.monitor.query.aio import LogsQueryClient
+from opentelemetry.trace import StatusCode
 
 from apim_rate_limit_foundry.config import Settings
+from apim_rate_limit_foundry.observed_credential import ObservedCredential
 from apim_rate_limit_foundry.stores.contracts import Record
+from apim_rate_limit_foundry.telemetry import (
+    dependency_error,
+    dependency_http_status,
+    emit,
+    http_dependency_span,
+)
 
 DashboardPeriod = Literal["1h", "24h", "7d"]
 MAX_ROWS = 1000
 
 
 class DashboardService:
-    """Render the deployed dashboard using only its fixed workspace and queries."""
+    """Render the deployed dashboard using only its fixed workspace and queries.
+
+    Workspace scope and supported visualizations are validated before execution.
+    Query failures become per-tile errors; ARM/metadata failures and the overall
+    deadline propagate for the API layer to translate.
+    """
 
     def __init__(self, settings: Settings, credential: AsyncTokenCredential) -> None:
+        """Create observed ARM/Logs clients sharing caller-owned async credentials.
+
+        Logs SDK retries are disabled so failures stay within the fetch deadline;
+        the client returns an explicit refresh message instead of silently retrying.
+        """
         self.settings = settings
+        observed_credential = ObservedCredential(credential)
         self.arm: AsyncPipelineClient = AsyncPipelineClient(
             base_url=settings.management_endpoint,
             connection_timeout=5,
             read_timeout=10,
             policies=[
                 AsyncBearerTokenCredentialPolicy(
-                    credential, f"{settings.management_endpoint}/.default"
+                    observed_credential, f"{settings.management_endpoint}/.default"
                 )
             ],
         )
         self.logs = LogsQueryClient(
-            credential,
+            observed_credential,
             endpoint=settings.logs_endpoint,
             connection_timeout=5,
             read_timeout=25,
@@ -42,6 +69,13 @@ class DashboardService:
         )
 
     def _tiles(self, document: Record) -> list[Record]:
+        """Extract one to forty log tiles in dashboard lens/visual-position order.
+
+        Accept dictionary or list layouts, require exactly the configured workspace,
+        and retain only supported chart metadata. Strip terminal render directives
+        and append a 1001-row probe limit: the extra row signals truncation. KQL is
+        trusted deployed dashboard content, not a general user-query interface.
+        """
         tiles = []
         lenses = document["properties"]["lenses"]
         for lens in lenses.values() if isinstance(lenses, dict) else lenses:
@@ -98,10 +132,17 @@ class DashboardService:
         return tiles
 
     async def _batch(self, tiles: list[Record], period: DashboardPeriod) -> list[Record]:
+        """Execute one tile batch and return a result envelope for every input tile.
+
+        Ordinary queries use the selected period. Queries containing the literal
+        month-to-date expression keep their own range rather than being clipped
+        to the portal period. Azure failures mark tiles unavailable and are traced.
+        """
         duration = {"1h": timedelta(hours=1), "24h": timedelta(days=1), "7d": timedelta(days=7)}
         requests = []
         for tile in tiles:
             query = tile["query"]
+            # Deployed month-to-date spend tiles must not shrink to a 1h/24h view.
             if "startofmonth(now())" in query.lower():
                 requests.append(
                     LogsBatchQuery(
@@ -120,10 +161,40 @@ class DashboardService:
                         server_timeout=20,
                     )
                 )
-        try:
-            results = await self.logs.query_batch(requests)
-        except AzureError:
-            results = []
+        with http_dependency_span("dashboard.query_batch", "log-analytics") as span:
+            batch_error: AzureError | None = None
+            try:
+                results = await self.logs.query_batch(requests)
+            except AzureError as error:
+                batch_error = error
+                emit(
+                    "dashboard_query_failed",
+                    level=logging.WARNING,
+                    dependency="log-analytics",
+                    operation="query_batch",
+                    status="unavailable",
+                    error_type=type(error).__name__,
+                    records=len(tiles),
+                )
+                results = []
+            output = self._render_results(tiles, results)
+            if batch_error is not None:
+                dependency_error(span, batch_error)
+            elif any(tile["error"] for tile in output):
+                span.set_status(StatusCode.ERROR)
+                span.set_attribute("error_type", "incomplete_query_results")
+                span.set_attribute("error.type", "incomplete_query_results")
+            else:
+                span.set_status(StatusCode.OK)
+            return output
+
+    def _render_results(self, tiles: list[Record], results: list) -> list[Record]:
+        """Map positional batch responses to bounded, query-free portal tile objects.
+
+        Each object carries chart/axis metadata, typed columns, at most 1000 rows,
+        error text and a truncation flag. Missing, partial or failed responses are
+        not rendered as complete data; only a successful PrimaryResult is accepted.
+        """
         output = []
         for index, tile in enumerate(tiles):
             item = {key: value for key, value in tile.items() if key != "query"}
@@ -144,18 +215,37 @@ class DashboardService:
                     ]
                     item["rows"] = [list(row) for row in table.rows[:MAX_ROWS]]
                     item["truncated"] = len(table.rows) > MAX_ROWS
+            if item["error"]:
+                emit(
+                    "dashboard_query_failed",
+                    level=logging.WARNING,
+                    dependency="log-analytics",
+                    operation="query_batch",
+                    action=f"tile_{index}",
+                    status="incomplete",
+                    error_type="incomplete_query_results",
+                )
             output.append(item)
         return output
 
     async def fetch(self, period: DashboardPeriod) -> list[Record]:
+        """Fetch current deployed tiles and their data within a 35-second deadline.
+
+        Read the configured ARM resource using the dashboard API version, validate
+        metadata, then run batches of at most twenty queries concurrently. Preserve
+        tile ordering while flattening batch results. No client-supplied workspace,
+        dashboard ID or query can override the configured resource.
+        """
         async with asyncio.timeout(35):
             request = self.arm.get(
                 f"{self.settings.management_endpoint}{self.settings.azure_dashboard_id}",
                 params={"api-version": "2020-09-01-preview"},
             )
-            response = await self.arm.send_request(request)
-            if response.status_code != 200:
-                raise HttpResponseError(response=response)
+            with http_dependency_span("dashboard.read", "azure-resource-manager", "GET") as span:
+                response = await self.arm.send_request(request)
+                dependency_http_status(span, response.status_code)
+                if response.status_code != 200:
+                    raise HttpResponseError(response=response)
             tiles = self._tiles(json.loads(response.text()))
             batches = await asyncio.gather(
                 *(
@@ -166,5 +256,6 @@ class DashboardService:
             return [tile for batch in batches for tile in batch]
 
     async def close(self) -> None:
+        """Close Logs and ARM transports without closing the caller's credential."""
         await self.logs.close()
         await self.arm.close()

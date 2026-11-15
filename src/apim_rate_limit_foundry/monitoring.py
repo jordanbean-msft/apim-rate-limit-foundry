@@ -16,7 +16,7 @@ import atexit
 from threading import Lock
 
 from azure.monitor.opentelemetry import configure_azure_monitor
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from opentelemetry._logs import get_logger_provider
 from opentelemetry.sdk.resources import Resource
 
@@ -29,13 +29,23 @@ _initialized = False
 
 def flush_telemetry() -> None:
     """Best-effort bounded drain at worker shutdown, never on the request path."""
-    for provider in (trace.get_tracer_provider(), get_logger_provider()):
+    for provider in (
+        trace.get_tracer_provider(),
+        get_logger_provider(),
+        metrics.get_meter_provider(),
+    ):
         flush = getattr(provider, "force_flush", None)
         if flush is not None:
             flush(timeout_millis=5000)
 
 
 def configure_monitoring(settings: Settings) -> None:
+    """Install named, privacy-filtered Microsoft telemetry once per worker process.
+
+    Always enable safe local logging. Cloud export additionally requires an enabled
+    flag and connection string; initialization is locked across concurrent callers.
+    Export batching never supplies accounting durability or request-path flushing.
+    """
     global _initialized
     configure_logging()
     connection_string = settings.applicationinsights_connection_string
@@ -52,7 +62,7 @@ def configure_monitoring(settings: Settings) -> None:
             enable_trace_based_sampling_for_logs=False,
             enable_live_metrics=False,
             enable_performance_counters=False,
-            disable_metrics=True,
+            disable_metrics=False,
             disable_offline_storage=True,
             # Automatic HTTP/SDK spans can capture URLs, query strings and exception text.
             instrumentation_options={
@@ -71,6 +81,7 @@ def configure_monitoring(settings: Settings) -> None:
                 )
             },
         )
+        # The distro adds its own handler; apply the same filter to it after setup.
         configure_logging()
         _initialized = True
         atexit.register(flush_telemetry)

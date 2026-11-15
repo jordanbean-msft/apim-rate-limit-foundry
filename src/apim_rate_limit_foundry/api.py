@@ -1,3 +1,11 @@
+"""HTTP contracts for gateway decisions, administration and accounting reports.
+
+Gateway endpoints accept APIM's authenticated identity and return decision/event
+objects. Portal endpoints authorize the signed-in actor, not caller-supplied tenant
+IDs. Live budget status comes from Redis; usage and chargeback read best-effort
+Table mirrors and can therefore lag or omit accepted traffic.
+"""
+
 import csv
 import io
 import logging
@@ -17,7 +25,7 @@ from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecord
 from apim_rate_limit_foundry.reports.dashboard import DashboardPeriod, DashboardService
 from apim_rate_limit_foundry.request_telemetry import RequestTelemetryMiddleware
 from apim_rate_limit_foundry.runtime import Runtime
-from apim_rate_limit_foundry.stores.contracts import Conflict, Record, RecoveryRequired
+from apim_rate_limit_foundry.stores.contracts import Conflict, Record
 from apim_rate_limit_foundry.telemetry import emit
 
 
@@ -26,10 +34,17 @@ def create_app(
     engine: Engine | None = None,
     dashboard: DashboardService | None = None,
 ) -> FastAPI:
+    """Build the API, optionally injecting an engine/dashboard for isolated tests.
+
+    Cloud clients are constructed on demand rather than during route registration.
+    Pydantic validates typed request bodies before a handler runs (HTTP 422);
+    domain validation, conflicts and dependency failures map to 400, 409 and 503.
+    """
     config = settings or Settings()
     runtime: Runtime | None = None
 
     def get_runtime() -> Runtime:
+        """Share one lazily created set of clients for this application instance."""
         nonlocal runtime
         if runtime is None:
             runtime = Runtime(config)
@@ -40,6 +55,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        """Allow a bounded write-behind drain before releasing owned cloud clients."""
         yield
         if runtime:
             await runtime.close()
@@ -55,15 +71,18 @@ def create_app(
 
     @app.exception_handler(Conflict)
     async def conflict_handler(request: Request, error: Conflict) -> JSONResponse:
+        """Return HTTP 409 with a detail string for conflicting domain state."""
         emit("request_rejected", level=logging.WARNING, error_type="Conflict", http_status=409)
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @app.exception_handler(ValueError)
     async def invalid_handler(request: Request, error: ValueError) -> JSONResponse:
+        """Return HTTP 400 for a semantically invalid operation or configuration."""
         emit("request_rejected", level=logging.WARNING, error_type="ValueError", http_status=400)
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
     async def unavailable_handler(request: Request, error: Exception) -> JSONResponse:
+        """Fail closed with HTTP 503 rather than admitting against missing state."""
         emit(
             "limiter_dependency_unavailable",
             level=logging.ERROR,
@@ -76,11 +95,12 @@ def create_app(
             content={"detail": "Budget service unavailable; request denied"},
         )
 
-    for error_type in (OSError, AzureError, RedisError, RecoveryRequired):
+    for error_type in (OSError, AzureError, RedisError):
         app.add_exception_handler(error_type, unavailable_handler)
 
     @app.exception_handler(Exception)
     async def unexpected_handler(request: Request, error: Exception) -> JSONResponse:
+        """Return a generic HTTP 500 and correlation ID without exposing internals."""
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal budget service error"},
@@ -89,12 +109,25 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> Record:
+        """Return status and Azure cloud selection, without probing dependencies.
+
+        This is process health, not proof that Redis, Table or the provider works;
+        deployed platform authentication still applies before this route is reached.
+        """
         return {"status": "ok", "cloud": config.azure_cloud}
 
     @app.get("/api/dashboard")
     async def dashboard_tiles(
         request: Request, actor: Auth, period: DashboardPeriod = "24h"
     ) -> list[Record]:
+        """Return fixed deployed dashboard tiles for an administrator.
+
+        The only query parameter is one period: ``1h``, ``24h`` (default) or ``7d``.
+        HTTP 200 contains tile metadata, columns, rows, truncation and per-tile
+        errors; unavailable tiles must not be interpreted as zero activity.
+        Invalid query keys yield 400; unavailable dashboard configuration or a
+        failed overall fetch yields 503. Arbitrary KQL/workspace input is rejected.
+        """
         actor.require("RateLimit.Admin")
         if (
             set(request.query_params) - {"period"}
@@ -112,23 +145,37 @@ def create_app(
 
     @app.post("/api/budgets/check")
     async def check_budget(body: BudgetCheck, actor: Auth) -> Record:
+        """Evaluate an authenticated gateway's request without waiting for Table.
+
+        JSON supplies request/tenant/principal/subscription IDs, a model alias,
+        API protocol and streaming flag. HTTP 200 returns request_id, allowed,
+        reason, denied_budget_ids, reset_at and retry_after; a monthly denial is
+        still a successful decision here, which APIM translates into HTTP 429.
+        Request-ID conflicts yield 409; unavailable operational state yields 503.
+        Admission checks current spend, not a reservation for future token cost.
+        """
         actor.require("RateLimit.Gateway")
         return await get_engine().check(body)
 
     @app.post("/api/usage/record")
     async def record_usage(body: UsageRecordRequest, actor: Auth) -> Record:
+        """Finalize gateway usage in Redis and schedule its best-effort mirror.
+
+        JSON supplies request_id, status and the original provider_usage object
+        for actual usage. HTTP 200 returns ``event`` and ``replayed``; it confirms
+        Redis accounting, not durable Table persistence or Event Hub delivery.
+        Unknown usage remains unpriced. Conflicting replay/context yields 409.
+        """
         actor.require("RateLimit.Gateway")
         return await get_engine().record_usage(body)
 
-    @app.post("/api/counters/rebuild")
-    async def rebuild_counters(actor: Auth) -> Record:
-        actor.require("RateLimit.Admin")
-        count = await get_engine().rebuild_counters()
-        emit("counter_projection_rebuilt", records=count)
-        return {"records": count, "status": "rebuilt"}
-
     @app.get("/api/models")
     async def registered_models(actor: Auth) -> list[Record]:
+        """List protocol/alias IDs, deployments, price versions and token bounds.
+
+        Admins see the registry; readers need an enabled assignment or receive
+        an empty list. Provider credentials and endpoints are never returned.
+        """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
         if "RateLimit.Admin" not in actor.roles:
             assignment = await get_engine()._assignment(actor.tenant_id, actor.principal_id)
@@ -149,6 +196,7 @@ def create_app(
 
     @app.get("/api/usage")
     async def usage(actor: Auth) -> list[Record]:
+        """Return eventually persisted tenant usage, restricted to self for readers."""
         actor.require("RateLimit.Admin", "RateLimit.Reader")
         return await get_engine().usage(
             actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
@@ -156,6 +204,11 @@ def create_app(
 
     @app.get("/api/budgets/status")
     async def budget_status(actor: Auth) -> list[Record]:
+        """Return applicable live Redis totals, limits and remaining micro-USD.
+
+        Admins see tenant budgets; readers see budgets applicable to themselves.
+        These approximate operational totals may differ from durable usage reports.
+        """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
         return await get_engine().budget_status(
             actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
@@ -167,6 +220,13 @@ def create_app(
         month: str,
         format: Literal["json", "csv"] = "json",
     ) -> list[Record] | Response:
+        """Aggregate durable usage for ``month=YYYY-MM`` as JSON or CSV.
+
+        ``format`` defaults to JSON; CSV uses a fixed column order and attachment
+        name. Admins see the tenant, readers only their own usage. Unknown usage
+        contributes unknown_requests rather than fabricated zero-cost counters.
+        Invalid month syntax yields 400; unsupported typed query values yield 422.
+        """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
         if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None:
             raise HTTPException(400, "Month must use YYYY-MM")
@@ -201,6 +261,11 @@ def create_app(
 
     @app.get("/api/{collection}")
     async def listing(collection: str, actor: Auth) -> list[Record]:
+        """Return tenant-scoped active configuration records to admins only.
+
+        Supported collections are budgets, organizations, assignments and prices;
+        unknown collection names return 404. Record schemas match the PUT bodies.
+        """
         if collection not in ("budgets", "organizations", "assignments", "prices"):
             raise HTTPException(404)
         actor.require("RateLimit.Admin")
@@ -214,6 +279,13 @@ def create_app(
     async def save_configuration(
         collection: str, record_id: str, body: Record, actor: Auth
     ) -> Record:
+        """Validate and durably upsert one admin configuration record plus audit.
+
+        The path identifies collection/record ID; JSON must satisfy that collection's
+        schema and the authenticated tenant's relationships. The response is the
+        saved record. Redis configuration is invalidated after the durable mutation;
+        unlike admission/usage mirrors, this operation waits for its Table write.
+        """
         actor.require("RateLimit.Admin")
         if collection not in ("budgets", "organizations", "assignments", "prices"):
             raise HTTPException(404)
@@ -225,6 +297,11 @@ def create_app(
 
     @app.delete("/api/{collection}/{record_id}")
     async def delete_configuration(collection: str, record_id: str, actor: Auth) -> Record:
+        """Tombstone an admin record and return ``{"deleted": record_id}``.
+
+        Relationship checks prevent deleting referenced organizations. The durable
+        mutation/audit completes before Redis invalidation; usage history is retained.
+        """
         actor.require("RateLimit.Admin")
         if collection not in ("budgets", "organizations", "assignments", "prices"):
             raise HTTPException(404)

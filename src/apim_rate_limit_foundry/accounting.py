@@ -1,3 +1,9 @@
+"""Validate supported provider text usage and price it in integer micro-USD.
+
+These pure helpers neither read live prices nor mutate spend. Callers must supply
+the price snapshot captured at admission, rather than a subsequently edited card.
+"""
+
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -8,11 +14,13 @@ from apim_rate_limit_foundry.models.price import Price
 
 
 def digest(*values: str) -> str:
+    """Hash an ordered, unambiguous JSON tuple for stable storage and counter IDs."""
     payload = json.dumps(values, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def utc_month(now: datetime | None = None) -> tuple[str, datetime]:
+    """Return the UTC ``YYYY-MM`` accounting bucket and next month's UTC boundary."""
     moment = (now or datetime.now(UTC)).astimezone(UTC)
     start = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if start.month == 12:
@@ -23,6 +31,13 @@ def utc_month(now: datetime | None = None) -> tuple[str, datetime]:
 
 
 def normalize_openai_usage(provider_usage: dict[str, Any], protocol: str) -> dict[str, int]:
+    """Normalize Chat/Responses text usage into input, cached-input and output counts.
+
+    Cached input is a subset of input, not an additional token category. Reject
+    unknown fields, inconsistent totals, unsupported priced modalities and invalid
+    counters with ``ValueError`` so callers can explicitly record unknown usage
+    instead of inventing a charge. Output details are subsets, not extra charges.
+    """
     if protocol == "openai-chat":
         input_name, output_name, details_name = (
             "prompt_tokens",
@@ -99,6 +114,7 @@ def normalize_openai_usage(provider_usage: dict[str, Any], protocol: str) -> dic
 
 
 def _counter(data: dict[str, Any], field: str) -> int:
+    """Require a bounded non-negative integer, excluding Python's boolean subtype."""
     value = data.get(field)
     if type(value) is not int or value < 0 or value > 9_000_000_000_000:
         raise ValueError(f"{field} is outside the supported non-negative integer range")
@@ -106,6 +122,13 @@ def _counter(data: dict[str, Any], field: str) -> int:
 
 
 def cost_micro_usd(price: Price, usage: dict[str, int]) -> int:
+    """Price normalized usage, rounding the combined request charge upward once.
+
+    USD per million tokens multiplied by token counts is already micro-USD; no
+    floating-point conversion or extra million-factor division is needed. Cached
+    tokens replace ordinary input tokens. Reject overlarge charges or cached
+    counts exceeding input; other counter validation belongs to normalization.
+    """
     inputs = usage["input_tokens"]
     cached = usage["cached_input_tokens"]
     outputs = usage["output_tokens"]

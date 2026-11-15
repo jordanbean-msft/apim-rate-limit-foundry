@@ -58,6 +58,7 @@ async def test_budget_api_records_usage_and_serves_scoped_chargeback(
         assert recorded.json()["event"]["cost_micro_usd"] == 100
         replay = await client.post("/api/usage/record", json=usage_body, headers=GATEWAY)
         assert replay.json()["replayed"] is True
+        await engine.background.flush()
 
         own_usage = await client.get("/api/usage", headers=READER)
         assert len(own_usage.json()) == 1
@@ -104,6 +105,7 @@ async def test_unknown_usage_is_visible_and_malformed_usage_is_not_falsely_charg
         event = result.json()["event"]
         assert event["status"] == "usage_unknown"
         assert event["cost_micro_usd"] is None
+        await engine.background.flush()
         rows = await client.get(f"/api/chargeback?month={event['month']}", headers=ADMIN)
         assert rows.json()[0]["unknown_requests"] == 1
         assert rows.json()[0]["cost_micro_usd"] is None
@@ -136,5 +138,4 @@ async def test_config_crud_hierarchy_validation_and_removed_routes(
             404,
             405,
         )
-        rebuilt = await client.post("/api/counters/rebuild", headers=ADMIN)
-        assert rebuilt.status_code == 200 and rebuilt.json()["status"] == "rebuilt"
+        assert (await client.post("/api/counters/rebuild", headers=ADMIN)).status_code == 405

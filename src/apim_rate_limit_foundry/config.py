@@ -1,3 +1,5 @@
+"""Central environment settings and fail-closed deployment invariants."""
+
 import os
 import re
 from typing import Literal
@@ -10,6 +12,13 @@ from apim_rate_limit_foundry.models.types import ApiProtocol
 
 
 class Settings(BaseSettings):
+    """Load case-insensitive environment/.env values and reject unsafe combinations.
+
+    Costs use integer micro-USD elsewhere; cache lifetimes below are seconds.
+    Model registry keys bind a caller-visible protocol/alias to a trusted backend.
+    SecretStr settings must not be serialized into telemetry or API responses.
+    """
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     azure_cloud: Literal["commercial", "government"] = "commercial"
@@ -21,6 +30,10 @@ class Settings(BaseSettings):
     redis_port: int = 6380
     redis_username: str = ""
     redis_token_scope: str | None = None
+    # Configuration TTL bounds stale reads after invalidation races; it is not spend durability.
+    configuration_cache_seconds: int = Field(default=60, ge=1, le=3600)
+    # Expiry also ends operational replay protection and admission-context availability.
+    request_cache_seconds: int = Field(default=86400, ge=300, le=604800)
     local_auth_enabled: bool = False
     local_store_enabled: bool = False
     local_redis_url: str | None = None
@@ -49,6 +62,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":
+        """Reject cloud bypasses, partial local stores and inconsistent resource/model IDs."""
         has_local_redis = bool(self.local_redis_url)
         has_local_table = bool(
             self.local_table_connection_string
@@ -77,6 +91,7 @@ class Settings(BaseSettings):
             self.log_analytics_workspace_resource_id,
         )
         if any(dashboard_config):
+            # Fix both the ARM dashboard and query workspace; callers cannot supply targets.
             if not all(dashboard_config):
                 raise ValueError("Dashboard and both workspace IDs must be configured together")
             uuid_pattern = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
@@ -97,6 +112,7 @@ class Settings(BaseSettings):
             if not re.fullmatch(uuid_pattern, self.log_analytics_workspace_id, re.IGNORECASE):
                 raise ValueError("The workspace customer ID must be a UUID")
         for key, deployment in self.model_registry.items():
+            # Keep protocol aliases separate even when they target the same model deployment.
             protocol, separator, alias = key.partition(":")
             if (
                 not separator
@@ -122,6 +138,7 @@ class Settings(BaseSettings):
         return self
 
     def registered_model(self, protocol: ApiProtocol, alias: str) -> ModelDeployment:
+        """Resolve only configured protocol/alias pairs; never accept arbitrary endpoints."""
         deployment = self.model_registry.get(f"{protocol}:{alias}")
         if deployment is None:
             raise ValueError("Unknown model alias or incompatible API protocol")
@@ -129,6 +146,11 @@ class Settings(BaseSettings):
 
     @property
     def in_azure(self) -> bool:
+        """Detect platform markers without mistaking Core Tools loopback for Azure.
+
+        Site/instance markers take precedence so a loopback-looking hostname
+        cannot enable local authentication or stores on a real cloud host.
+        """
         markers = {key for key in os.environ if key.startswith("WEBSITE_")}
         if self.website_site_name or self.website_instance_id or markers - {"WEBSITE_HOSTNAME"}:
             return True
@@ -167,6 +189,7 @@ class Settings(BaseSettings):
 
     @property
     def redis_scope(self) -> str:
+        """Return the Entra Redis scope, requiring explicit sovereign-cloud verification."""
         if self.redis_token_scope:
             return self.redis_token_scope
         if self.azure_cloud == "government":

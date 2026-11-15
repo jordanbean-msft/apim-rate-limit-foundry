@@ -1,7 +1,7 @@
 [project]
 name = "apim-rate-limit-foundry"
 version = "0.1.0"
-description = "Durable cloud-aware AI gateway budget accounting"
+description = "Redis-first AI gateway budgets with best-effort usage persistence"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

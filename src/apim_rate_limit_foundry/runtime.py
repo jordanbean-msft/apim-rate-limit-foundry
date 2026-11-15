@@ -1,8 +1,11 @@
+"""Compose process-scoped clients while keeping cloud and local stores explicit."""
+
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.observed_credential import ObservedCredential
 from apim_rate_limit_foundry.reports.dashboard import DashboardService
 from apim_rate_limit_foundry.stores.memory import MemoryCounters, MemoryRepository
 from apim_rate_limit_foundry.stores.redis import RedisCounters
@@ -10,7 +13,14 @@ from apim_rate_limit_foundry.stores.table import TableRepository
 
 
 class Runtime:
+    """Own the engine, shared credential and optional dashboard query clients."""
+
     def __init__(self, settings: Settings) -> None:
+        """Select paired local stores or Entra-authenticated Azure dependencies.
+
+        Local mode uses memory unless both emulator/persistent endpoints are
+        configured. Cloud mode never silently falls back to local counters.
+        """
         self.credential: DefaultAzureCredential | None = None
         self.dashboard: DashboardService | None = None
         if settings.local_store_enabled:
@@ -25,7 +35,7 @@ class Runtime:
                     settings,
                 )
             else:
-                self.engine = Engine(MemoryRepository(), MemoryCounters(), settings)
+                self.engine = Engine(MemoryRepository(), MemoryCounters(settings), settings)
         else:
             if (
                 not settings.table_endpoint
@@ -42,7 +52,7 @@ class Runtime:
             table = TableClient(
                 endpoint=settings.table_endpoint,
                 table_name=settings.table_name,
-                credential=self.credential,
+                credential=ObservedCredential(self.credential),
                 audience=(
                     "https://storage.azure.us"
                     if settings.azure_cloud == "government"
@@ -56,6 +66,11 @@ class Runtime:
                 self.dashboard = DashboardService(settings, self.credential)
 
     async def close(self) -> None:
+        """Drain best-effort jobs before closing the clients those jobs still need.
+
+        The writer's bounded drain is not a guarantee of persistence at shutdown.
+        """
+        await self.engine.background.close()
         if self.dashboard:
             await self.dashboard.close()
         await self.engine.repository.close()
