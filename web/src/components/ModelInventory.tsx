@@ -1,6 +1,7 @@
 import { Badge } from '@fluentui/react-components';
 import type { Model, Price } from '../contracts';
 
+/** Show deployment-owned model routes and optional admin-only price-pin readiness diagnostics. */
 export function ModelInventory({
   models,
   prices,
@@ -37,6 +38,7 @@ export function ModelInventory({
           </thead>
           <tbody>
             {models.map((model) => {
+              // Readiness requires exactly one card for alias + pinned version, not just any rate.
               const matches = prices.filter(
                 (price) => price.model === model.model && price.version === model.price_version,
               );

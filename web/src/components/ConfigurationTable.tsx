@@ -2,21 +2,26 @@ import { Badge, Button } from '@fluentui/react-components';
 import type {
   Assignment,
   Budget,
+  BudgetStatus,
   EditableCollection,
   EditableRecord,
   Organization,
   Price,
 } from '../contracts';
 import { microUsd } from '../format';
+import { BudgetStatusNote } from './BudgetStatusTable';
 
+/** Render the collection's wire shape without recalculating prices or substituting missing spend. */
 function RecordCells({
   collection,
   record,
   organizations,
+  budgetStatus,
 }: {
   collection: EditableCollection;
   record: EditableRecord;
   organizations: Organization[];
+  budgetStatus?: BudgetStatus;
 }) {
   if (collection === 'budgets') {
     const budget = record as Budget;
@@ -27,13 +32,30 @@ function RecordCells({
           <div className="fine-print">
             {budget.id} · {budget.tenant_id}
           </div>
+          {budgetStatus && (
+            <div className="fine-print">{budgetStatus.month} · UTC calendar month</div>
+          )}
         </td>
         <td>
           {budget.subject_type}
           <div className="fine-print">{budget.subject_id}</div>
         </td>
         <td>{budget.model}</td>
+        <td>
+          {!budget.enabled
+            ? 'Not applicable'
+            : budgetStatus
+              ? microUsd(budgetStatus.spent_micro_usd)
+              : 'Unavailable'}
+        </td>
         <td>{microUsd(budget.limit_micro_usd)} / month</td>
+        <td>
+          {!budget.enabled
+            ? 'Not applicable'
+            : budgetStatus
+              ? microUsd(budgetStatus.remaining_micro_usd)
+              : 'Unavailable'}
+        </td>
         <td>
           <Badge appearance="tint" color={budget.enabled ? 'success' : 'subtle'}>
             {budget.enabled ? 'Enabled' : 'Disabled'}
@@ -104,6 +126,7 @@ function RecordCells({
   );
 }
 
+/** Join configuration with optional live budget status and expose role-hinted mutation controls. */
 export function ConfigurationTable({
   collection,
   records,
@@ -111,6 +134,7 @@ export function ConfigurationTable({
   admin,
   onEdit,
   onDelete,
+  budgetStatus = [],
 }: {
   collection: EditableCollection;
   records: EditableRecord[];
@@ -118,9 +142,18 @@ export function ConfigurationTable({
   admin: boolean;
   onEdit: (record: EditableRecord) => void;
   onDelete: (id: string) => void;
+  budgetStatus?: BudgetStatus[];
 }) {
   const headings: Record<EditableCollection, string[]> = {
-    budgets: ['Budget / tenant', 'Level / subject', 'Model', 'Monthly limit', 'Status'],
+    budgets: [
+      'Budget / tenant',
+      'Level / subject',
+      'Model',
+      'Actual month-to-date',
+      'Monthly limit',
+      'Remaining',
+      'Status',
+    ],
     organizations: ['Organization unit', 'Type / parent', 'Business unit', 'Cost center', 'Status'],
     assignments: ['User assignment', 'Team / department', 'Tenant', 'Status'],
     prices: ['Model / price version', 'Uncached input rate', 'Cached input rate', 'Output rate'],
@@ -142,7 +175,12 @@ export function ConfigurationTable({
         <tbody>
           {records.map((record) => (
             <tr key={record.id}>
-              <RecordCells collection={collection} record={record} organizations={organizations} />
+              <RecordCells
+                collection={collection}
+                record={record}
+                organizations={organizations}
+                budgetStatus={budgetStatus.find((item) => item.budget_id === record.id)}
+              />
               {admin && (
                 <td>
                   <div className="row-actions">
@@ -168,6 +206,7 @@ export function ConfigurationTable({
           ))}
         </tbody>
       </table>
+      {collection === 'budgets' && <BudgetStatusNote />}
       {collection === 'prices' && (
         <p className="fine-print panel-footnote">
           Price rates are exact decimal USD strings per million tokens, never micro-USD. The API

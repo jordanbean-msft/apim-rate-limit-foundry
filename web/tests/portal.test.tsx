@@ -277,6 +277,66 @@ describe('monthly budgets, assignments and price cards', () => {
 });
 
 describe('authorization, MTD status and exports', () => {
+  it('combines admin budget status and configuration in one searchable, editable grid', async () => {
+    const user = userEvent.setup();
+    const api = createDemoApi();
+    const status = await api.budgetStatus();
+    vi.spyOn(api, 'budgetStatus').mockResolvedValue(status.reverse());
+    wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
+    await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
+    const table = await screen.findByRole('table', { name: 'budgets' });
+    const name = await within(table).findByText('Engineering monthly');
+    const row = within(name.closest('tr')!);
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+    expect(row.getByText('$250.00 / month')).toBeInTheDocument();
+    expect(row.getByText('$0.00318')).toBeInTheDocument();
+    expect(row.getByText('$249.99682')).toBeInTheDocument();
+    expect(row.getByText(/UTC calendar month/)).toBeInTheDocument();
+    expect(row.getByText('Enabled')).toBeInTheDocument();
+    expect(row.getByRole('button', { name: 'Delete engineering-monthly' })).toBeInTheDocument();
+    expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Search budgets' }), 'engineering-monthly');
+    expect(within(table).getAllByRole('row')).toHaveLength(2);
+    await user.click(row.getByRole('button', { name: 'Edit engineering-monthly' }));
+    expect(await screen.findByLabelText(/^Budget name/)).toHaveValue('Engineering monthly');
+  });
+
+  it('keeps disabled and missing-status budgets visible without inventing spending totals', async () => {
+    const user = userEvent.setup();
+    const api = createDemoApi();
+    const budgets = await api.list('budgets');
+    await api.save('budgets', { ...budgets[0], enabled: false });
+    vi.spyOn(api, 'budgetStatus').mockResolvedValue([]);
+    wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
+    await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
+    const disabled = await screen.findByText('Engineering monthly');
+    const disabledRow = within(disabled.closest('tr')!);
+    expect(disabledRow.getByText('Disabled')).toBeInTheDocument();
+    expect(disabledRow.getAllByText('Not applicable')).toHaveLength(2);
+    expect(
+      disabledRow.getByRole('button', { name: 'Edit engineering-monthly' }),
+    ).toBeInTheDocument();
+    const enabled = screen.getByText('Platform monthly');
+    expect(within(enabled.closest('tr')!).getAllByText('Unavailable')).toHaveLength(2);
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+  });
+
+  it('keeps admin budget actions available when the spend-status request fails', async () => {
+    const user = userEvent.setup();
+    const api = createDemoApi();
+    vi.spyOn(api, 'budgetStatus').mockRejectedValue(new Error('Spend status unavailable.'));
+    wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
+    await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
+    expect(await screen.findByText(/Spend status unavailable\./)).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'budgets' });
+    expect(within(table).getAllByText('Unavailable')).toHaveLength(6);
+    expect(
+      within(table).getByRole('button', { name: 'Edit engineering-monthly' }),
+    ).toBeInTheDocument();
+    expect(table).not.toHaveTextContent('$0.00');
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+  });
+
   it('shows actual month-to-date spend and the explicit soft-cap warning', async () => {
     const user = userEvent.setup();
     wrap(
@@ -295,6 +355,8 @@ describe('authorization, MTD status and exports', () => {
     expect(table).toHaveTextContent('$0.90');
     expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Create/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+    expect(within(table).queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
   });
 
   it('renders unknown chargeback counts without inventing zero tokens or dollars', async () => {
@@ -320,7 +382,9 @@ describe('authorization, MTD status and exports', () => {
     wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="reader" cloud="commercial" />);
     await user.click(screen.getByRole('button', { name: 'Chargeback' }));
     const report = await screen.findByRole('table', { name: 'Monthly chargeback report' });
-    expect(await within(report).findByText('Unknown — no actual usage reported')).toBeInTheDocument();
+    expect(
+      await within(report).findByText('Unknown — no actual usage reported'),
+    ).toBeInTheDocument();
     expect(report).toHaveTextContent('Unknown · Unknown · Unknown');
     expect(report).not.toHaveTextContent('$0.00');
   });

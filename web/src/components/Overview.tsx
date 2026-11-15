@@ -31,6 +31,7 @@ function Stat({
   );
 }
 
+/** Summarize authorized loaded records, keeping live status and persisted usage failures separate. */
 export function Overview({
   status,
   usage,
@@ -48,6 +49,7 @@ export function Overview({
   loading: boolean;
   navigate: (page: 'budgets' | 'usage' | 'chargeback') => void;
 }) {
+  // Count event outcomes, not provider requests inferred from HTTP success or budget admission.
   const actualCount = usage.filter((record) => record.status === 'actual').length;
   const unknownCount = usage.filter((record) => record.status === 'usage_unknown').length;
   return (

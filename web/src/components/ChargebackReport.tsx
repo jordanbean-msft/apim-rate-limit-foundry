@@ -4,10 +4,12 @@ import type { ChargebackRow, PortalApi } from '../contracts';
 import { microUsd } from '../format';
 import { track } from '../telemetry';
 
+/** Match accounting's UTC calendar month rather than the browser's local month boundary. */
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
+/** Download an authorized export via a short-lived object URL, not a persistent browser cache. */
 function download(content: string, month: string, format: 'json' | 'csv'): void {
   const blob = new Blob([content], {
     type: format === 'json' ? 'application/json' : 'text/csv',
@@ -20,6 +22,10 @@ function download(content: string, month: string, format: 'json' | 'csv'): void 
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Read monthly aggregates from persisted history, which may lag or miss live Redis spend.
+ * Nullable usage and explicit unknown counts must not be presented as zero-cost actuals.
+ */
 export function ChargebackReport({ api, refreshKey }: { api: PortalApi; refreshKey: string }) {
   const [month, setMonth] = useState(currentMonth);
   const [rows, setRows] = useState<ChargebackRow[]>([]);
@@ -29,6 +35,7 @@ export function ChargebackReport({ api, refreshKey }: { api: PortalApi; refreshK
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
+    // Clear the previous month immediately and ignore late completions after selection changes.
     let active = true;
     setLoading(true);
     setError(false);
@@ -50,6 +57,7 @@ export function ChargebackReport({ api, refreshKey }: { api: PortalApi; refreshK
     };
   }, [api, month, refreshKey, retry]);
 
+  /** Re-fetch the chosen format: CSV is server-produced text, JSON is serialized for download. */
   async function exportReport(format: 'json' | 'csv') {
     setExporting(true);
     try {

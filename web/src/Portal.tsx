@@ -88,6 +88,7 @@ const descriptions: Record<Page, string> = {
   dashboard: 'Charts and tables from the deployed Azure dashboard using its shared query catalog.',
 };
 
+/** Narrow navigation pages to configuration routes that support portal mutations. */
 function isEditable(page: Page): page is EditableCollection {
   return editablePages.includes(page as EditableCollection);
 }
@@ -101,6 +102,7 @@ function collectionLabel(collection: EditableCollection): string {
   }[collection];
 }
 
+/** Search loaded authorized records locally; this does not request a broader API result set. */
 function RecordBrowser({
   collection,
   records,
@@ -109,6 +111,7 @@ function RecordBrowser({
   loading,
   onEdit,
   onDelete,
+  budgetStatus,
 }: {
   collection: EditableCollection;
   records: EditableRecord[];
@@ -117,6 +120,7 @@ function RecordBrowser({
   loading: boolean;
   onEdit: (record: EditableRecord) => void;
   onDelete: (id: string) => void;
+  budgetStatus?: BudgetStatus[];
 }) {
   const [search, setSearch] = useState('');
   const filtered = records.filter((record) =>
@@ -140,6 +144,7 @@ function RecordBrowser({
         admin={admin}
         onEdit={onEdit}
         onDelete={onDelete}
+        budgetStatus={budgetStatus}
       />
       {!filtered.length && !loading && (
         <div className="empty-state">
@@ -152,6 +157,7 @@ function RecordBrowser({
   );
 }
 
+/** Role-aware workspace shell; all data access and mutation authorization remain API-enforced. */
 export function Portal({
   api,
   roles,
@@ -193,6 +199,7 @@ export function Portal({
     track('portal_page', { page, outcome: 'success' });
   }, [page]);
 
+  /** Fetch independent collections concurrently while retaining per-collection failure states. */
   const refresh = useCallback(async () => {
     if (!canRead) return;
     const start = performance.now();
@@ -214,6 +221,7 @@ export function Portal({
         { key: 'prices', run: () => api.list('prices') },
       );
     }
+    // One unavailable endpoint must not hide successfully loaded collections.
     const results = await Promise.allSettled(tasks.map((task) => task.run()));
     const failureCount = results.filter((result) => result.status === 'rejected').length;
     track(
@@ -221,7 +229,9 @@ export function Portal({
       { outcome: failureCount ? 'partial_failure' : 'success' },
       { collectionCount: tasks.length, failureCount, durationMs: performance.now() - start },
     );
+    // Superseded refreshes cannot overwrite newer data or state after effect cleanup.
     if (requestId !== sequence.current) return;
+    // Failed collections are cleared rather than masquerading as fresh cached results.
     const next = { ...emptyData };
     const failures: Errors = {};
     let nextStatus: BudgetStatus[] = [];
@@ -250,6 +260,7 @@ export function Portal({
     };
   }, [refresh]);
 
+  /** Reject obvious duplicate creates locally, then reload the API's canonical saved state. */
   async function save(record: EditableRecord) {
     if (!admin || !editor) throw new Error('Administrator access is required.');
     if (
@@ -262,6 +273,7 @@ export function Portal({
     await refresh();
   }
 
+  /** Delete only after explicit confirmation; refresh history/configuration independently afterward. */
   async function confirmDelete() {
     if (!admin || !deleting) return;
     setDeleteBusy(true);
@@ -450,17 +462,7 @@ export function Portal({
                 />
               ) : page === 'budgets' ? (
                 <div className="surface data-panel">
-                  {errors.budgetStatus ? (
-                    <p className="empty-inline">Budget status unavailable. Refresh to retry.</p>
-                  ) : (
-                    <BudgetStatusTable
-                      status={status}
-                      organizations={admin ? data.organizations : []}
-                      assignments={admin ? data.assignments : []}
-                      loading={loading}
-                    />
-                  )}
-                  {admin && (
+                  {admin ? (
                     <>
                       <div className="section-heading">
                         <h2>Configured monthly budgets</h2>
@@ -474,6 +476,7 @@ export function Portal({
                           organizations={data.organizations}
                           admin
                           loading={loading}
+                          budgetStatus={status}
                           onEdit={(record) => setEditor({ collection: 'budgets', record })}
                           onDelete={(id) => {
                             setMutationError('');
@@ -482,6 +485,10 @@ export function Portal({
                         />
                       )}
                     </>
+                  ) : errors.budgetStatus ? (
+                    <p className="empty-inline">Budget status unavailable. Refresh to retry.</p>
+                  ) : (
+                    <BudgetStatusTable status={status} loading={loading} />
                   )}
                 </div>
               ) : page === 'usage' ? (

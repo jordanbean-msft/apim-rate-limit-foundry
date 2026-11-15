@@ -2,6 +2,19 @@ import { Badge } from '@fluentui/react-components';
 import type { BudgetStatus, Organization, Assignment } from '../contracts';
 import { microUsd } from '../format';
 
+/** Explain admission-time soft-cap behavior, not a reservation or guaranteed invoice ceiling. */
+export function BudgetStatusNote() {
+  return (
+    <p className="fine-print panel-footnote">
+      All matching user, team, and department budgets apply. Budgets check completed month-to-date
+      actual spend before forwarding and record provider-reported actual cost afterward. This is a
+      soft cap: concurrent in-flight requests can overshoot a limit; subsequent requests are denied.
+      These values are actual usage totals, not a guaranteed invoice ceiling.
+    </p>
+  );
+}
+
+/** Resolve optional authorized labels while retaining stable subject IDs when metadata is absent. */
 function subjectName(
   status: BudgetStatus,
   organizations: Organization[],
@@ -17,6 +30,7 @@ function subjectName(
   return organization ? `${organization.name} · ${organization.id}` : status.subject_id;
 }
 
+/** Display live Redis-backed monthly status independently of asynchronously persisted usage. */
 export function BudgetStatusTable({
   status,
   organizations = [],
@@ -65,12 +79,7 @@ export function BudgetStatusTable({
           </tbody>
         </table>
       </div>
-      <p className="fine-print panel-footnote">
-        All matching user, team, and department budgets apply. Budgets check completed month-to-date
-        actual spend before forwarding and record provider-reported actual cost afterward. This is a
-        soft cap: concurrent in-flight requests can overshoot a limit; subsequent requests are
-        denied. These values are actual usage totals, not a guaranteed invoice ceiling.
-      </p>
+      <BudgetStatusNote />
     </>
   );
 }

@@ -69,6 +69,8 @@ describe('dashboard chart transformations', () => {
     expect(formatDashboardValue(5, 'ReservedUSD')).toBe('$5');
     expect(formatDashboardValue(1_250_000, 'Cost in microUSD')).toBe('1.25 USD');
     expect(formatDashboardValue(1250, 'Latency (ms)')).toBe('1.25K ms');
+    expect(formatDashboardValue(70.25, 'CacheHitPercent')).toBe('70.25%');
+    expect(formatDashboardValue(125, 'UtilizationPercent')).toBe('125%');
   });
 
   it('assigns deterministic colors independent of row/category order', () => {

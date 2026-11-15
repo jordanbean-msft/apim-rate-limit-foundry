@@ -1,6 +1,9 @@
+/** Public gateway protocols, not provider deployment identifiers. */
 export type ApiProtocol = 'openai-chat' | 'openai-responses';
+/** API application roles; decoded browser claims are navigation hints, not authorization. */
 export type Role = 'RateLimit.Admin' | 'RateLimit.Reader' | 'RateLimit.Gateway';
 
+/** Tenant-owned department or team with chargeback dimensions and an optional parent. */
 export interface Organization {
   id: string;
   tenant_id: string;
@@ -12,6 +15,7 @@ export interface Organization {
   enabled: boolean;
 }
 
+/** Explicit principal-to-team membership; no membership inference from Entra group claims. */
 export interface Assignment {
   id: string;
   tenant_id: string;
@@ -22,6 +26,7 @@ export interface Assignment {
   enabled: boolean;
 }
 
+/** UTC monthly soft cap in integer micro-USD; "*" matches all registered model aliases. */
 export interface Budget {
   id: string;
   tenant_id: string;
@@ -33,6 +38,7 @@ export interface Budget {
   enabled: boolean;
 }
 
+/** Versioned rates as exact decimal USD strings per million tokens, not integer micro-USD. */
 export interface Price {
   id: string;
   model: string;
@@ -42,6 +48,7 @@ export interface Price {
   output_per_million: string;
 }
 
+/** Read-only deployment-managed routing, token ceilings, and pinned accounting price version. */
 export interface Model {
   id: string;
   model: string;
@@ -52,6 +59,10 @@ export interface Model {
   max_output_tokens: number;
 }
 
+/**
+ * Current UTC-month spend from live Redis counters, not a sum of durable usage history.
+ * Remaining micro-USD may be negative because concurrent requests can overshoot the soft cap.
+ */
 export interface BudgetStatus {
   budget_id: string;
   name: string;
@@ -64,6 +75,10 @@ export interface BudgetStatus {
   month: string;
 }
 
+/**
+ * Persisted usage event; unknown provider usage stays null rather than becoming zero cost.
+ * History is written asynchronously and may lag or permanently miss live-counter updates.
+ */
 export interface UsageRecord {
   event_version: 2;
   event_name: 'usage_recorded';
@@ -89,6 +104,7 @@ export interface UsageRecord {
   price_version: string;
 }
 
+/** Monthly persisted-history aggregate; unknown requests are counted separately from actuals. */
 export interface ChargebackRow {
   business_unit: string;
   cost_center: string;
@@ -105,6 +121,7 @@ export interface ChargebackRow {
   unknown_requests: number;
 }
 
+/** Route-to-record map used to preserve the record type of generic collection operations. */
 export interface Collections {
   budgets: Budget;
   organizations: Organization;
@@ -115,9 +132,11 @@ export interface Collections {
 }
 
 export type Collection = keyof Collections;
+/** Routing/model inventory and usage history are intentionally not portal-editable. */
 export type EditableCollection = 'budgets' | 'organizations' | 'assignments' | 'prices';
 export type EditableRecord = Budget | Organization | Assignment | Price;
 
+/** Public /config.json response; never includes APIM subscription keys or access tokens. */
 export interface RuntimeConfig {
   cloud: 'commercial' | 'government';
   tenantId: string;
@@ -133,6 +152,7 @@ export interface RuntimeConfig {
 
 export type DashboardPeriod = '1h' | '24h' | '7d';
 export type DashboardScalar = string | number | boolean | null;
+/** Query result: row cells align by index with columns; tile errors/truncation are independent. */
 export interface DashboardTile {
   id: string;
   title: string;
@@ -146,6 +166,7 @@ export interface DashboardTile {
   truncated: boolean;
 }
 
+/** Authenticated API boundary shared by live HTTP access and explicitly selected local fixtures. */
 export interface PortalApi {
   dashboard(period: DashboardPeriod): Promise<DashboardTile[]>;
   list<K extends Collection>(collection: K): Promise<Collections[K][]>;

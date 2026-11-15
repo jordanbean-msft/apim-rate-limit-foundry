@@ -25,6 +25,7 @@ const periods: { value: DashboardPeriod; label: string }[] = [
   { value: '7d', label: 'Last 7 days' },
 ];
 
+/** Load period-scoped query tiles with independent tile diagnostics and responsive chart sizing. */
 export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: boolean }) {
   const [period, setPeriod] = useState<DashboardPeriod>('24h');
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -38,6 +39,7 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
   const mounted = useRef(false);
 
   const refresh = useCallback(async () => {
+    // Do not cancel the API transport; discard stale periods and completions after unmount.
     const requestId = ++sequence.current;
     setLoading(true);
     setError('');
@@ -71,6 +73,8 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
   }, [refresh]);
 
   const chartWidth = Math.max(300, Math.min(780, (viewportWidth - 340) / 2 - 36));
+  const charts = tiles.filter((tile) => tile.chart !== '');
+  const details = tiles.filter((tile) => tile.chart === '');
 
   return (
     <section className="dashboard-page" aria-label="Azure dashboard">
@@ -104,6 +108,27 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
           data.
         </p>
       )}
+      <div className="surface">
+        <h2>Gateway enforcement and accounting</h2>
+        <p>
+          <strong>APIM:</strong> HTTP traffic and throttles. <strong>Function:</strong> budget
+          admission, finalized usage, and Table/Redis operations. HTTP success and admission are not
+          proof that accounting completed.
+        </p>
+        <p>
+          Token charts split actual usage into uncached input, provider prompt-cache reads, and
+          output. Cache percentage is cached input divided by all input tokens, not APIM response
+          caching. Blocked requests have no measured provider tokens.
+        </p>
+        <p className="fine-print">
+          Redis holds live budget counters. Table history is persisted in the background and can
+          permanently miss records after a restart or failure; chargeback reports may differ from
+          live spend. Redis data loss can reset counters. Telemetry can be sampled or delayed.
+          Lifecycle stages overlap and must not be added together. No terminal observed after five
+          minutes is an investigation signal, not proof of lost billing. Monthly spend and budget
+          utilization use the UTC calendar month, independently of the activity time range.
+        </p>
+      </div>
       {error && (
         <div role="alert">
           <MessageBar intent="error">
@@ -120,15 +145,31 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
           <p>The configured Azure dashboard did not return tiles for this time range.</p>
         </div>
       )}
-      <div className="dashboard-grid">
-        {tiles.map((tile) => (
-          <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
-        ))}
-      </div>
+      {charts.length > 0 && (
+        <section aria-label="Operational charts">
+          <h2>Traffic, tokens and accounting</h2>
+          <div className="dashboard-grid">
+            {charts.map((tile) => (
+              <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
+            ))}
+          </div>
+        </section>
+      )}
+      {details.length > 0 && (
+        <section aria-label="Supporting detail grids">
+          <h2>Supporting detail grids</h2>
+          <div className="dashboard-grid">
+            {details.map((tile) => (
+              <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
+            ))}
+          </div>
+        </section>
+      )}
     </section>
   );
 }
 
+/** Preserve raw tabular access alongside charts, including query errors and truncation notices. */
 function DashboardTileView({ tile, chartWidth }: { tile: DashboardTile; chartWidth: number }) {
   const model = buildDashboardChartModel(tile);
   const isTable = tile.chart === '';
@@ -179,6 +220,7 @@ function DashboardTileView({ tile, chartWidth }: { tile: DashboardTile; chartWid
   );
 }
 
+/** Adapt the normalized sparse series to each Fluent chart without fabricating missing samples. */
 function Chart({
   tile,
   model,
@@ -282,6 +324,7 @@ function Chart({
       return {
         x: model.dateAxis ? dashboardDate(category) : category,
         y: value,
+        legend: category,
         color: colorForDashboardLabel(category),
         xAxisCalloutData: category,
         yAxisCalloutData: formatDashboardValue(value, tile.y_axis),
@@ -301,6 +344,7 @@ function Chart({
     );
   }
 
+  // Fluent lines require numeric/date X values; retain labels through stable categorical indices.
   const categoryIndices = new Map(model.categories.map((category, index) => [category, index]));
   const lines = model.series.map((series) => ({
     legend: series.name,
@@ -336,6 +380,7 @@ function Chart({
   );
 }
 
+/** Render cells positionally against the API column metadata, including non-plottable data. */
 function DashboardTable({ tile }: { tile: DashboardTile }) {
   return (
     <div className="table-scroll dashboard-table-scroll">
@@ -364,6 +409,7 @@ function DashboardTable({ tile }: { tile: DashboardTile }) {
   );
 }
 
+/** Respect declared datetime columns using UTC while leaving invalid source text inspectable. */
 function formatCell(value: DashboardScalar, type: string): string {
   if (value === null) return '—';
   if (/date|time/i.test(type) && typeof value === 'string') {

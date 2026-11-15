@@ -1,6 +1,6 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Dashboard } from '../src/components/Dashboard';
 import { Portal } from '../src/Portal';
 import type { DashboardTile, PortalApi } from '../src/contracts';
@@ -23,6 +23,96 @@ const wrap = (children: React.ReactNode) =>
 const dashboardApi = (dashboard: PortalApi['dashboard']) => ({ dashboard }) as unknown as PortalApi;
 
 describe('Azure dashboard page', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(SVGElement.prototype, 'getComputedTextLength');
+  });
+
+  it('renders actual token and accounting charts before supporting grids', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as CanvasRenderingContext2D);
+    Object.defineProperty(SVGElement.prototype, 'getComputedTextLength', {
+      configurable: true,
+      value(this: SVGElement) {
+        return (this.textContent?.length ?? 0) * 8;
+      },
+    });
+    const tokens: DashboardTile = {
+      ...tableTile('Actual token composition by model'),
+      chart: 'StackedColumn',
+      x_axis: 'Model',
+      y_axis: 'Tokens',
+      split_by: 'TokenType',
+      columns: [
+        { name: 'Model', type: 'string' },
+        { name: 'TokenType', type: 'string' },
+        { name: 'Tokens', type: 'long' },
+      ],
+      rows: [
+        ['sample-model', 'Cached input', 1200],
+        ['sample-model', 'Uncached input', 300],
+        ['sample-model', 'Output', 50],
+      ],
+    };
+    const lifecycle: DashboardTile = {
+      ...tokens,
+      id: 'lifecycle',
+      title: 'Function accounting',
+      chart: 'Column',
+      y_axis: 'Requests',
+      split_by: 'Stage',
+      columns: [
+        { name: 'Model', type: 'string' },
+        { name: 'Stage', type: 'string' },
+        { name: 'Requests', type: 'long' },
+      ],
+      rows: [
+        ['sample-model', 'Admitted', 8],
+        ['sample-model', 'Finalized actual', 7],
+        ['sample-model', 'Recorded unknown', 1],
+      ],
+    };
+    const cache: DashboardTile = {
+      ...tokens,
+      id: 'cache',
+      title: 'Provider prompt-cache percentage',
+      chart: 'Column',
+      y_axis: 'CacheHitPercent',
+      split_by: null,
+      columns: [
+        { name: 'Model', type: 'string' },
+        { name: 'CacheHitPercent', type: 'real' },
+      ],
+      rows: [['sample-model', 80]],
+    };
+    wrap(
+      <Dashboard
+        api={dashboardApi(
+          vi.fn().mockResolvedValue([tableTile('Supporting evidence'), tokens, lifecycle, cache]),
+        )}
+        fixtureMode={false}
+      />,
+    );
+    const chart = await screen.findByRole('img', {
+      name: 'Actual token composition by model. Model by Tokens.',
+    });
+    expect(chart.querySelector('svg')).not.toBeNull();
+    expect(
+      screen
+        .getByRole('img', { name: 'Function accounting. Model by Requests.' })
+        .querySelector('svg'),
+    ).not.toBeNull();
+    const charts = screen.getByRole('region', { name: 'Operational charts' });
+    const details = screen.getByRole('region', { name: 'Supporting detail grids' });
+    expect(charts.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(charts).getAllByText(/View data table/)).toHaveLength(3);
+    expect(screen.queryByText('Undefined')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Blocked requests have no measured provider tokens/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Lifecycle stages overlap/)).toBeInTheDocument();
+  });
+
   it('shows loading, selectable periods, and accessible data details', async () => {
     const dashboard = vi.fn().mockResolvedValue([tableTile('Native dashboard table')]);
     wrap(<Dashboard api={dashboardApi(dashboard)} fixtureMode={false} />);

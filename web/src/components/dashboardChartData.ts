@@ -11,12 +11,14 @@ export const dashboardColors = [
   '#c239b3',
 ];
 
+/** Keep category/series colors stable across refreshes and result ordering changes. */
 export function colorForDashboardLabel(label: string): string {
   let hash = 0;
   for (const character of label) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   return dashboardColors[hash % dashboardColors.length];
 }
 
+/** Sparse chart data: absent category/series pairs remain absent rather than becoming zero. */
 export interface DashboardChartModel {
   categories: string[];
   series: { name: string; color: string; values: Map<string, number> }[];
@@ -30,6 +32,7 @@ function scalarLabel(value: DashboardScalar): string {
   return String(value);
 }
 
+/** Accept numeric query scalars but do not coerce empty strings, booleans, or null into zero. */
 function finiteNumber(value: DashboardScalar): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {
@@ -39,11 +42,13 @@ function finiteNumber(value: DashboardScalar): number | undefined {
   return undefined;
 }
 
+/** Infer date axes from column metadata or ISO-shaped text; no full date validation is performed. */
 function isDateValue(value: DashboardScalar, type: string): boolean {
   if (typeof value !== 'string') return false;
   return /date|time/i.test(type) || /^\d{4}-\d{2}-\d{2}T/.test(value);
 }
 
+/** Resolve named axes, sum duplicate category/series cells, and build shared chart-ready series. */
 export function buildDashboardChartModel(tile: DashboardTile): DashboardChartModel {
   const xIndex = tile.columns.findIndex((column) => column.name === tile.x_axis);
   const yIndex = tile.columns.findIndex((column) => column.name === tile.y_axis);
@@ -56,6 +61,7 @@ export function buildDashboardChartModel(tile: DashboardTile): DashboardChartMod
 
   const firstX = tile.rows.find((row) => row[xIndex] !== null)?.[xIndex] ?? null;
   const dateAxis = isDateValue(firstX, tile.columns[xIndex].type);
+  // Column positions come from the API metadata, not assumptions about query projection order.
   const totals = new Map<string, Map<string, number>>();
   for (const row of tile.rows) {
     const rawX = row[xIndex];
@@ -84,6 +90,7 @@ export function buildDashboardChartModel(tile: DashboardTile): DashboardChartMod
       }),
     ),
   }));
+  // Donuts aggregate all series per category and omit non-positive slices.
   const pie = categories.flatMap((category) => {
     const value = [...(totals.get(category)?.values() ?? [])].reduce((sum, item) => sum + item, 0);
     return value > 0
@@ -93,6 +100,7 @@ export function buildDashboardChartModel(tile: DashboardTile): DashboardChartMod
   return { categories, series, pie, dateAxis };
 }
 
+/** Infer display units from axis titles; percentages are already percentages, not fractions. */
 export function formatDashboardValue(value: number, axisTitle: string | null): string {
   const axis = axisTitle ?? '';
   const compact = new Intl.NumberFormat(undefined, {
@@ -111,10 +119,12 @@ export function formatDashboardValue(value: number, axisTitle: string | null): s
       maximumFractionDigits: Math.abs(value) < 1 ? 6 : 2,
     }).format(value);
   }
+  if (/percent|%/i.test(axis)) return `${compact}%`;
   if (/\bms\b|millisecond/i.test(axis)) return `${compact} ms`;
   return compact;
 }
 
+/** Convert textual dates for Fluent charts while preserving existing numeric/date X values. */
 export function dashboardDate(value: string | number | Date): Date | number {
   return value instanceof Date ? value : typeof value === 'number' ? value : new Date(value);
 }

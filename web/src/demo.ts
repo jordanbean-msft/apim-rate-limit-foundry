@@ -31,6 +31,10 @@ const organizations: Collections['organizations'][] = [
   },
 ];
 
+/**
+ * In-memory API for explicit demo mode only; never a fallback for failed live requests.
+ * Budget status, chargeback, and dashboard fixtures do not recalculate when records are edited.
+ */
 export function createDemoApi(): PortalApi {
   const data: { [K in Collection]: Collections[K][] } = {
     organizations,
@@ -195,6 +199,7 @@ export function createDemoApi(): PortalApi {
     },
   ];
 
+  // Clone boundary values so consumers cannot mutate fixtures outside save/remove operations.
   return {
     async dashboard() {
       return structuredClone(dashboardFixtures);

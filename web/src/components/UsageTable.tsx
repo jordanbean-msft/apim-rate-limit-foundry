@@ -2,6 +2,7 @@ import { Badge } from '@fluentui/react-components';
 import type { UsageRecord } from '../contracts';
 import { microUsd, utcTime } from '../format';
 
+/** Display persisted authorized events with explicit unknown outcomes; never reprice provider usage. */
 export function UsageTable({ records }: { records: UsageRecord[] }) {
   if (!records.length)
     return <p className="empty-inline">No authorized usage records are available.</p>;

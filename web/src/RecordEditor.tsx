@@ -37,6 +37,7 @@ const priceFields = [
 ] as const;
 const decimal = /^(0|[1-9]\d*)(\.\d{1,12})?$/;
 
+/** Convert stored integer micro-USD into editable decimal dollars without binary rounding. */
 function decimalUsdFromMicros(value: number): string {
   const micros = BigInt(value);
   const whole = micros / 1_000_000n;
@@ -44,6 +45,7 @@ function decimalUsdFromMicros(value: number): string {
   return fractional ? `${whole}.${fractional}` : `${whole}`;
 }
 
+/** Accept at most six fractional USD digits and reject values beyond safe integer micro-USD. */
 function microUsdFromDecimal(value: string): number {
   if (!/^(0|[1-9]\d*)(\.\d{1,6})?$/.test(value))
     throw new Error('Monthly budget must be a non-negative USD amount with up to 6 decimals.');
@@ -54,6 +56,7 @@ function microUsdFromDecimal(value: string): number {
   return Number(micros);
 }
 
+/** Keep form dollars separate from the API budget's micro-USD field until validated submission. */
 function initialDraft(collection: EditableCollection, record?: EditableRecord): Draft {
   if (record) {
     const draft: Draft = { ...record };
@@ -103,6 +106,10 @@ function initialDraft(collection: EditableCollection, record?: EditableRecord): 
   };
 }
 
+/**
+ * Build the collection-specific PUT body from trimmed input and currently loaded relationships.
+ * These usability checks do not replace the API's validation or tenant/role enforcement.
+ */
 function parseDraft(
   collection: EditableCollection,
   draft: Draft,
@@ -206,6 +213,7 @@ function parseDraft(
         organization.enabled,
     );
     if (!team?.department_id) throw new Error('Choose an enabled team with a parent department.');
+    // Department follows the enabled team in the same tenant, not a separately editable value.
     const assignment: Assignment = {
       id,
       tenant_id: required('tenant_id', 'Tenant ID'),
@@ -218,6 +226,7 @@ function parseDraft(
     if (display_label) assignment.display_label = display_label;
     return assignment;
   }
+  // Price rates retain decimal strings (up to 12 places); they are not budget micro-USD.
   const validatePrice = (key: (typeof priceFields)[number][0], label: string) => {
     const value = str(key);
     if (!decimal.test(value))
@@ -232,6 +241,7 @@ function parseDraft(
   } as Price;
 }
 
+/** Collection-aware form with exact monetary conversion and API-backed save confirmation. */
 export function RecordEditor({
   collection,
   record,
@@ -280,6 +290,7 @@ export function RecordEditor({
     </Field>
   );
 
+  /** Separate validation failures from transport failures without exporting record contents. */
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError('');
@@ -327,6 +338,7 @@ export function RecordEditor({
   );
   const userAssignments = assignments.filter((assignment) => assignment.enabled);
   const aliases = [...new Set(models.map((model) => model.model))].sort();
+  // Preserve a previously saved alias even if it is absent from the current deployment inventory.
   const modelChoices: [string, string][] = [
     ['*', 'All registered models (*)'],
     ...aliases.map((alias): [string, string] => [alias, alias]),
