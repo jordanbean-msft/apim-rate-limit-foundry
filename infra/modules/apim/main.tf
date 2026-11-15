@@ -50,14 +50,25 @@ resource "azapi_resource" "this" {
   }
   tags = var.tags
 }
+resource "azurerm_role_assignment" "telemetry" {
+  name                 = uuidv5("dns", "${var.application_insights_id}/${var.identity.principal_id}/Monitoring Metrics Publisher")
+  scope                = var.application_insights_id
+  role_definition_name = "Monitoring Metrics Publisher"
+  principal_id         = var.identity.principal_id
+}
 resource "azurerm_api_management_logger" "this" {
-  name                = "application-insights"
+  name                = "application-insights-identity"
   api_management_name = azapi_resource.this.name
   resource_group_name = var.resource_group_name
   resource_id         = var.application_insights_id
   application_insights {
-    instrumentation_key = var.instrumentation_key
+    connection_string  = var.application_insights_connection_string
+    identity_client_id = var.identity.client_id
   }
+  lifecycle {
+    create_before_destroy = true
+  }
+  depends_on = [azurerm_role_assignment.telemetry]
 }
 resource "azurerm_api_management_logger" "usage" {
   name                = "usage-events"
@@ -65,7 +76,7 @@ resource "azurerm_api_management_logger" "usage" {
   resource_group_name = var.resource_group_name
   resource_id         = var.event_hub.id
   buffered            = true
-  description         = "Best-effort finalized usage v2; APIM is the only producer."
+  description         = "Best-effort Redis-accepted usage v2; not proof of Table persistence. APIM is the only producer."
   eventhub {
     name                             = var.event_hub.name
     endpoint_uri                     = var.event_hub.endpoint_address
@@ -134,7 +145,6 @@ locals {
     }
   ]...)
   portal_operations = merge(local.portal_reads, local.portal_writes, {
-    rebuild       = { method = "POST", path = "/counters/rebuild", parameter = false }
     budget-status = { method = "GET", path = "/budgets/status", parameter = false }
   })
 }
@@ -208,7 +218,7 @@ resource "azurerm_api_management_api" "internal" {
   resource_group_name   = var.resource_group_name
   api_management_name   = azapi_resource.this.name
   revision              = "1"
-  display_name          = "Function-only finalized usage callback"
+  display_name          = "Function-only Redis-accepted usage callback"
   path                  = "internal"
   protocols             = ["https"]
   subscription_required = false

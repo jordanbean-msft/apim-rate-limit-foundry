@@ -1,4 +1,6 @@
 <policies>
+  <!-- Internal streaming callback: require the exact Function workload identity,
+       reject delegated user tokens, and accept only compact version-2 usage events. -->
   <inbound>
     <base />
     <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-scheme="Bearer" output-token-variable-name="callback-jwt">
@@ -31,16 +33,31 @@
         <return-response><set-status code="400" reason="Invalid compact usage event" /></return-response>
       </when>
     </choose>
+    <!-- HTTP 204 acknowledges this APIM logging policy, not consumer processing,
+         durable Table persistence or exactly-once Event Hub delivery. -->
     <log-to-eventhub logger-id="usage-events" partition-key='@{
       var item = JObject.Parse((string)context.Variables["usage-event"]);
       return (string)item["tenant_ref"] + ":" + (string)item["user_ref"];
     }'>@((string)context.Variables["usage-event"])</log-to-eventhub>
+    <trace source="usage-accounting" severity="information">
+      <message>usage_event_enqueued</message>
+      <metadata name="request_id" value='@((string)JObject.Parse((string)context.Variables["usage-event"])["request_id"] ?? context.Request.Headers.GetValueOrDefault("X-Correlation-ID", context.RequestId.ToString()))' />
+      <metadata name="event_id" value='@((string)JObject.Parse((string)context.Variables["usage-event"])["event_id"] ?? "")' />
+    </trace>
     <return-response><set-status code="204" reason="Accepted" /></return-response>
   </inbound>
   <backend />
   <outbound />
   <on-error>
-    <trace source="usage-accounting" severity="error"><message>usage_event_publish_failed</message><metadata name="error_type" value="@(context.LastError.Source)" /></trace>
+    <trace source="usage-accounting" severity="error">
+      <message>usage_event_publish_failed</message>
+      <metadata name="error_type" value="@(context.LastError.Source)" />
+      <metadata name="request_id" value='@{
+        var value = context.Request.Headers.GetValueOrDefault("X-Correlation-ID", "");
+        return System.Text.RegularExpressions.Regex.IsMatch(value, @"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z")
+          ? value : context.RequestId.ToString();
+      }' />
+    </trace>
     <return-response><set-status code="503" reason="Usage event publishing unavailable" /></return-response>
   </on-error>
 </policies>

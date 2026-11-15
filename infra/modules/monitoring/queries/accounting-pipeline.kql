@@ -1,0 +1,26 @@
+let Admissions = AppTraces
+| where Message == "budget_decision" and tobool(Properties.allowed) == true
+| extend RequestId = coalesce(tostring(Properties.request_id), tostring(Properties.correlation_id))
+| where isnotempty(RequestId)
+| summarize arg_max(TimeGenerated, *) by RequestId
+| project RequestId, AdmittedAt = TimeGenerated, Model = tostring(Properties.model);
+let Recorded = AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| extend RequestId = tostring(Properties.request_id)
+| where isnotempty(RequestId)
+| summarize arg_max(TimeGenerated, *) by RequestId
+| project RequestId, AccountingStatus = tostring(Properties.status);
+Admissions
+| join kind=leftouter Recorded on RequestId
+| summarize Admitted = count(),
+    Actual = countif(AccountingStatus == "actual"),
+    Unknown = countif(AccountingStatus == "usage_unknown"),
+    Waiting = countif(isempty(AccountingStatus) and AdmittedAt > ago(5m)),
+    Unobserved = countif(isempty(AccountingStatus) and AdmittedAt <= ago(5m)) by Model
+| mv-expand Stage = dynamic(["Admitted", "Finalized actual", "Recorded unknown", "Waiting (under 5m)", "No terminal observed (over 5m)"]) to typeof(string)
+| project Model, Stage, Requests = case(
+    Stage == "Admitted", Admitted,
+    Stage == "Finalized actual", Actual,
+    Stage == "Recorded unknown", Unknown,
+    Stage == "Waiting (under 5m)", Waiting, Unobserved)
+| order by Model asc, Stage asc

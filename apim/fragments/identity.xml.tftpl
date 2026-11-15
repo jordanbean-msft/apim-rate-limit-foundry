@@ -1,4 +1,6 @@
 <fragment>
+  <!-- Inference requires both an APIM product subscription and a tenant-valid
+       delegated person token. Attribution comes from verified claims, not JSON. -->
   <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
   <choose>
     <when condition='@(context.Subscription == null || context.Product == null || String.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault("Ocp-Apim-Subscription-Key", "")))'>
@@ -19,6 +21,7 @@
       <return-response><set-status code="401" reason="Delegated person identity required" /></return-response>
     </when>
   </choose>
+  <!-- Trace a stable opaque reference rather than the raw tenant/object IDs. -->
   <set-variable name="caller-ref" value='@{
     var identity = (string)context.Variables["tenant-id"] + "\n" + (string)context.Variables["principal-id"];
     return BitConverter.ToString(System.Security.Cryptography.SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(identity))).Replace("-", "").ToLowerInvariant();
@@ -32,6 +35,8 @@
     <metadata name="api_id" value="@(context.Api.Id)" />
     <metadata name="operation_id" value="@(context.Operation.Id)" />
   </trace>
+  <!-- This native subscription burst cap is separate from monthly Redis budgets.
+       APIM's generated request ID is also the admission/accounting replay key. -->
   <rate-limit-by-key calls="${burst_calls}" renewal-period="${burst_seconds}" counter-key='@((string)context.Variables["tenant-id"] + ":" + (string)context.Variables["subscription-id"])' />
   <set-variable name="request-id" value="@(context.RequestId.ToString())" />
 </fragment>

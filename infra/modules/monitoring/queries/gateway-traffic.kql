@@ -1,0 +1,23 @@
+let BudgetBlocks = AppTraces
+| where Message == "budget_decision" and tobool(Properties.allowed) == false
+| extend RequestId = coalesce(tostring(Properties.request_id), tostring(Properties.correlation_id))
+| where isnotempty(RequestId)
+| summarize by RequestId
+| extend BudgetBlocked = true;
+ApiManagementGatewayLogs
+| where ApiId has "foundry"
+| extend RequestId = tostring(CorrelationId)
+| where isnotempty(RequestId)
+| summarize arg_max(TimeGenerated, *) by RequestId
+| join kind=leftouter BudgetBlocks on RequestId
+| extend Outcome = case(
+    BudgetBlocked == true, "Blocked by monthly budget",
+    BackendResponseCode == 429, "Provider / backend throttle",
+    ResponseCode == 429, "Other / unclassified 429",
+    ResponseCode in (401, 403), "Authentication / authorization rejected",
+    ResponseCode >= 500, "Gateway / backend error",
+    ResponseCode >= 400, "Other HTTP error",
+    ResponseCode between (200 .. 299), "HTTP 2xx (not accounting proof)",
+    "Other HTTP outcome")
+| summarize Requests = count() by TimeGenerated = bin(TimeGenerated, 5m), Outcome
+| order by TimeGenerated asc, Outcome asc

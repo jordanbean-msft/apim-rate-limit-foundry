@@ -1,3 +1,6 @@
+<!-- Responses contract: stateless foreground requests with bounded inline text and
+     client function history. Opaque references/media cannot bypass input bounds.
+     The input bound is a conservative byte/envelope estimate, not a tokenizer or cost reservation. -->
 <set-variable name="admission-error" value='@{
   try {
   var body = JObject.Parse((string)context.Variables["request-body"]);

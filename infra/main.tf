@@ -243,6 +243,8 @@ module "hosting" {
     REDIS_PORT                            = tostring(module.redis.port)
     REDIS_USERNAME                        = module.identity.function.principal_id
     REDIS_TOKEN_SCOPE                     = var.redis.token_scope
+    CONFIGURATION_CACHE_SECONDS           = tostring(var.hosting.configuration_cache_seconds)
+    REQUEST_CACHE_SECONDS                 = tostring(var.hosting.request_cache_seconds)
     LOCAL_AUTH_ENABLED                    = "false"
     LOCAL_STORE_ENABLED                   = "false"
     MAX_INPUT_TOKENS                      = tostring(var.hosting.max_input_tokens)
@@ -272,7 +274,7 @@ module "hosting" {
     PORTAL_APIM_SUBSCRIPTION_KEY               = "@Microsoft.KeyVault(SecretUri=${module.portal_key_vault.secret_uri})"
     GRAPH_BASE_URL                             = local.cloud == "government" ? "https://graph.microsoft.us" : "https://graph.microsoft.com"
     APPLICATIONINSIGHTS_CONNECTION_STRING      = module.monitoring.app_insights_connection_string
-    ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
+    ApplicationInsightsAgent_EXTENSION_VERSION = "disabled"
     SCM_DO_BUILD_DURING_DEPLOYMENT             = "false"
   }
   depends_on = [module.storage, module.redis]
@@ -305,10 +307,10 @@ module "apim" {
     foundry   = length(var.managed_models) == 0 ? try(module.ai.backends["foundry"].model, "") : ""
     responses = length(var.managed_models) > 0 && try(module.ai.backends["responses"].model, "") == var.ai.foundry.deployment_name ? "" : try(module.ai.backends["responses"].model, "")
   }
-  application_insights_id = module.monitoring.app_insights_id
-  instrumentation_key     = module.monitoring.app_insights_instrumentation_key
-  max_input_tokens        = var.hosting.max_input_tokens
-  depends_on              = [module.identity]
+  application_insights_id                = module.monitoring.app_insights_id
+  application_insights_connection_string = module.monitoring.app_insights_connection_string
+  max_input_tokens                       = var.hosting.max_input_tokens
+  depends_on                             = [module.identity]
 }
 module "event_hubs" {
   source                        = "./modules/event_hubs"

@@ -74,7 +74,18 @@ variable "hosting" {
     telemetry_sampling_ratio    = number
     log_retention_days          = number
     log_disk_quota_mb           = number
+    configuration_cache_seconds = number
+    request_cache_seconds       = number
   })
+  validation {
+    condition = (
+      var.hosting.configuration_cache_seconds >= 1 && var.hosting.configuration_cache_seconds <= 3600 &&
+      floor(var.hosting.configuration_cache_seconds) == var.hosting.configuration_cache_seconds &&
+      var.hosting.request_cache_seconds >= 300 && var.hosting.request_cache_seconds <= 604800 &&
+      floor(var.hosting.request_cache_seconds) == var.hosting.request_cache_seconds
+    )
+    error_message = "Configuration cache TTL must be 1..3600 seconds and request/replay TTL 300..604800 seconds, both integers."
+  }
   validation {
     condition     = var.hosting.telemetry_sampling_ratio >= 0 && var.hosting.telemetry_sampling_ratio <= 1 && var.hosting.log_retention_days >= 1 && var.hosting.log_disk_quota_mb >= 25 && var.hosting.log_disk_quota_mb <= 100
     error_message = "Telemetry ratio must be 0..1 and local logs need positive retention and 25..100 MB."

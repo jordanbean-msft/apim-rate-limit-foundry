@@ -128,6 +128,10 @@ class GatewayPolicyTests(unittest.TestCase):
             },
         )
         self.assertIsNotNone(call.find("authentication-managed-identity"))
+        self.assertIn(
+            'context.Request.Headers.GetValueOrDefault("traceparent", "")',
+            call.findtext("set-header[@name='traceparent']/value"),
+        )
         self.assertIn('["request_id"] !=', render("fragments/budget-check.xml.tftpl"))
         self.assertIsNotNone(root.find(".//set-status[@code='503']"))
         self.assertIsNotNone(root.find(".//set-status[@code='429']"))
@@ -168,10 +172,14 @@ class GatewayPolicyTests(unittest.TestCase):
         body = call.findtext("set-body")
         self.assertIn('usage == null ? "usage_unknown" : "actual"', body)
         self.assertIn('record["provider_usage"] = usage', body)
+        self.assertIn(
+            'context.Request.Headers.GetValueOrDefault("traceparent", "")',
+            call.findtext("set-header[@name='traceparent']/value"),
+        )
         for forbidden in ("cost_micro_usd", "cached_input_tokens", "input_per_million"):
             self.assertNotIn(forbidden, body)
 
-    def test_only_new_durable_events_are_logged_with_stable_private_partition(self) -> None:
+    def test_only_new_redis_accepted_events_are_logged_with_stable_private_partition(self) -> None:
         root = ET.fromstring(render("fragments/usage-record.xml.tftpl"))
         success = root.find("./choose/when")
         self.assertIn("StatusCode == 200", success.get("condition"))
@@ -182,15 +190,45 @@ class GatewayPolicyTests(unittest.TestCase):
         logger = new_record.find(".//log-to-eventhub")
         self.assertIn('["tenant_ref"]', logger.get("partition-key"))
         self.assertIn('["user_ref"]', logger.get("partition-key"))
+        enqueued = new_record.find(".//trace[message='usage_event_enqueued']")
+        self.assertIsNotNone(enqueued)
+        metadata = {item.get("name") for item in enqueued.findall("metadata")}
+        self.assertEqual(metadata, {"request_id", "event_id"})
+        self.assertEqual(
+            success.findtext("./set-header[@name='X-RateLimit-Accounting']/value"),
+            "redis-accepted",
+        )
+        self.assertEqual(
+            inference().findtext("./outbound/set-header[@name='X-RateLimit-Persistence']/value"),
+            "best-effort",
+        )
 
     def test_accounting_or_publish_failure_preserves_provider_response(self) -> None:
         root = inference()
         fallback = root.find("./on-error/choose/when/return-response")
         self.assertIn('"provider-status"', fallback.find("set-status").get("code"))
         self.assertIn('"provider-body"', fallback.findtext("set-body"))
+        failed = root.find("./on-error/choose/when/trace")
+        self.assertIn("RequestId", failed.find("metadata[@name='request_id']").get("value"))
+        self.assertIn('"usage-event"', failed.find("metadata[@name='event_id']").get("value"))
         call = ET.fromstring(render("fragments/usage-record.xml.tftpl")).find("send-request")
         self.assertEqual(call.get("ignore-error"), "true")
+        failed_accounting = ET.fromstring(render("fragments/usage-record.xml.tftpl")).find(
+            "./choose/otherwise"
+        )
+        self.assertEqual(
+            failed_accounting.findtext("./set-header[@name='X-RateLimit-Accounting']/value"),
+            "unavailable",
+        )
         self.assertNotIn("retry", ET.tostring(root, encoding="unicode"))
+
+    def test_portal_browser_preflight_allows_w3c_correlation(self) -> None:
+        root = ET.fromstring(render("policies/portal.xml.tftpl"))
+        headers = {
+            node.text.lower() for node in root.findall("./inbound/cors/allowed-headers/header")
+        }
+        self.assertTrue({"traceparent", "tracestate", "x-correlation-id"} <= headers)
+        self.assertNotIn("*", headers)
 
     def test_internal_callback_is_function_workload_only_and_does_not_forward(self) -> None:
         root = ET.fromstring(render("policies/usage-events.xml.tftpl"))
@@ -207,6 +245,19 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertEqual(root.find("./inbound/return-response/set-status").get("code"), "204")
         self.assertIn(
             "16384", root.find("./inbound/set-variable[@name='valid-event']").get("value")
+        )
+        published = root.find("./inbound/trace")
+        self.assertEqual(published.findtext("message"), "usage_event_enqueued")
+        metadata = {item.get("name"): item.get("value") for item in published.findall("metadata")}
+        self.assertIn('["request_id"]', metadata["request_id"])
+        self.assertIn('"X-Correlation-ID"', metadata["request_id"])
+        self.assertIn('["event_id"]', metadata["event_id"])
+        self.assertIn(
+            '"X-Correlation-ID"',
+            root.find("./on-error/trace/metadata[@name='request_id']").get("value"),
+        )
+        self.assertIn(
+            "Regex.IsMatch", root.find("./on-error/trace/metadata[@name='request_id']").get("value")
         )
 
     def test_obsolete_policy_artifacts_are_removed(self) -> None:

@@ -1,0 +1,14 @@
+AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| where tostring(Properties.status) == "actual"
+| extend EventId = tostring(Properties.event_id)
+| where isnotempty(EventId)
+| summarize arg_max(TimeGenerated, *) by EventId
+| summarize UncachedInputTokens = sum(tolong(Properties.input_tokens) - tolong(Properties.cached_input_tokens)),
+    CachedInputTokens = sum(tolong(Properties.cached_input_tokens)),
+    OutputTokens = sum(tolong(Properties.output_tokens)) by TimeGenerated = bin(TimeGenerated, 5m)
+| mv-expand TokenType = dynamic(["Uncached input", "Cached input", "Output"]) to typeof(string)
+| project TimeGenerated, TokenType, Tokens = case(
+    TokenType == "Uncached input", UncachedInputTokens,
+    TokenType == "Cached input", CachedInputTokens, OutputTokens)
+| order by TimeGenerated asc, TokenType asc

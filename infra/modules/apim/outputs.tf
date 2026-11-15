@@ -57,6 +57,13 @@ output "subscription_contract" {
 output "usage_telemetry_contract" {
   description = "Secretless logger and Function-only callback wiring for deployment verification."
   value = {
+    application_insights = {
+      logger_name         = azurerm_api_management_logger.this.name
+      identity_client_id  = azurerm_api_management_logger.this.application_insights[0].identity_client_id
+      publisher_scope     = azurerm_role_assignment.telemetry.scope
+      publisher_role      = azurerm_role_assignment.telemetry.role_definition_name
+      publisher_principal = azurerm_role_assignment.telemetry.principal_id
+    }
     logger = {
       hub_id             = azurerm_api_management_logger.usage.resource_id
       identity_client_id = azurerm_api_management_logger.usage.eventhub[0].user_assigned_identity_client_id

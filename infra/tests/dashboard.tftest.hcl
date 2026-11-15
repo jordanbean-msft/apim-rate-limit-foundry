@@ -31,9 +31,11 @@ run "finalized_usage_catalog_is_the_dashboard_source" {
   variables { azure_cloud = "commercial" }
   assert {
     condition = (
-      length(jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts) == 10 &&
+      length(jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts) == 17 &&
       alltrue([for index, name in [
-        "monthly-spend", "budgets", "denials", "tokens", "chargeback", "applications",
+        "gateway-traffic", "admissions", "tokens", "token-trend", "cache-hit",
+        "accounting-pipeline", "function-latency", "dependency-health",
+        "monthly-spend", "budgets", "denials", "chargeback", "applications",
         "request-health", "event-hub-health", "usage-unknown"
         ] :
         one([for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
@@ -42,6 +44,41 @@ run "finalized_usage_catalog_is_the_dashboard_source" {
       ])
     )
     error_message = "The portal and deployed dashboard must share the exact v2 KQL catalog with no old accounting tiles."
+  }
+  assert {
+    condition = alltrue([
+      for index in range(10) :
+      one([for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+        input.value if input.name == "ControlType"
+      ]) == "AnalyticsChart" &&
+      contains(["Line", "Column", "StackedColumn"], one([
+        for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+        input.value if input.name == "SpecificChart"
+      ])) &&
+      try(
+        length(one([
+          for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+          input.value if input.name == "Dimensions"
+        ]).xAxis.name) > 0 &&
+        length(one([
+          for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts[tostring(index + 1)].metadata.inputs :
+          input.value if input.name == "Dimensions"
+        ]).yAxis[0].name) > 0,
+        false
+      )
+    ])
+    error_message = "Operational tiles must persist real chart types and axes, not silently render as grids."
+  }
+  assert {
+    condition = (
+      one([for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts["3"].metadata.inputs :
+        input.value if input.name == "Dimensions"
+      ]).splitBy[0].name == "TokenType" &&
+      one([for input in jsondecode(azurerm_portal_dashboard.rate_limiter.dashboard_properties).lenses["0"].parts["6"].metadata.inputs :
+        input.value if input.name == "SpecificChart"
+      ]) == "Column"
+    )
+    error_message = "Tokens must stack disjoint token types; overlapping accounting lifecycle stages must not stack."
   }
   assert {
     condition = (

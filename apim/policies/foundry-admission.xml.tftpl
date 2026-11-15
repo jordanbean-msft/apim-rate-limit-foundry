@@ -1,3 +1,6 @@
+<!-- Chat contract: bounded inline text/client tools, exactly one output-token cap,
+     no stored history or provider-executed tools. A rejected body never reaches the provider.
+     The input bound is a conservative byte/envelope estimate, not a tokenizer or cost reservation. -->
 <set-variable name="admission-error" value='@{
   try {
   var body = JObject.Parse((string)context.Variables["request-body"]);

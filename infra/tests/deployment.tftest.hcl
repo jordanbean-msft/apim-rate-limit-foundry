@@ -130,11 +130,12 @@ variables {
     minimum_tls_version = "1.2", propagation_wait_duration = "60s"
   }
   hosting = {
-    functions_sku      = "P1v3", web_sku = "P1v3", python_version = "3.12", node_version = "24-lts",
-    function_always_on = false, web_always_on = false, stream_always_on = true,
-    function_workers   = 1, web_workers = 1, minimum_tls_version = "1.2", cors_origins = [],
-    max_input_tokens   = 200000, allowed_client_applications = [], telemetry_sampling_ratio = 1,
-    log_retention_days = 7, log_disk_quota_mb = 100
+    functions_sku               = "P1v3", web_sku = "P1v3", python_version = "3.12", node_version = "24-lts",
+    function_always_on          = false, web_always_on = false, stream_always_on = true,
+    function_workers            = 1, web_workers = 1, minimum_tls_version = "1.2", cors_origins = [],
+    max_input_tokens            = 200000, allowed_client_applications = [], telemetry_sampling_ratio = 1,
+    log_retention_days          = 7, log_disk_quota_mb = 100,
+    configuration_cache_seconds = 60, request_cache_seconds = 86400
   }
   storage = { account_tier = "Standard", account_replication_type = "ZRS", table_name = "RateLimiter" }
   redis = {
@@ -178,6 +179,16 @@ variables {
 }
 run "government_private_openai_only" {
   command = plan
+  assert {
+    condition = (
+      module.apim.usage_telemetry_contract.application_insights.logger_name == "application-insights-identity" &&
+      module.apim.usage_telemetry_contract.application_insights.identity_client_id == module.identity.gateway.client_id &&
+      module.apim.usage_telemetry_contract.application_insights.publisher_scope == module.monitoring.app_insights_id &&
+      module.apim.usage_telemetry_contract.application_insights.publisher_role == "Monitoring Metrics Publisher" &&
+      module.apim.usage_telemetry_contract.application_insights.publisher_principal == module.identity.gateway.principal_id
+    )
+    error_message = "APIM regional Application Insights ingestion must use its gateway identity with component-scoped publisher access."
+  }
   assert {
     condition = (
       module.apim.usage_telemetry_contract.logger.hub_id == module.event_hubs.id &&

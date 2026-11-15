@@ -1,0 +1,13 @@
+AppTraces
+| where Message == "usage_recorded" and toint(Properties.event_version) == 2
+| where tostring(Properties.status) == "actual"
+| extend EventId = tostring(Properties.event_id)
+| where isnotempty(EventId)
+| summarize arg_max(TimeGenerated, *) by EventId
+| summarize InputTokens = sum(tolong(Properties.input_tokens)),
+    CachedInputTokens = sum(tolong(Properties.cached_input_tokens)),
+    FinalizedRequests = count(),
+    RequestsWithCacheReads = countif(tolong(Properties.cached_input_tokens) > 0)
+    by Model = tostring(Properties.model)
+| extend CacheHitPercent = iff(InputTokens == 0, real(null), 100.0 * CachedInputTokens / InputTokens)
+| order by Model asc

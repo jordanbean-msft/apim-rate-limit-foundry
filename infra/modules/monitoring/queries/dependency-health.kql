@@ -1,0 +1,8 @@
+AppTraces
+| where Message == "dependency_completed"
+| where tostring(Properties.dependency) in ("table", "redis")
+| extend DependencyOperation = strcat(tostring(Properties.dependency), ".", tostring(Properties.operation)),
+    Outcome = iff(tostring(Properties.status) == "ok", "Succeeded", "Failed")
+| summarize Operations = count(), P95Milliseconds = percentile(todouble(Properties.duration_ms), 95)
+    by DependencyOperation, Outcome
+| order by DependencyOperation asc, Outcome asc

@@ -1,0 +1,9 @@
+AppTraces
+| where Message == "request_completed"
+| where tostring(Properties.route) in ("/api/budgets/check", "/api/usage/record")
+| extend Stage = iff(tostring(Properties.route) == "/api/budgets/check", "Budget check", "Usage recording")
+| summarize Requests = count(),
+    Errors = countif(toint(Properties.http_status) >= 500),
+    P95Milliseconds = percentile(todouble(Properties.duration_ms), 95)
+    by TimeGenerated = bin(TimeGenerated, 5m), Stage
+| order by TimeGenerated asc, Stage asc

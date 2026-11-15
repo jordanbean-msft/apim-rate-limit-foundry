@@ -1,9 +1,12 @@
 <fragment>
+  <!-- Ordinary responses submit only provider usage counters plus the admission ID.
+       Missing/malformed usage becomes unpriced usage_unknown, never fabricated zero. -->
   <send-request mode="new" response-variable-name="usage-response" timeout="${send_request_timeout}" ignore-error="true">
     <set-url>${function_url}/api/usage/record</set-url>
     <set-method>POST</set-method>
     <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
     <set-header name="X-Correlation-ID" exists-action="override"><value>@((string)context.Variables["request-id"])</value></set-header>
+    <set-header name="traceparent" exists-action="override"><value>@(context.Request.Headers.GetValueOrDefault("traceparent", ""))</value></set-header>
     <set-body>@{
       JObject usage = null;
       try {
@@ -21,8 +24,11 @@
   </send-request>
   <choose>
     <when condition='@(context.Variables.GetValueOrDefault&lt;IResponse&gt;("usage-response") != null &amp;&amp; ((IResponse)context.Variables["usage-response"]).StatusCode == 200)'>
+      <!-- Acceptance means Redis was updated; Table durability is explicitly best-effort. -->
+      <set-header name="X-RateLimit-Accounting" exists-action="override"><value>redis-accepted</value></set-header>
       <set-variable name="record-result" value='@(((IResponse)context.Variables["usage-response"]).Body.As&lt;string&gt;())' />
       <choose>
+        <!-- Publish fresh finalized events only; a usage replay must not export twice. -->
         <when condition='@((bool?)JObject.Parse((string)context.Variables["record-result"])["replayed"] == false)'>
           <set-variable name="usage-event" value='@(((JObject)JObject.Parse((string)context.Variables["record-result"])["event"]).ToString(Newtonsoft.Json.Formatting.None))' />
           <choose>
@@ -31,15 +37,22 @@
                 var item = JObject.Parse((string)context.Variables["usage-event"]);
                 return (string)item["tenant_ref"] + ":" + (string)item["user_ref"];
               }'>@((string)context.Variables["usage-event"])</log-to-eventhub>
+              <trace source="usage-accounting" severity="information">
+                <message>usage_event_enqueued</message>
+                <metadata name="request_id" value='@((string)context.Variables["request-id"])' />
+                <metadata name="event_id" value='@((string)JObject.Parse((string)context.Variables["usage-event"])["event_id"])' />
+              </trace>
             </when>
             <otherwise>
-              <trace source="usage-accounting" severity="error"><message>usage_event_publish_failed</message><metadata name="error_type" value="event_too_large" /></trace>
+              <!-- Keep the provider response even if accounting fails; expose the failure separately. -->
+              <trace source="usage-accounting" severity="error"><message>usage_event_publish_failed</message><metadata name="error_type" value="event_too_large" /><metadata name="request_id" value='@((string)context.Variables["request-id"])' /></trace>
             </otherwise>
           </choose>
         </when>
       </choose>
     </when>
     <otherwise>
+      <set-header name="X-RateLimit-Accounting" exists-action="override"><value>unavailable</value></set-header>
       <trace source="usage-accounting" severity="error"><message>usage_record_failed</message><metadata name="request_id" value='@((string)context.Variables["request-id"])' /></trace>
     </otherwise>
   </choose>

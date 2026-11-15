@@ -129,8 +129,8 @@ variable "application_insights_id" {
   description = "Native APIM telemetry resource."
   type        = string
 }
-variable "instrumentation_key" {
-  description = "APIM logger credential."
+variable "application_insights_connection_string" {
+  description = "Cloud-aware regional ingestion endpoint; gateway managed identity authenticates telemetry."
   type        = string
   sensitive   = true
 }

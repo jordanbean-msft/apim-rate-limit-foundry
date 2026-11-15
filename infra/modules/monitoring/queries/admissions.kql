@@ -1,0 +1,9 @@
+AppTraces
+| where Message == "budget_decision"
+| extend RequestId = coalesce(tostring(Properties.request_id), tostring(Properties.correlation_id))
+| where isnotempty(RequestId)
+| summarize arg_max(TimeGenerated, *) by RequestId
+| extend Model = tostring(Properties.model),
+    Decision = iff(tobool(Properties.allowed), "Admitted", "Blocked by monthly budget")
+| summarize Requests = count() by Model, Decision
+| order by Model asc, Decision asc
