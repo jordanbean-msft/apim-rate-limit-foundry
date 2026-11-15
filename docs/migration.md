@@ -14,7 +14,19 @@ The new ledger is not compatible with monetary holds or application budgets.
 5. Review the Terraform plan, especially removal of previous AI-service routes/
    resources. Do not apply a replacement/deletion merely because local tests pass.
 6. Deploy API, stream relay, APIM and portal as one reviewed contract cutover.
-7. Initialize/rebuild counters, run the acceptance checks, then restore traffic.
+7. Verify cold configuration loading and shared-cache invalidation, run the
+   acceptance checks, then restore traffic. New Redis counters start empty;
+   history is not automatically replayed to reconstruct spend.
+
+For an existing dollar-budget deployment moving from ledger-authoritative checks,
+choose a reviewed cutover boundary and explicitly accept any reset of current
+operational spend. The Redis-first contract has no automatic ledger rebuild or
+per-request full ledger reads. Warm checks use Redis only; Redis unavailability
+returns `503` without Table fallback. Data loss can reset spend or lose admitted
+context. Request/usage Table mirrors are now best effort through a bounded
+process-local writer, not awaited by APIM, and can be lost permanently. Persisted
+reports are no longer guaranteed to match live budgets. Preserve retained history
+and document the discontinuity rather than promising a lossless migration.
 
 APIM rejects deletion of fragments or backends still referenced by live policies.
 For an existing deployment, stage the policy transition before retiring those

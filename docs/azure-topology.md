@@ -1,8 +1,26 @@
-# Azure topology and trust
+---
+title: Azure topology and trust
+description: Resource topology, identity boundaries, and network responsibilities for the AI gateway.
+---
+
+## Architecture views
+
+The editable [logical and physical draw.io diagrams](diagrams/README.md)
+show runtime flows, Terraform resource placement, private endpoints and identity
+grants. The physical view includes public-development differences and does not
+claim to be a live Azure inventory.
 
 Terraform composes APIM, a direct Azure OpenAI account/deployments, two Python
 Function hosts, Redis, Table Storage, a Node/React portal, Key Vault, Event Hubs,
 Application Insights and Log Analytics. Model routing uses native APIM backend IDs.
+
+Redis holds shared cached configuration and live approximate spend/context/replay
+state. Warm admission has no Table dependency; cold configuration misses may read
+Table and Admin configuration writes remain synchronous durable-first. Request
+and usage Table mirrors use a bounded process-local background writer, not a
+new Azure queue service. Storage queue endpoints/permissions also serve Function
+hosting; they do not imply a durable accounting queue or outbox. Redis loss can
+reset spend, and lost background writes can leave reports permanently incomplete.
 
 ## Identity boundaries
 

@@ -11,12 +11,19 @@ cost center, department, team, user reference, application subscription and mode
 
 Sum **one cost per actual request**, not user plus team plus department counters.
 Unknown requests are separately counted in `unknown_requests`; their cost is not
-assumed zero. A complete chargeback period requires addressing unknown records
-and reconciling the export to the authoritative usage ledger.
+assumed zero. Reports read eventually persisted Table history, not live Redis
+balances. The process-local background writer can lose request/usage writes on
+restart, failure or saturation; history can lag or permanently differ from live
+spend. Redis loss can also reset spend without changing retained Table history.
+There is no automatic rebuild or financial-completeness guarantee. Investigate
+unknown records and missing history against independent provider evidence before
+using an export for finance; the export alone cannot establish completeness.
 
 Event Hub events carry the same dimensions, token counts, price version,
 micro-USD cost and stable event ID. Downstream consumers should deduplicate by
-event ID, tolerate schema evolution and reconcile missing events to the ledger.
+event ID and tolerate schema evolution. An event means Redis accepted accounting,
+not that Table persisted it. Compare retained history and downstream events to
+investigate gaps, but either side can be missing data permanently.
 Native Event Hub publication is best effort; its absence is not evidence that
 the user consumed nothing.
 

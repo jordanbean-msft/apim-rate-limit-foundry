@@ -24,7 +24,10 @@ matches those aliases before inference; sample endpoints are not callable models
 
 For persistent local stores, `docker compose up -d` starts Redis/Azurite on
 loopback. Set both local endpoint settings in `.env`, create the configured Table,
-and rebuild the monthly projection. Do not use shared production Redis databases.
+and seed configuration. The first cold check loads the shared configuration
+snapshot; warm checks use Redis only. Do not use shared production Redis databases.
+Clearing local Redis resets approximate spend and can lose admitted context;
+there is no automatic rebuild from Table history.
 
 The API and streaming Functions have separate entry points/hosting modes:
 `function_app.py` and `stream/function_app.py`. VS Code's `run-api`,
@@ -49,9 +52,20 @@ terraform -chdir=infra validate
 terraform -chdir=infra test
 ```
 
-Terraform validation must have zero warnings as well as zero errors. Optional
-real Redis/Table integration tests require their documented test environment
-variables. No unit test should need paid inference or cloud credentials.
+Terraform validation must have zero warnings as well as zero errors. No unit
+test should need paid inference or cloud credentials.
+
+To exercise actual Redis Lua concurrency/idempotency behavior, start an isolated,
+disposable Redis instance bound to loopback only, then run:
+
+```bash
+TEST_REDIS_URL=redis://127.0.0.1:<port>/0 uv run pytest -W error tests/test_redis.py
+```
+
+Replace `<port>` with that instance's local port. Never point these tests at
+shared, persistent or deployed Redis: they may change/delete test state.
+Stop and discard the isolated instance after testing. Optional Table integration
+tests require their separately documented local test settings.
 
 See `.vscode/tasks.json` for grouped validation and `.vscode/launch.json` for
 debuggers. Deployment and live acceptance are separate from local fixture tests.

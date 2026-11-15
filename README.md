@@ -5,10 +5,11 @@ a Microsoft Fluent UI React administration portal. It accounts for actual tokens
 after each request and enforces monthly USD budgets for **users, teams and
 departments**. Cached input is priced separately from uncached input and output.
 
-**These are soft spending limits.** The gateway checks recorded spend before
+**These are approximate operational spending limits.** The gateway checks Redis-recorded spend before
 execution, without holding funds. Already-running requests can exceed a budget;
-the next request is denied. Native APIM RPM/TPM protection and provider capacity
-quotas remain independent of dollars.
+the next request is denied while that spend remains in Redis. Redis data loss can
+reset spend. Inference latency takes priority over accounting durability.
+Native APIM RPM/TPM protection and provider capacity quotas remain independent of dollars.
 
 Only OpenAI **Chat Completions** and **Responses** are in scope. APIM validates
 both Entra authorization and a product subscription key, then routes approved
@@ -16,10 +17,12 @@ model aliases through native APIM backend entities. Budgets follow the validated
 Entra user, not the subscription key. The subscription identifies the calling
 application for attribution. Organizational membership is explicitly configured.
 
-Completed provider usage becomes one durable record at a pinned price version.
-APIM publishes its privacy-safe projection with native **`log-to-eventhub`** and
-managed identity. Export is best effort, not a financial delivery guarantee. The
-Azure dashboard and the portal share the deployed dashboard's KQL definitions.
+Completed provider usage updates Redis at a pinned price version. Request/usage
+Table writes run in a bounded in-process background queue and can be lost.
+Live spend and persisted history/chargeback can therefore differ permanently.
+APIM publishes the Redis-accepted event with native **`log-to-eventhub`** and
+managed identity; neither acceptance nor export proves Table persistence.
+The Azure dashboard and the portal share the deployed dashboard's KQL definitions.
 
 ## Architecture
 
@@ -27,17 +30,26 @@ Azure dashboard and the portal share the deployed dashboard's KQL definitions.
 flowchart LR
     U[Entra user + application key] --> A[APIM authentication and burst controls]
     A -->|Check all monthly budgets| F[Budget API]
-    F --> T[(Durable configuration and usage)]
-    F --> R[(Monthly counter projection)]
+    F -->|Warm admission and actual usage| R[(Redis operational state)]
+    F -->|Cold configuration miss only| T[(Table configuration and eventual history)]
+    F -.->|Best-effort process-local writer| T
     A --> O[Approved Azure OpenAI backend]
     A --> S[Incremental streaming relay]
     S --> O
     O -->|Provider token totals| F
-    F -->|Versioned usage event| A
+    F -->|Redis-accepted usage event| A
     A -->|Native log-to-eventhub| E[Event Hub]
     P[Authenticated Fluent portal] --> A
     D[Azure dashboard + shared KQL] --> L[Log Analytics]
 ```
+
+Redis caches shared configuration for 60 seconds by default, request context and
+usage replay markers for 24 hours, and monthly user/team/department wildcard/model
+counters for about 62 days. Warm admission never reads Table. Redis unavailability
+fails closed with `503`, without Table fallback; exhausted budgets, including zero
+limits, return `429`. No automatic ledger rebuild restores lost Redis state.
+Admin configuration writes remain synchronous, durable-first and invalidate the
+shared cache. See [operations](docs/operations.md) for accepted data-loss limits.
 
 ## Documentation
 

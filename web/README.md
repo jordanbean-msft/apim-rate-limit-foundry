@@ -24,20 +24,20 @@ or export settings in the shell for both servers. Never place secrets in Vite va
 
 ## Required production runtime settings
 
-| Setting                                 | Meaning                                                                                                                                                          |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AZURE_CLOUD`                           | Exactly `commercial` or `government`; no automatic cloud fallback                                                                                                |
-| `AZURE_TENANT_ID`                       | Tenant-specific Entra GUID; `common`/`organizations` are rejected                                                                                                |
-| `WEB_CLIENT_ID`                         | SPA application registration client GUID                                                                                                                         |
-| `API_AUDIENCE`                          | Backend application ID URI, e.g. `api://<backend-app-id>`                                                                                                        |
-| `API_SCOPE`                             | Full delegated scope under that audience, e.g. `api://<backend-app-id>/access_as_user`                                                                           |
-| `API_BASE_URL`                          | HTTPS APIM `/portal` upstream in proxy mode; direct API collection root is used only for non-proxy local development                                             |
-| `PORT`                                  | Optional Node listening port; default `8080`                                                                                                                     |
-| `WEB_DEMO_MODE`                         | Optional; defaults off. Only exact `true` enables an in-memory local demo                                                                                        |
-| `WEB_PLATFORM_AUTH_ENABLED`             | Terraform sets `true` for App Service; logout clears its session after MSAL sign-out. Defaults off for local development.                                        |
-| `WEB_API_PROXY_ENABLED`                 | Terraform sets `true` in production. Enables the same-origin `/api/*` proxy; `false` retains direct local development.                                           |
-| `PORTAL_APIM_SUBSCRIPTION_KEY`          | Server-only Key Vault reference for the APIM product key; required by the proxy and never sent to or exposed in the browser.                                     |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Optional workspace-based Application Insights connection string with explicit cloud-specific `IngestionEndpoint`; enables privacy-filtered browser custom events |
+| Setting                                 | Meaning                                                                                                                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AZURE_CLOUD`                           | Exactly `commercial` or `government`; no automatic cloud fallback                                                                                                                                                   |
+| `AZURE_TENANT_ID`                       | Tenant-specific Entra GUID; `common`/`organizations` are rejected                                                                                                                                                   |
+| `WEB_CLIENT_ID`                         | SPA application registration client GUID                                                                                                                                                                            |
+| `API_AUDIENCE`                          | Backend application ID URI, e.g. `api://<backend-app-id>`                                                                                                                                                           |
+| `API_SCOPE`                             | Full delegated scope under that audience, e.g. `api://<backend-app-id>/access_as_user`                                                                                                                              |
+| `API_BASE_URL`                          | HTTPS APIM `/portal` upstream in proxy mode; direct API collection root is used only for non-proxy local development                                                                                                |
+| `PORT`                                  | Optional Node listening port; default `8080`                                                                                                                                                                        |
+| `WEB_DEMO_MODE`                         | Optional; defaults off. Only exact `true` enables an in-memory local demo                                                                                                                                           |
+| `WEB_PLATFORM_AUTH_ENABLED`             | Terraform sets `true` for App Service; logout clears its session after MSAL sign-out. Defaults off for local development.                                                                                           |
+| `WEB_API_PROXY_ENABLED`                 | Terraform sets `true` in production. Enables the same-origin `/api/*` proxy; `false` retains direct local development.                                                                                              |
+| `PORTAL_APIM_SUBSCRIPTION_KEY`          | Server-only Key Vault reference for the APIM product key; required by the proxy and never sent to or exposed in the browser.                                                                                        |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Optional workspace-based Application Insights connection string with explicit cloud-specific `IngestionEndpoint`; enables privacy-filtered browser events/dependencies and manual server requests/dependencies/logs |
 
 `/config.json` is generated at server startup from these **public** settings;
 it contains no client secret, Function key or APIM subscription key. When configured,
@@ -133,7 +133,7 @@ deployment.
 
 ## Screens and server contracts
 
-The [configuration reference](../docs/configuration-reference.md#api-contracts)
+The [configuration reference](../docs/configuration-reference.md#routes)
 owns API routes, payloads, units and selection semantics. The browser types in
 [`src/contracts.ts`](src/contracts.ts) mirror the server; do not treat them as an
 independent accounting implementation.
@@ -162,17 +162,32 @@ The Azure dashboard is visible only to RateLimit.Admin because it contains works
 
 Reader requests contain no caller-selected identity or hierarchy filter; the
 backend derives the signed-in user's access scope from explicit assignments.
-Budget status is actual month-to-date spend from the API, not an estimate or a
-portal-side calculation. Unknown stream usage remains visibly unknown and is not
+Budget status is approximate operational month-to-date Redis spend from the API,
+not a portal-side calculation or financially complete ledger balance. Usage and
+chargeback read eventually persisted Table history and can lag or permanently
+differ from live spend after background-write loss or a Redis reset. Unknown
+stream usage in retained records remains visibly unknown and is not
 displayed as a zero-cost completed request. The browser does not reprice provider
 payloads: it sends USD values as decimal strings for price cards and displays
 budget amounts through exact integer micro-USD conversion.
 
-The monthly budget is a soft cap. The gateway checks completed month-to-date
-spend before forwarding and records actual provider cost afterward. Concurrent
+The monthly budget is an approximate soft cap. Warm gateway checks read recorded
+Redis spend only, without reservations or Table reads, and actual provider cost
+updates Redis afterward. Cold configuration misses may load Table; Admin saves
+remain synchronous durable-first and invalidate the shared 60-second-default
+configuration cache. Concurrent
 in-flight requests can overshoot a configured limit; after actual spend reaches
 the limit, later requests are denied. This is not a strict no-overshoot financial
-control or an invoice guarantee.
+control or an invoice guarantee. Redis unavailability returns `503` without
+Table fallback; data loss can reset spend and lose admitted context. There is no
+automatic ledger rebuild. Admitted context/replay protection lasts 24 hours and
+monthly hierarchy wildcard/model counters last about 62 days.
+
+Request/usage Table writes are not awaited by APIM: a bounded process-local async
+writer allows 256 pending writes, logs drops/failures and attempts a best-effort
+two-second graceful-close drain. Restart, failure or saturation can lose writes.
+There is no durable queue/outbox, retry or exactly-once guarantee. An exported
+usage event means Redis acceptance, not Table persistence or financial completeness.
 
 GET failures remain visible and retryable. Failed saves retain the editor; failed
 deletes retain confirmation. Search filters are local display operations. Model
@@ -187,36 +202,61 @@ are in the [code guide](../docs/code-guide.md).
 
 ## Privacy-safe observability
 
-The production Node server still has **no runtime npm dependencies**. Keep the
-App Service native Application Insights Node agent as the server HTTP exporter
-(`ApplicationInsightsAgent_EXTENSION_VERSION=~3` and
-`APPLICATIONINSIGHTS_CONNECTION_STRING` for the workspace-based component).
-The Microsoft `@microsoft/applicationinsights-web` SDK is bundled by Vite, not
-loaded from a CDN and not required by the static server.
+The production Node server uses Microsoft's
+`@azure/monitor-opentelemetry-exporter` with private OpenTelemetry trace/log
+providers. The Microsoft exporter is currently published as a beta; beta.43
+is pinned with patched OpenTelemetry dependencies. Later exporter versions
+introduce remote configuration polling without a supported opt-out; do not
+upgrade until that can be disabled or re-reviewed for this privacy boundary.
+Statsbeat, SDK statistics and resource-metric auxiliary export are explicitly
+disabled using the SDK's supported environment switches before initialization.
+The supporting OpenTelemetry packages are the exporter's required
+standards-based SDK, not a second telemetry vendor. No auto instrumentation,
+global provider registration, resource detection, console interception, live
+metrics, exception capture or offline disk buffering is enabled.
+The server role is `apim-rate-limit-foundry.ai-budget-portal`.
+The browser role for manual dependencies is `ai-budget-portal-browser`.
+
+**Deployment migration:** disable/remove the App Service native Node agent
+(`ApplicationInsightsAgent_EXTENSION_VERSION=disabled`, not `~3`) and any
+agent preload in `NODE_OPTIONS`, retaining `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+Do not run native and explicit exporters together: that duplicates request
+records and bypasses this manual privacy policy. The server now needs production
+npm dependencies. Packaging must stage `package.json`, `package-lock.json`,
+`dist/`, `server/`, and production `node_modules/` (run `npm ci --omit=dev` in
+the staging directory with Node 24). A static-only artifact cannot run this server.
+The browser's Microsoft `@microsoft/applicationinsights-web` SDK remains bundled
+by Vite, never loaded from a CDN.
 
 Server code writes one JSON `portal_request` outcome per request, including
 HEAD, rejected requests and premature response closure. Fields are `timestamp`,
-`event`, generated UUID-v4 `correlationId`, allowlisted `method` (`OTHER` for
+`event`, validated browser UUID `correlationId` (or a new UUID-v4), allowlisted `method` (`OTHER` for
 unknown methods), safe `route` (`runtime_config|page|asset|api_proxy|other`), numeric
 `status` (`0` when aborted), `durationMs`, `outcome`
 (`success|failure|aborted`) and fixed `errorCategory`
 (`none|method_not_allowed|invalid_path|not_found|serve_error|connection_closed|proxy_disabled`
-plus fixed `api_*` categories). Node logs its generated `X-Correlation-ID`; valid
-browser correlation IDs are separately forwarded to APIM by the proxy.
+plus fixed `api_*` categories). The same correlation ID is returned to the browser,
+logged and forwarded to APIM. With export configured, logs also include random
+W3C `traceId` and `spanId`.
 `portal_started` includes port, cloud, demoMode and browserTelemetry.
 `portal_server_error` includes only `startup_configuration|listen_error`.
-These **console logs are not custom App Insights traces**: enable App Service
-application/console logging and route `AppServiceConsoleLogs` to the intended
-Log Analytics workspace using hosting diagnostic settings. Keep
-`AppServiceHTTPLogs` separately if desired. The native HTTP agent has its own
-request schema and collection/redaction settings, independent of this code.
+The same allowlisted outcomes are exported as correlated `AppTraces`, alongside
+one manual `AppRequests` span per Node request and one `AppDependencies` span per
+attempted APIM fetch. Response processing, rejection, redirects, failures and
+early disconnects retain safe outcomes; invalid/auth-rejected proxy requests do
+not invent dependencies. Request names use method and fixed route categories,
+never request URLs, record IDs or query strings. Dependency target is the fixed
+`ai-gateway` label, not a hostname. Console logs remain available independently:
+enable App Service console logging and route `AppServiceConsoleLogs` to the
+intended workspace if desired. SIGTERM/SIGINT drain active HTTP work with a
+five-second grace period, then flush/shut down SDK providers.
 
 The optional connection string must include a GUID `InstrumentationKey` and
 explicit HTTPS root `IngestionEndpoint`. Commercial permits
 `applicationinsights.azure.com` and its subdomains; Government permits
 `applicationinsights.us` / `applicationinsights.azure.us` and their subdomains.
 Credentials, non-default ports, query, fragment and non-root paths are rejected.
-Missing, invalid or wrong-cloud optional telemetry **disables browser export**
+Missing, invalid or wrong-cloud optional telemetry **disables browser and server export**
 without breaking authentication or the portal. Government never falls back to
 a commercial endpoint. Only the validated exact ingestion **origin** is added
 to CSP `connect-src`, with no wildcard. The browser independently revalidates it.
@@ -234,9 +274,9 @@ browser networking headers, is outside the custom-event payload privacy filter.
 Choose component IP-masking, retention, RBAC and data-processing policies
 accordingly. Nothing here promises anonymous network traffic.
 
-Only manually sanitized **custom events** are exported to App Insights
-`customEvents` / workspace `AppEvents`; API dependency counts are represented
-by `portal_api` events, not automatic `AppDependencies` URL records:
+Existing manually sanitized custom events remain in `customEvents` / workspace
+`AppEvents`. Manual browser dependencies additionally go to `AppDependencies`;
+automatic URL-based dependency collection remains disabled:
 
 | Event                      | Custom dimensions                                                                                                                                                      | Custom measurements                             |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
@@ -247,20 +287,34 @@ by `portal_api` events, not automatic `AppDependencies` URL records:
 | `portal_refresh`           | `outcome=success/partial_failure`                                                                                                                                      | `collectionCount`, `failureCount`, `durationMs` |
 | `portal_bootstrap`         | `action=configuration/authentication/sign_in/sign_out`, `outcome=success/failure`                                                                                      | none                                            |
 | `portal_browser_error`     | `errorCategory=script/unhandled_rejection/render_error`                                                                                                                | none                                            |
+| `portal_identity`          | `action=token_api/token_graph`, `outcome=success/failure`                                                                                                              | none                                            |
 
 `requestCount` is zero when token acquisition fails before an HTTP attempt and
 one once fetch is attempted. If optional UUID generation fails, the API still
 works and omits the correlation header/property rather than inventing an ID.
 
 Pages and collections come from fixed UI/API enums, never browser locations.
-The API sends its generated `X-Correlation-ID` to the backend so operators can
-join an API outcome to backend logs. It does not reuse server static-request IDs
-or arbitrary backend/header IDs. Form values (including budget limit, price, record ID, model, tenant, principal ID,
+The API generates a random W3C dependency context and sends `traceparent` and
+its explicit `X-Correlation-ID` only to its configured API root. The Node proxy
+validates W3C version-00 IDs, rejects zero/ambiguous/malformed context, starts a
+server child and forwards a new dependency child to APIM. Incoming `baggage`,
+`tracestate`, arbitrary headers and raw URLs are never copied. APIM/Function
+must preserve W3C context to complete the downstream graph.
+
+Manual browser dependency fields are restricted to fixed collection/Graph
+operation names, method, fixed service target, random trace/span IDs, numeric
+HTTP status/duration and success. Graph profile/photo fetches have high-level
+dependency outcomes but receive **no tracing headers**; their query strings,
+names and photo bytes are never telemetry. Token acquisition emits only a fixed
+action/outcome event; it does not pretend a cache hit is an Entra network call.
+API/Graph fetches reject redirects so access tokens cannot be redirected to a
+different endpoint. Form values (including budget limit, price, record ID, model, tenant, principal ID,
 team ID and cost center), identity/account/roles, Graph profile names/photos, searches,
 headers, authorization, URLs/queries, bodies, response data, exception messages
 and stacks are **never event properties**. Invalid or oversized measurements
 are omitted. A final SDK initializer reconstructs allowed event data and strips
-SDK user/session/operation/location context; all automatic page, dependency,
+SDK user/session/location context; only validated manual dependency trace
+context survives. All automatic page, dependency,
 exception and diagnostic telemetry is dropped. Automatic fetch/XHR, route,
 exception/rejection collection, request/response headers, cookies, SDK storage,
 SDK diagnostics and remote CDN configuration are disabled. Global errors report

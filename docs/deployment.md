@@ -17,7 +17,9 @@ Do not provision directly from an unconfigured environment.
 6. Run `azd provision` and `azd deploy` only against that reviewed environment.
 7. Seed reviewed organization/assignment/price/budget records through the
    authenticated portal API; the seed tool defaults to preview.
-8. Rebuild counters and execute the [operational acceptance checks](operations.md).
+8. Verify cold configuration loading, warm Redis-only admission and Admin cache
+   invalidation; execute the [operational acceptance checks](operations.md).
+   No automatic ledger rebuild initializes or restores Redis spend.
 
 The managed model account is direct Azure OpenAI (`OpenAI`, S0), not a Foundry
 project/ML hub. Routing preserves the native `.openai.azure.com` origin in
@@ -26,8 +28,24 @@ The current native APIM backend-ID routing is retained.
 
 APIM native Event Hub logging uses managed identity, not a connection string
 secret. Verify Sender RBAC, logger identity settings and network reachability.
-The retained streaming host calls the internal APIM logging operation after
-recording terminal usage; this path must work in private networking too.
+The retained streaming host schedules a background call to the internal APIM
+logging operation after terminal Redis accounting; this path must work in private
+networking too. Acceptance/export does not prove Table persistence.
+
+Review the Redis-first loss contract before allowing traffic: Redis loss can
+reset spend or lose admitted context; Redis unavailability fails closed with
+`503` and no Table fallback. Request/usage writes use a 256-pending in-process
+async writer with a best-effort two-second graceful-close drain, not a durable
+queue/outbox or retry mechanism. Restarts, failures and saturation can lose writes
+permanently. Live operational budgets and persisted reports can disagree.
+Shared configuration defaults to `CONFIGURATION_CACHE_SECONDS=60`; admitted
+context/replay protection defaults to `REQUEST_CACHE_SECONDS=86400`.
+`infra/main.tfvars.json` explicitly sets `hosting.configuration_cache_seconds=60`
+and `hosting.request_cache_seconds=86400`; root Terraform injects the corresponding
+uppercase environment settings into both budget and streaming Function hosts.
+The Dedicated budget host enables `hosting.function_always_on=true` to reduce
+cold-start latency; the stream host was already Always On. This does not make
+the process-local background writer durable.
 
 Terraform outputs feed application settings through azd. See the
 [infrastructure reference](../infra/README.md) for exact variables. Never deploy

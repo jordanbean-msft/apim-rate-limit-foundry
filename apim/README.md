@@ -10,7 +10,6 @@ Only OpenAI Chat Completions and Responses are supported.
 | `GET /portal/{collection}` | `health`, `dashboard`, `models`, `budgets`, `organizations`, `prices`, `assignments`, `usage`, `audit`, `chargeback` |
 | `GET /portal/budgets/status` | Authorized month-to-date user/team/department budget balances |
 | `PUT`, `DELETE /portal/{collection}/{id}` | `budgets`, `organizations`, `prices`, `assignments`; Function independently enforces Admin |
-| `POST /portal/counters/rebuild` | Admin-only durable-ledger counter rebuild |
 | `POST /internal/usage-events` | Function workload only; native Event Hub logger callback, never inference |
 
 ## Trust boundaries
@@ -43,24 +42,42 @@ inference origins, not Foundry project URLs.
 2. `limiter-budget-check` calls gateway-only `POST /api/budgets/check` with
    `{request_id, tenant_id, principal_id, subscription_id, model, api_protocol,
    streaming}`. The gateway generates the request ID.
-3. The response's `request_id` must match. Errors fail closed; an exhausted
-   configured user, team **or** department budget returns `429` and `Retry-After`.
+3. The response's `request_id` must match. Errors fail closed; Redis unavailable
+   returns `503` without Table fallback. An exhausted configured user, team **or**
+   department budget, including a zero limit, returns `429` and `Retry-After`.
 4. The request is dispatched without predicting/debiting cost.
 5. Nonstreaming outbound processing calls gateway-only `POST /api/usage/record`
    with `{request_id, provider_usage, status:"actual"}` using the complete provider
    `usage` object unchanged. Missing usage sends `status:"usage_unknown"` without
    invented tokens.
 6. Python normalizes cached/uncached input and output and calculates the pinned
-   version's actual micro-USD cost. APIM performs **no price math**. The immutable
-   record and hierarchy counters remain authoritative.
-7. Only a successful record response with `replayed:false` logs its returned
-   `event` through native `log-to-eventhub`.
+   version's actual micro-USD cost. APIM performs **no price math**. Redis
+   atomically increments all six user/team/department wildcard/model counters
+   together with a usage replay marker.
+7. The nonstream call still waits briefly for Redis acceptance, but not for Table
+   writes. A `200` response returns `{event, replayed}`; only `replayed:false` logs
+   its `event` through native `log-to-eventhub`.
 
-**These are soft monthly UTC-calendar USD caps.** Concurrent in-flight requests
-can overshoot; the next request is denied. They are not strict financial ceilings.
+**These are approximate monthly UTC-calendar USD caps.** Concurrent in-flight
+requests can overshoot; the next request is denied against recorded Redis spend.
+Redis loss can reset that spend. These are not strict financial ceilings.
 The budget check snapshots the month, organization and price metadata required
-for trusted recording, with no monetary hold. Completed request IDs cannot
-dispatch another inference. Unknown usage is visible and unpriced, never zero.
+for trusted recording, with no monetary hold. Retained completed request IDs
+cannot dispatch another inference; request context and replay protection last
+24 hours, not forever. Unknown usage is unpriced, never zero.
+
+Warm checks use Redis only. The shared configuration snapshot has a 60-second
+default TTL; cold misses may read Table. Admin configuration CRUD remains
+synchronous durable-first and invalidates the snapshot. Monthly counters last
+about 62 days. No automatic ledger rebuild, global ledger lock or per-request
+full ledger read is used.
+
+Request/usage Table writes use a bounded in-process `asyncio` queue/task
+(256 pending), with logged drops/failures and a best-effort two-second drain on
+graceful close. APIM never awaits those writes; restart, failure or saturation can
+lose them permanently. No durable queue, outbox, retry or exactly-once guarantee
+exists. Events mean Redis accepted usage, not that Table persisted it; live spend
+and persisted history/chargeback can disagree permanently.
 
 Accounting callout/publish failures emit safe failure telemetry but preserve the
 provider response. No Event Hub retries or Function-side Event Hubs SDK are used.
@@ -79,9 +96,11 @@ response body. The narrow, dedicated Function relay is retained:
   deployment/body, and incrementally forwards SSE.
 - Chat uses the final cumulative usage-only chunk before `[DONE]`; Responses
   uses usage on `response.completed`. Never sum token deltas.
-- Missing terminal usage, interruption or disconnect records `usage_unknown`.
-- After durable recording the relay makes one best-effort call to the internal
-  APIM callback with the returned event, only when not replayed.
+- Missing terminal usage, interruption or disconnect attempts `usage_unknown`,
+  never a fabricated zero-cost actual.
+- At terminal usage the relay does Redis accounting in process, then schedules a
+  best-effort background internal APIM callback with the returned event, only when
+  not replayed. Neither accounting nor the callback waits for Table persistence.
 
 `forward-request buffer-response="false"` is retained. Outbound policy body
 inspection occurs **only** on the nonstream branch. Disabling the relay rejects
@@ -105,7 +124,8 @@ IDs, bearer tokens or subscription keys are included.
 The partition key is `tenant_ref:user_ref`. APIM is the only producer, using its
 user-assigned managed identity and **hub-scoped Azure Event Hubs Data Sender**.
 The logger is buffered and delivery is best effort, not a billing ledger or
-exactly-once export. Only new durable records attempt publication.
+exactly-once export. Only newly Redis-accepted usage attempts publication; this is
+not proof that either Table history or downstream finance processing completed.
 
 Microsoft documents that `log-to-eventhub` is **not affected by Application
 Insights sampling**, and messages over **200 KB are automatically truncated**.

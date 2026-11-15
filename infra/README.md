@@ -54,16 +54,39 @@ active registry; additional references remain available.
 and their Chat/Responses price/capability/cap metadata. Recheck regional catalog,
 pricing, quota and private/Government attestations before using it.
 
-The shared function/web plans keep the existing P1v2 specifications and disabled
-Always On settings; the stream host remains Always On. The web uses Node 24 LTS,
-the Functions use Python 3.12. This change does not resize plans silently.
+The function/web plans keep the existing P1v2 specifications. The Dedicated
+budget Function now enables Always On (`hosting.function_always_on=true`) for
+low-latency hosting; the stream host was already Always On. The web's Always On
+setting remains disabled. The web uses Node 24 LTS, the Functions use Python 3.12.
+This change does not resize plans silently.
 
 The inference product and portal product still require native subscription keys
 plus Entra JWT authentication. Product subscriptions have stable IDs; keys rotate
 without changing attribution. Subscription ID is an application dimension, not
 the person budget key. Inference requires delegated person `tid`/`oid`, then an
 enabled user assignment. Monthly USD budgets apply to every configured user,
-team and department; they are **soft caps** and concurrent requests can overshoot.
+team and department; they are **approximate operational caps** and concurrent
+requests can overshoot. Redis loss can reset spend.
+
+Redis stores the shared configuration snapshot (default
+`CONFIGURATION_CACHE_SECONDS=60`), admitted context and usage replay markers
+(`REQUEST_CACHE_SECONDS=86400`, 24h), and monthly user/team/department wildcard/model
+counters (about 62 days). Warm admission never reads Table; cold configuration
+misses may. Admin configuration writes remain synchronous durable-first with
+cache invalidation. Redis unavailable fails closed with `503`, without Table
+fallback. There is no automatic ledger rebuild or global distributed ledger lock.
+
+`main.tfvars.json` explicitly sets `hosting.configuration_cache_seconds=60` and
+`hosting.request_cache_seconds=86400`; root Terraform passes these as
+`CONFIGURATION_CACHE_SECONDS` and `REQUEST_CACHE_SECONDS` to **both** Function
+hosts so budget checks and streaming accounting use the same retention contract.
+
+Request/usage Table writes use a bounded process-local async writer (256 pending,
+logged drops/failures, best-effort two-second graceful-close drain); APIM does not
+await them. Storage queue resources/endpoints support Function hosting, not a
+durable accounting queue/outbox. There is no retry or exactly-once persistence
+guarantee. Restart, failure or saturation can lose history permanently, leaving
+live budgets and persisted usage/chargeback different.
 
 The portal key remains a credential exception stored in Key Vault/protected
 Terraform state. Only the web workload has Secrets User; the deployer has Secrets
@@ -129,12 +152,13 @@ adds its namespace endpoint with policy-owned DNS. APIM's integration subnet
 must resolve/reach the hub's private namespace.
 
 The native `log-to-eventhub` policy publishes only compact normalized v2 events
-returned after durable actual/unknown usage recording, and only for new records.
+returned after Redis accepts actual/unknown usage, and only for new usage within
+the replay window. Events do not establish Table persistence.
 It is **unsampled by Application Insights** and truncates events exceeding
 **200 KB**. Keep the compact schema below 16 KiB. Delivery is best effort:
 no SDK publisher, no retries and no failed inference due to logger availability.
-The ledger remains authoritative; absence from Event Hubs is not evidence that
-the request was uncharged.
+Redis is the live budget authority; Table is eventual long-term history.
+Absence from Event Hubs or Table is not evidence that the request was uncharged.
 
 Streaming remains unbuffered through the narrow relay. Function runtime settings
 include `APIM_USAGE_EVENT_URL` and `API_AUDIENCE`; its managed identity receives
@@ -156,8 +180,9 @@ persisted layout/KQL, not a second application catalog. Monthly spend owns its
 month-start query window; other activity tables use the selected period.
 
 Traces can be sampled/delayed and budget balances are last-observed snapshots,
-not live reads. Use authorized JSON/CSV chargeback exports and the durable
-ledger for reconciliation, not dashboard totals or Event Hub delivery counts.
+not live reads. Use authorized JSON/CSV chargeback exports and persisted Table
+history to investigate retained records, not dashboard totals or Event Hub
+delivery counts. Neither reports nor live budgets guarantee financial completeness.
 
 ## Validation and destructive migration boundary
 
@@ -177,5 +202,6 @@ services and role bindings can destroy live resources. Before an approved cutove
 export/archive previous configuration and historical usage, review a real plan
 for destructive changes, approve user/team/department mappings and price cards,
 then run explicit Chat/Responses nonstream/stream, budget exhaustion/overshoot,
-callback-auth rejection, cache rebuild, Event Hub failure-isolation and chargeback
+callback-auth rejection, cold-cache/invalidation, Redis failure/data-loss,
+background-write loss, Event Hub failure-isolation and chargeback
 acceptance. Never silently reinterpret old application budgets as person budgets.
