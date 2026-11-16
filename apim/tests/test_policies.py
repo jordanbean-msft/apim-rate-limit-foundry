@@ -143,7 +143,7 @@ class GatewayPolicyTests(unittest.TestCase):
         root = inference()
         body = root.findtext("./inbound/set-body")
         self.assertIn('new JProperty("include_usage", true)', body)
-        forward = root.find("./backend/forward-request")
+        forward = root.find("./backend/choose/otherwise/forward-request")
         self.assertEqual(forward.get("buffer-response"), "false")
         streaming = next(
             node
@@ -161,8 +161,43 @@ class GatewayPolicyTests(unittest.TestCase):
         backend = root.find(".//set-backend-service[@backend-id]")
         self.assertIn('"model-backend-id"', backend.get("backend-id"))
         lookup = render("fragments/model-lookup.xml.tftpl")
-        self.assertIn('"ai-model-" + hash.Substring(0, 12)', lookup)
+        self.assertIn('"ai-pool-" : "ai-model-"', lookup)
+        self.assertIn("hash.Substring(0, 12)", lookup)
         self.assertIsNotNone(root.find(".//authentication-managed-identity"))
+
+    def test_pooled_alias_routes_to_pool_id_and_single_alias_keeps_model_id(self) -> None:
+        lookup = ET.fromstring(render("fragments/model-lookup.xml.tftpl"))
+        pooled = lookup.find("./set-variable[@name='model-pooled']").get("value")
+        self.assertIn('["pool"]', pooled)
+        self.assertIn("pool != null", pooled)
+        backend_id = lookup.find("./set-variable[@name='model-backend-id']").get("value")
+        self.assertIn(
+            '(bool)context.Variables["model-pooled"] ? "ai-pool-" : "ai-model-"', backend_id
+        )
+        names = [node.get("name") for node in lookup.findall("./set-variable")]
+        self.assertLess(names.index("model-pooled"), names.index("model-backend-id"))
+
+    def test_only_nonstreaming_pooled_requests_retry_on_throttle_or_server_error(self) -> None:
+        root = inference()
+        backend = root.find("./backend/choose")
+        retry_branch = backend.find("./when")
+        self.assertIn('"streaming"', retry_branch.get("condition"))
+        self.assertIn('"model-pooled"', retry_branch.get("condition"))
+        retry = retry_branch.find("retry")
+        self.assertIn("429", retry.get("condition"))
+        self.assertIn(">= 500", retry.get("condition").replace("&gt;", ">"))
+        self.assertLessEqual(int(retry.get("count")), 2)
+        self.assertEqual(retry.get("first-fast-retry"), "true")
+        self.assertEqual(retry.find("forward-request").get("buffer-request-body"), "true")
+        self.assertEqual(len(root.findall(".//retry")), 1)
+
+    def test_retry_never_wraps_admission_budget_or_usage_recording(self) -> None:
+        root = inference()
+        retry = root.find("./backend//retry")
+        self.assertEqual([child.tag for child in retry], ["forward-request"])
+        self.assertIsNone(root.find("./inbound//retry"))
+        self.assertIsNone(root.find("./outbound//retry"))
+        self.assertIsNone(root.find("./on-error//retry"))
 
     def test_record_uses_provider_object_unknown_is_explicit_and_no_cost_math(self) -> None:
         text = render("fragments/usage-record.xml.tftpl")
@@ -220,7 +255,8 @@ class GatewayPolicyTests(unittest.TestCase):
             failed_accounting.findtext("./set-header[@name='X-RateLimit-Accounting']/value"),
             "unavailable",
         )
-        self.assertNotIn("retry", ET.tostring(root, encoding="unicode"))
+        for section in ("inbound", "outbound", "on-error"):
+            self.assertNotIn("retry", ET.tostring(root.find(section), encoding="unicode"))
 
     def test_portal_browser_preflight_allows_w3c_correlation(self) -> None:
         root = ET.fromstring(render("policies/portal.xml.tftpl"))

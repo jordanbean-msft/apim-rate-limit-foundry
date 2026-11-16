@@ -105,8 +105,18 @@ locals {
     max_output_tokens     = var.config.max_output_tokens
     llm_tokens_per_minute = var.config.llm_tokens_per_minute
     max_input_tokens      = var.max_input_tokens
-    model_registry        = replace(jsonencode(var.model_registry), "\"", "\\\"")
+    model_registry        = replace(jsonencode(local.policy_registry), "\"", "\\\"")
   }
+  # Only pooled aliases carry the extra flag, so single-endpoint policy text is unchanged.
+  policy_registry = {
+    for key, model in var.model_registry : key => merge(model, contains(keys(var.model_pools), key) ? { pool = true } : {})
+  }
+  pool_hashes = { for key in keys(var.model_pools) : key => substr(sha256(key), 0, 12) }
+  pool_members = merge([
+    for key, members in var.model_pools : {
+      for index, member in members : "ai-model-${local.pool_hashes[key]}-m${index}" => merge(member, { pool_key = key })
+    }
+  ]...)
   route_backends = merge(var.ai, var.route_backends)
   api_backends = merge(
     { for key, backend in local.route_backends : key => backend if key != "responses" },
@@ -120,6 +130,7 @@ locals {
     {
       for key, model in var.model_registry :
       "ai-model-${substr(sha256(key), 0, 12)}" => trimsuffix(model.endpoint, "/")
+      if !contains(keys(var.model_pools), key)
     }
   )
   fragments = toset(["identity", "model-lookup", "budget-check", "usage-record"])
@@ -168,6 +179,60 @@ resource "azurerm_api_management_backend" "ai" {
     validate_certificate_name  = true
   }
   depends_on = [azapi_resource.this]
+}
+resource "azurerm_api_management_backend" "pool_member" {
+  for_each            = local.pool_members
+  name                = each.key
+  resource_group_name = var.resource_group_name
+  api_management_name = azapi_resource.this.name
+  protocol            = "http"
+  url                 = each.value.endpoint
+  description         = "Managed-identity AI gateway pool member ${trimprefix(each.key, "ai-model-")}"
+  tls {
+    validate_certificate_chain = true
+    validate_certificate_name  = true
+  }
+  circuit_breaker_rule {
+    name                       = "throttle-and-server-errors"
+    trip_duration              = var.config.backend_circuit_breaker.trip_duration
+    accept_retry_after_enabled = true
+    failure_condition {
+      count             = var.config.backend_circuit_breaker.failure_count
+      interval_duration = var.config.backend_circuit_breaker.interval
+      status_code_range {
+        min = 429
+        max = 429
+      }
+      status_code_range {
+        min = 500
+        max = 599
+      }
+    }
+  }
+  depends_on = [azapi_resource.this]
+}
+# Pool IDs use a distinct prefix so converting a single backend to a pool never needs two
+# backends with one name to be created and deleted concurrently.
+resource "azapi_resource" "pool" {
+  for_each  = var.model_pools
+  type      = "Microsoft.ApiManagement/service/backends@2024-05-01"
+  name      = "ai-pool-${local.pool_hashes[each.key]}"
+  parent_id = azapi_resource.this.id
+  body = {
+    properties = {
+      description = "Native load-balanced pool for one registered model alias"
+      type        = "Pool"
+      pool = {
+        services = [
+          for index, member in each.value : {
+            id       = azurerm_api_management_backend.pool_member["ai-model-${local.pool_hashes[each.key]}-m${index}"].id
+            priority = member.priority
+            weight   = member.weight
+          }
+        ]
+      }
+    }
+  }
 }
 resource "azurerm_api_management_api" "ai" {
   for_each              = local.api_backends

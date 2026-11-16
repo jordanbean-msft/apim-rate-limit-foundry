@@ -80,8 +80,22 @@
       </otherwise>
     </choose>
   </inbound>
-  <!-- Never buffer provider SSE in APIM; the streaming Function observes its termination. -->
-  <backend><forward-request buffer-response="false" /></backend>
+  <!-- Never buffer provider SSE in APIM; the streaming Function observes its termination.
+       Only buffered, nonstreaming requests to a pooled alias retry (once or twice) on 429/5xx so
+       the pool selects another member; the circuit breaker removes tripped members. Admission,
+       budget checks and usage recording run once, outside this retry. -->
+  <backend>
+    <choose>
+      <when condition='@(!context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool&gt;("model-pooled", false))'>
+        <retry condition='@(context.Response != null &amp;&amp; (context.Response.StatusCode == 429 || context.Response.StatusCode &gt;= 500))' count="2" interval="1" first-fast-retry="true">
+          <forward-request buffer-request-body="true" />
+        </retry>
+      </when>
+      <otherwise>
+        <forward-request buffer-response="false" />
+      </otherwise>
+    </choose>
+  </backend>
   <outbound>
     <base />
     <set-header name="X-Correlation-ID" exists-action="override"><value>@((string)context.Variables["request-id"])</value></set-header>

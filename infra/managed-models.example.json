@@ -4,6 +4,7 @@
     "model_version": "2026-03-05",
     "deployment_sku": "GlobalStandard",
     "deployment_capacity": 10,
+    "additional_endpoints": [],
     "protocols": {
       "openai-chat": {
         "api_version": "2024-10-21",

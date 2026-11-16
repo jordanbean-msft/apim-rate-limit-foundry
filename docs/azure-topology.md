@@ -14,6 +14,14 @@ Terraform composes APIM, a direct Azure OpenAI account/deployments, two Python
 Function hosts, Redis, Table Storage, a Node/React portal, Key Vault, Event Hubs,
 Application Insights and Log Analytics. Model routing uses native APIM backend IDs.
 
+A model alias that lists additional endpoints (the same model in another Azure
+OpenAI account or region) is served by a native APIM **backend pool**: one backend
+per member with a circuit breaker (429/5xx, `Retry-After` honored), plus a
+`Pool` backend with member priority and weight. Nonstreaming requests retry on
+429/5xx so another member is tried. Streaming goes through the Function relay to
+the primary endpoint only, so it gets no pool failover. Accounting stays per model.
+Single-endpoint aliases keep one plain backend. See [model registry](model-registry.md).
+
 Redis holds shared cached configuration and live approximate spend/context/replay
 state. Warm admission has no Table dependency; cold configuration misses may read
 Table and Admin configuration writes remain synchronous durable-first. Request
@@ -48,7 +56,8 @@ and virtual network links are owned by Azure policy, not this Terraform.
 Every private endpoint ignores `private_dns_zone_group` drift.
 
 Private deployments need APIM-to-Function, Function-to-model/storage/Redis and
-APIM-to-Event-Hub connectivity, including DNS. The streaming callback also needs
+APIM-to-Event-Hub connectivity, including DNS. APIM also needs private
+connectivity to every additional pool member account. The streaming callback also needs
 Function-to-APIM connectivity. Validate that path explicitly; do not bypass the
 gateway by adding a direct Python Event Hub publisher when callback egress fails.
 

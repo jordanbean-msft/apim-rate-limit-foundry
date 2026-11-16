@@ -22,11 +22,17 @@
   <set-variable name="model" value='@((string)context.Variables["model-alias"])' />
   <set-variable name="model-provider" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["model"])' />
   <set-variable name="model-endpoint" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["endpoint"])' />
-  <!-- Match Terraform's deterministic backend ID without exposing the alias as an ARM name. -->
+  <!-- A registry entry marked pool is served by a native APIM backend pool. -->
+  <set-variable name="model-pooled" value='@{
+    var pool = JObject.Parse((string)context.Variables["model-entry"])["pool"];
+    return pool != null &amp;&amp; (bool)pool;
+  }' />
+  <!-- Match Terraform's deterministic backend ID without exposing the alias as an ARM name.
+       Pools use a distinct prefix so a single backend can convert to a pool without a name clash. -->
   <set-variable name="model-backend-id" value='@{
     var key = (string)context.Variables["model-key"];
     var hash = BitConverter.ToString(System.Security.Cryptography.SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant();
-    return "ai-model-" + hash.Substring(0, 12);
+    return ((bool)context.Variables["model-pooled"] ? "ai-pool-" : "ai-model-") + hash.Substring(0, 12);
   }' />
   <set-variable name="model-path" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["path"])' />
   <set-variable name="model-audience" value='@((string)JObject.Parse((string)context.Variables["model-entry"])["audience"])' />

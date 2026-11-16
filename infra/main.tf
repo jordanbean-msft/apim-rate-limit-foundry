@@ -72,6 +72,29 @@ locals {
       }
     }
   ]...)
+  # Pool inputs stay out of local.model_registry, which the Function hosts consume unchanged.
+  pool_sources = merge(
+    {
+      for key, model in var.llm_models : key => {
+        primary_endpoint = model.endpoint, primary_priority = model.primary_priority,
+        primary_weight   = model.primary_weight, additional = model.additional_endpoints
+      } if length(model.additional_endpoints) > 0
+    },
+    merge({}, [
+      for alias, model in var.managed_models : {
+        for protocol in keys(model.protocols) : "${protocol}:${alias}" => {
+          primary_endpoint = module.ai.backends["foundry"].endpoint, primary_priority = model.primary_priority,
+          primary_weight   = model.primary_weight, additional = model.additional_endpoints
+        }
+      } if length(model.additional_endpoints) > 0
+    ]...)
+  )
+  model_pools = {
+    for key, source in local.pool_sources : key => concat(
+      [{ endpoint = trimsuffix(source.primary_endpoint, "/"), priority = source.primary_priority, weight = source.primary_weight }],
+      [for member in source.additional : { endpoint = trimsuffix(member.endpoint, "/"), priority = member.priority, weight = member.weight }]
+    )
+  }
   application_registry = { for id, app in var.applications.inference : id => {
     tenant_id = app.tenant_id, display_name = app.display_name
   } }
@@ -303,6 +326,7 @@ module "apim" {
   ai                            = module.ai.backends
   route_backends                = local.apim_model_backends
   model_registry                = local.model_registry
+  model_pools                   = local.model_pools
   legacy_defaults = {
     foundry   = length(var.managed_models) == 0 ? try(module.ai.backends["foundry"].model, "") : ""
     responses = length(var.managed_models) > 0 && try(module.ai.backends["responses"].model, "") == var.ai.foundry.deployment_name ? "" : try(module.ai.backends["responses"].model, "")

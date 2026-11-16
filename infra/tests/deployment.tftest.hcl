@@ -148,7 +148,8 @@ variables {
     client_audiences               = ["api://client"], burst_calls = 60, burst_seconds = 60, max_body_bytes = 1048576,
     max_output_tokens              = 4096, send_request_timeout = 10, enable_optional_llm_policy = false,
     llm_policy_verified            = false, llm_tokens_per_minute = 100000, diagnostic_sampling_percentage = 100,
-    openai_byte_tokenizer_verified = true
+    openai_byte_tokenizer_verified = true,
+    backend_circuit_breaker        = { failure_count = 3, interval = "PT1M", trip_duration = "PT1M" }
   }
   llm_protocols = {
     responses = {
@@ -293,4 +294,146 @@ run "additional_openai_models_keep_alias_based_backend_entities" {
     )
     error_message = "Additional aliases must route to registered deployment entities and grant the relay only scoped OpenAI access."
   }
+}
+run "managed_alias_with_extra_endpoints_gets_native_pool_with_circuit_breakers" {
+  command = plan
+  variables {
+    ai = { foundry = merge(var.ai.foundry, {
+      create         = true, resource_id = "", model_name = "gpt-4.1", model_version = "2025-04-14",
+      deployment_sku = "Standard", deployment_capacity = 10
+    }) }
+    managed_models = {
+      fast = {
+        model_name = "gpt-4.1-mini", model_version = "2025-04-14", deployment_sku = "Standard", deployment_capacity = 10,
+        additional_endpoints = [
+          { endpoint = "https://fast-east.openai.azure.us/", priority = 2, weight = 3, private_endpoint_verified = true },
+          { endpoint = "https://fast-west.openai.azure.us", private_endpoint_verified = true }
+        ]
+        protocols = {
+          openai-chat = {
+            api_version         = "2024-10-21", price_version = "fast-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+            capability_verified = true, government_verified = true, byte_tokenizer_verified = true, private_endpoint_verified = true
+          }
+        }
+      }
+      plain = {
+        model_name = "gpt-4.1-nano", model_version = "2025-04-14", deployment_sku = "Standard", deployment_capacity = 10,
+        protocols = {
+          openai-chat = {
+            api_version         = "2024-10-21", price_version = "plain-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+            capability_verified = true, government_verified = true, byte_tokenizer_verified = true, private_endpoint_verified = true
+          }
+        }
+      }
+    }
+  }
+  assert {
+    condition = (
+      keys(module.apim.backend_pools) == ["openai-chat:fast"] &&
+      module.apim.backend_pools["openai-chat:fast"].name == "ai-pool-${substr(sha256("openai-chat:fast"), 0, 12)}" &&
+      length(module.apim.backend_pools["openai-chat:fast"].members) == 3 &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.name] == [for index in range(3) : "ai-model-${substr(sha256("openai-chat:fast"), 0, 12)}-m${index}"] &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.url] == ["https://sample-resource.openai.azure.us", "https://fast-east.openai.azure.us", "https://fast-west.openai.azure.us"] &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.priority] == [1, 2, 1] &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.weight] == [1, 3, 1]
+    )
+    error_message = "A multi-endpoint alias needs a pool whose first member is the primary endpoint, followed by additional members with priority and weight."
+  }
+  assert {
+    condition = alltrue([
+      for member in module.apim.backend_pools["openai-chat:fast"].members :
+      member.circuit_breaker_rule_names == ["throttle-and-server-errors"] && member.accept_retry_after == [true]
+    ])
+    error_message = "Every pool member needs a native circuit breaker that honours Retry-After."
+  }
+  assert {
+    condition = (
+      !contains(keys(module.apim.ai_backends), "ai-model-${substr(sha256("openai-chat:fast"), 0, 12)}") &&
+      contains(keys(module.apim.ai_backends), "ai-model-${substr(sha256("openai-chat:plain"), 0, 12)}") &&
+      keys(local.model_registry) == ["openai-chat:fast", "openai-chat:plain"] &&
+      !contains(keys(local.model_registry["openai-chat:fast"]), "additional_endpoints") &&
+      !contains(keys(local.model_registry["openai-chat:fast"]), "pool")
+    )
+    error_message = "A pooled alias replaces its single backend; the Function-facing registry keeps its shape and single-endpoint aliases stay unpooled."
+  }
+}
+run "referenced_model_with_extra_endpoint_gets_pool_and_single_models_do_not" {
+  command = plan
+  variables {
+    llm_models = {
+      "openai-chat:fast" = {
+        api_protocol            = "openai-chat", resource_id = "${var.ai.foundry.resource_id}-fast",
+        endpoint                = "https://fast.openai.azure.us", audience = var.ai.foundry.audience, location = var.ai.foundry.location,
+        deployment_name         = "provider-fast", price_version = "fast-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+        role_definition_name    = "Cognitive Services OpenAI User", capability_verified = true, government_verified = false,
+        byte_tokenizer_verified = true, private_endpoint_verified = true, api_version = "2024-10-21",
+        primary_priority        = 1, primary_weight = 2,
+        additional_endpoints    = [{ endpoint = "https://fast-backup.openai.azure.us", priority = 2, private_endpoint_verified = true }]
+      }
+      "openai-chat:solo" = {
+        api_protocol            = "openai-chat", resource_id = "${var.ai.foundry.resource_id}-solo",
+        endpoint                = "https://solo.openai.azure.us", audience = var.ai.foundry.audience, location = var.ai.foundry.location,
+        deployment_name         = "provider-solo", price_version = "solo-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+        role_definition_name    = "Cognitive Services OpenAI User", capability_verified = true, government_verified = false,
+        byte_tokenizer_verified = true, private_endpoint_verified = true, api_version = "2024-10-21"
+      }
+    }
+  }
+  assert {
+    condition = (
+      keys(module.apim.backend_pools) == ["openai-chat:fast"] &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.weight] == [2, 1] &&
+      [for member in module.apim.backend_pools["openai-chat:fast"].members : member.priority] == [1, 2] &&
+      contains(keys(module.apim.ai_backends), "ai-model-${substr(sha256("openai-chat:solo"), 0, 12)}") &&
+      !contains(keys(module.apim.ai_backends), "ai-model-${substr(sha256("openai-chat:fast"), 0, 12)}")
+    )
+    error_message = "Referenced models pool only when additional endpoints are listed; accounting keys stay per alias."
+  }
+}
+run "duplicate_pool_endpoints_are_rejected" {
+  command = plan
+  variables {
+    ai = { foundry = merge(var.ai.foundry, {
+      create         = true, resource_id = "", model_name = "gpt-4.1", model_version = "2025-04-14",
+      deployment_sku = "Standard", deployment_capacity = 10
+    }) }
+    managed_models = {
+      fast = {
+        model_name = "gpt-4.1-mini", model_version = "2025-04-14", deployment_sku = "Standard", deployment_capacity = 10,
+        additional_endpoints = [
+          { endpoint = "https://fast-east.openai.azure.us", private_endpoint_verified = true },
+          { endpoint = "https://FAST-EAST.openai.azure.us/", private_endpoint_verified = true }
+        ]
+        protocols = {
+          openai-chat = {
+            api_version         = "2024-10-21", price_version = "fast-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+            capability_verified = true, government_verified = true, byte_tokenizer_verified = true, private_endpoint_verified = true
+          }
+        }
+      }
+    }
+  }
+  expect_failures = [var.managed_models]
+}
+run "unverified_private_pool_member_is_rejected" {
+  command = plan
+  variables {
+    ai = { foundry = merge(var.ai.foundry, {
+      create         = true, resource_id = "", model_name = "gpt-4.1", model_version = "2025-04-14",
+      deployment_sku = "Standard", deployment_capacity = 10
+    }) }
+    managed_models = {
+      fast = {
+        model_name           = "gpt-4.1-mini", model_version = "2025-04-14", deployment_sku = "Standard", deployment_capacity = 10,
+        additional_endpoints = [{ endpoint = "https://fast-east.openai.azure.us" }]
+        protocols = {
+          openai-chat = {
+            api_version         = "2024-10-21", price_version = "fast-v1", max_input_tokens = 64000, max_output_tokens = 2048,
+            capability_verified = true, government_verified = true, byte_tokenizer_verified = true, private_endpoint_verified = true
+          }
+        }
+      }
+    }
+  }
+  expect_failures = [var.managed_models]
 }

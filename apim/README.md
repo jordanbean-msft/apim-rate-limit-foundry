@@ -31,6 +31,13 @@ Backend selection preserves explicit APIM backend entities and managed-identity
 authentication. `<protocol>:<alias>` resolves through the shared `MODEL_REGISTRY`;
 the provider receives the registered deployment, not an arbitrary URL/model.
 Only explicitly configured legacy aliases can be implicit defaults.
+Aliases with additional endpoints are marked `pool` in the policy-only registry copy
+and route to the native pool backend `ai-pool-<hash>`; others keep `ai-model-<hash>`.
+Nonstreaming pooled requests use `retry` (count 2, first fast retry, buffered
+request body) on 429/5xx so another pool member is tried; member circuit breakers
+come from Terraform. Budget check and usage recording stay outside the retry, so
+a retried request is recorded once from the final response. Streaming requests
+go to the Function relay and the primary endpoint, never the pool.
 Verified UTF-8/framing input bounds and explicit output caps still bound the text
 request subset; those safety caps do not estimate or debit monetary usage.
 Direct OpenAI accounts use their official `.openai.azure.com` (or sovereign)

@@ -15,6 +15,20 @@ output "ai_backends" {
     protocol = backend.protocol
   } }
 }
+output "backend_pools" {
+  description = "Native APIM pools by registry key; member circuit breakers trip on 429/5xx and honour Retry-After."
+  value = { for key, pool in azapi_resource.pool : key => {
+    name = pool.name
+    members = [for index, member in var.model_pools[key] : {
+      name                       = "ai-model-${local.pool_hashes[key]}-m${index}"
+      url                        = azurerm_api_management_backend.pool_member["ai-model-${local.pool_hashes[key]}-m${index}"].url
+      priority                   = member.priority
+      weight                     = member.weight
+      circuit_breaker_rule_names = [for rule in azurerm_api_management_backend.pool_member["ai-model-${local.pool_hashes[key]}-m${index}"].circuit_breaker_rule : rule.name]
+      accept_retry_after         = [for rule in azurerm_api_management_backend.pool_member["ai-model-${local.pool_hashes[key]}-m${index}"].circuit_breaker_rule : rule.accept_retry_after_enabled]
+    }]
+  } }
+}
 output "llm_routes" {
   description = "Only enabled LLM operations and their pinned protocol/model contracts."
   value = { for key, backend in local.route_backends : key => {

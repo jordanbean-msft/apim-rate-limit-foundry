@@ -43,6 +43,11 @@ variable "config" {
     llm_tokens_per_minute          = number
     diagnostic_sampling_percentage = number
     openai_byte_tokenizer_verified = bool
+    backend_circuit_breaker = object({
+      failure_count = number
+      interval      = string
+      trip_duration = string
+    })
   })
 }
 variable "identity" {
@@ -108,6 +113,17 @@ variable "model_registry" {
     max_input_tokens  = number
     max_output_tokens = number
   }))
+}
+variable "model_pools" {
+  description = "Registry keys served by a native APIM backend pool; the first member is the registry primary endpoint. Single-endpoint aliases are absent."
+  type        = map(list(object({ endpoint = string, priority = number, weight = number })))
+  validation {
+    condition = alltrue([for key, members in var.model_pools :
+      contains(keys(var.model_registry), key) && length(members) >= 2 &&
+      length(distinct([for member in members : lower(member.endpoint)])) == length(members)
+    ])
+    error_message = "Each pool must belong to a registry alias and contain at least two distinct member endpoints."
+  }
 }
 variable "function_identity" {
   description = "Only this Function workload may invoke the internal usage callback."

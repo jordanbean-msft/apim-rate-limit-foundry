@@ -26,6 +26,15 @@ project/ML hub. Routing preserves the native `.openai.azure.com` origin in
 Commercial and the explicitly verified sovereign equivalent in Government.
 The current native APIM backend-ID routing is retained.
 
+Aliases may list `additional_endpoints` for the same model. Terraform then creates
+native APIM backends with circuit breakers and a pool resource (via `azapi`, since
+`azurerm` has no pool resource) for those aliases only. Before applying: deploy the
+same deployment name on each extra account, grant the APIM gateway identity its
+OpenAI User role there, and confirm APIM network/DNS reach it. Converting an alias
+between single and pooled creates new backends and deletes the old one; plan to see
+this. Streaming still uses the primary endpoint through the relay (no failover).
+Tune `gateway.backend_circuit_breaker` in `main.tfvars.json`.
+
 APIM native Event Hub logging uses managed identity, not a connection string
 secret. Verify Sender RBAC, logger identity settings and network reachability.
 The retained streaming host schedules a background call to the internal APIM

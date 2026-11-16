@@ -54,6 +54,21 @@ active registry; additional references remain available.
 and their Chat/Responses price/capability/cap metadata. Recheck regional catalog,
 pricing, quota and private/Government attestations before using it.
 
+### Native backend pools
+
+`MANAGED_MODELS` aliases and `LLM_MODELS` entries accept optional
+`additional_endpoints` (`endpoint`, `priority` 1-5, `weight` 1-100,
+`private_endpoint_verified`) plus `primary_priority`/`primary_weight`. Without
+them an alias keeps one APIM backend (`ai-model-<hash>`). With them Terraform adds a
+circuit-breaker backend per member (`ai-model-<hash>-m<n>`, first is the primary
+endpoint) and an `azapi_resource` pool (`ai-pool-<hash>`, API `2024-05-01`) that
+the policy routes to. Native APIM load balancing and circuit breaking replace any
+custom failover code; the Function registry and per-model cost accounting are
+unchanged. Breaker thresholds are `gateway.backend_circuit_breaker` in tfvars.
+Streaming uses the Function relay and the primary endpoint, so it is not pooled.
+Grant the gateway identity RBAC on each additional account yourself.
+See [model registry](../docs/model-registry.md#optional-backend-pools-same-model-more-endpoints).
+
 The function/web plans keep the existing P1v2 specifications. The Dedicated
 budget Function now enables Always On (`hosting.function_always_on=true`) for
 low-latency hosting; the stream host was already Always On. The web's Always On

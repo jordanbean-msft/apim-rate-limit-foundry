@@ -151,7 +151,21 @@ variable "gateway" {
     llm_tokens_per_minute          = number
     openai_byte_tokenizer_verified = bool
     diagnostic_sampling_percentage = number
+    backend_circuit_breaker = object({
+      failure_count = number
+      interval      = string
+      trip_duration = string
+    })
   })
+  validation {
+    condition = (
+      var.gateway.backend_circuit_breaker.failure_count >= 1 && var.gateway.backend_circuit_breaker.failure_count <= 10000 &&
+      floor(var.gateway.backend_circuit_breaker.failure_count) == var.gateway.backend_circuit_breaker.failure_count &&
+      can(regex("^PT([0-9]+H)?([0-9]+M)?([0-9]+S)?$", var.gateway.backend_circuit_breaker.interval)) &&
+      can(regex("^PT([0-9]+H)?([0-9]+M)?([0-9]+S)?$", var.gateway.backend_circuit_breaker.trip_duration))
+    )
+    error_message = "Backend pool circuit breakers need an integer failure count of 1..10000 and ISO 8601 time-only interval/trip durations such as PT1M."
+  }
   validation {
     condition     = var.gateway.diagnostic_sampling_percentage >= 0 && var.gateway.diagnostic_sampling_percentage <= 100
     error_message = "APIM diagnostic sampling must be 0..100 percent."
@@ -298,6 +312,14 @@ variable "llm_models" {
     byte_tokenizer_verified   = bool
     private_endpoint_verified = bool
     api_version               = string
+    primary_priority          = optional(number, 1)
+    primary_weight            = optional(number, 1)
+    additional_endpoints = optional(list(object({
+      endpoint                  = string
+      priority                  = optional(number, 1)
+      weight                    = optional(number, 1)
+      private_endpoint_verified = optional(bool, false)
+    })), [])
   }))
   validation {
     condition = alltrue([for key, model in var.llm_models : (
@@ -336,6 +358,24 @@ variable "llm_models" {
       "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(model.endpoint)))))
     )])
     error_message = "Additional model keys, aliases, HTTPS origins, cloud/role attestations, private networking, version pins, and integer token bounds must match the selected protocol."
+  }
+  validation {
+    condition = alltrue([for key, model in var.llm_models :
+      model.primary_priority >= 1 && model.primary_priority <= 5 && floor(model.primary_priority) == model.primary_priority &&
+      model.primary_weight >= 1 && model.primary_weight <= 100 && floor(model.primary_weight) == model.primary_weight &&
+      length(model.additional_endpoints) <= 29 &&
+      length(distinct([for member in model.additional_endpoints : lower(trimsuffix(member.endpoint, "/"))])) == length(model.additional_endpoints) &&
+      alltrue([for member in model.additional_endpoints :
+        can(regex(var.azure_cloud == "AzureUSGovernment" ?
+          "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
+        "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(member.endpoint))) &&
+        member.priority >= 1 && member.priority <= 5 && floor(member.priority) == member.priority &&
+        member.weight >= 1 && member.weight <= 100 && floor(member.weight) == member.weight &&
+        (var.public_network_access_enabled || member.private_endpoint_verified)
+      ]) &&
+      !contains([for member in model.additional_endpoints : lower(trimsuffix(member.endpoint, "/"))], lower(trimsuffix(model.endpoint, "/")))
+    ])
+    error_message = "Backend pool members need distinct same-cloud HTTPS origins, integer priority 1..5 and weight 1..100, at most 29 additional endpoints, and verified private connectivity when public access is disabled."
   }
   validation {
     condition = alltrue([for key, model in var.llm_models :
@@ -432,6 +472,14 @@ variable "managed_models" {
     model_version       = string
     deployment_sku      = string
     deployment_capacity = number
+    primary_priority    = optional(number, 1)
+    primary_weight      = optional(number, 1)
+    additional_endpoints = optional(list(object({
+      endpoint                  = string
+      priority                  = optional(number, 1)
+      weight                    = optional(number, 1)
+      private_endpoint_verified = optional(bool, false)
+    })), [])
     protocols = map(object({
       api_version               = string
       price_version             = string
@@ -474,5 +522,22 @@ variable "managed_models" {
       ])
     )
     error_message = "Managed aliases must be distinct from the preserved legacy deployment and references, with explicit model versions, capacity, protocol pricing/caps and verified cloud, tokenizer and private-path support."
+  }
+  validation {
+    condition = alltrue([for key, model in var.managed_models :
+      model.primary_priority >= 1 && model.primary_priority <= 5 && floor(model.primary_priority) == model.primary_priority &&
+      model.primary_weight >= 1 && model.primary_weight <= 100 && floor(model.primary_weight) == model.primary_weight &&
+      length(model.additional_endpoints) <= 29 &&
+      length(distinct([for member in model.additional_endpoints : lower(trimsuffix(member.endpoint, "/"))])) == length(model.additional_endpoints) &&
+      alltrue([for member in model.additional_endpoints :
+        can(regex(var.azure_cloud == "AzureUSGovernment" ?
+          "^https://[a-z0-9-]+\\.(openai\\.azure\\.us|cognitiveservices\\.azure\\.us|services\\.ai\\.azure\\.us)/?$" :
+        "^https://[a-z0-9-]+\\.(openai\\.azure\\.com|cognitiveservices\\.azure\\.com|services\\.ai\\.azure\\.com)/?$", lower(member.endpoint))) &&
+        member.priority >= 1 && member.priority <= 5 && floor(member.priority) == member.priority &&
+        member.weight >= 1 && member.weight <= 100 && floor(member.weight) == member.weight &&
+        (var.public_network_access_enabled || member.private_endpoint_verified)
+      ])
+    ])
+    error_message = "Backend pool members need distinct same-cloud HTTPS origins, integer priority 1..5 and weight 1..100, at most 29 additional endpoints, and verified private connectivity when public access is disabled."
   }
 }

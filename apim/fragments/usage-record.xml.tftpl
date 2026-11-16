@@ -1,6 +1,6 @@
 <fragment>
   <!-- Ordinary responses submit only provider usage counters plus the admission ID.
-       Missing/malformed usage becomes unpriced usage_unknown, never fabricated zero. -->
+       Missing/malformed usage becomes usage_unknown and is charged an estimated upper bound, never fabricated zero. -->
   <send-request mode="new" response-variable-name="usage-response" timeout="${send_request_timeout}" ignore-error="true">
     <set-url>${function_url}/api/usage/record</set-url>
     <set-method>POST</set-method>

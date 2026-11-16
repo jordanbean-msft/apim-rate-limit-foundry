@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <mxfile host="Electron" agent="Editable physical Azure architecture" version="32.6.10" type="device" compressed="false">
   <diagram id="physical-private" name="Private deployment">
-    <mxGraphModel page="1" tooltips="1" pageWidth="1680" math="0" fold="1" shadow="0" pageHeight="1980" connect="1" background="#FFFFFF" grid="0" guides="1" pageScale="1" dx="1680" gridSize="10" arrows="1" dy="1980">
+    <mxGraphModel page="1" tooltips="1" pageWidth="1680" math="0" fold="1" shadow="0" pageHeight="2135" connect="1" background="#FFFFFF" grid="0" guides="1" pageScale="1" dx="1680" gridSize="10" arrows="1" dy="2135">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -147,7 +147,7 @@
         </object>
         <object id="subscription" label="">
           <mxCell vertex="1" parent="1" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#91A7BF;strokeWidth=1.4;dashed=1;dashPattern=4 3;container=1;collapsible=0;recursiveResize=0;">
-            <mxGeometry x="420" y="410" width="1170" height="1510" as="geometry" />
+            <mxGeometry x="420" y="410" width="1170" height="1665" as="geometry" />
           </mxCell>
         </object>
         <object id="subscription-heading" label="Azure subscription | configured region and environment">
@@ -157,7 +157,7 @@
         </object>
         <object id="rg" label="" tooltip="PRE-EXISTING RESOURCE GROUP | supplied to Terraform; existing network IDs may reference another resource group">
           <mxCell vertex="1" parent="subscription" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#F7F9FB;strokeColor=#9EA7B0;strokeWidth=1.4;dashed=1;dashPattern=4 3;container=1;collapsible=0;recursiveResize=0;">
-            <mxGeometry x="20" y="65" width="1130" height="1385" as="geometry" />
+            <mxGeometry x="20" y="65" width="1130" height="1540" as="geometry" />
           </mxCell>
         </object>
         <object id="rg-header-icon" label="" IconSource="general\10007-icon-service-Resource-Groups.svg">
@@ -200,7 +200,7 @@
             <mxGeometry x="46" y="6" width="252" height="36" as="geometry" />
           </mxCell>
         </object>
-        <object id="physical-apim" label="" Source="infra/modules/apim/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;APIM | Internal VNet mode&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Developer / Premium tier required&lt;br&gt;Internal gateway; no APIM PE is created&lt;br&gt;ARM publicNetworkAccess stays Enabled">
+        <object id="physical-apim" label="" Source="infra/modules/apim/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;APIM | Internal VNet mode&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Developer / Premium tier required&lt;br&gt;Internal gateway; no APIM PE is created&lt;br&gt;ARM publicNetworkAccess stays Enabled&lt;br&gt;Native backend pools + circuit breakers for aliases with additional endpoints">
           <mxCell vertex="1" parent="apim-subnet" style="rounded=0;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;container=1;collapsible=0;">
             <mxGeometry x="25" y="50" width="260" height="128" as="geometry" />
           </mxCell>
@@ -402,7 +402,7 @@
         </object>
         <object id="paas" label="" tooltip="AZURE PAAS RESOURCES | outside the VNet; Private Link applies only to the targets listed above">
           <mxCell vertex="1" parent="rg" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#BAC3CC;strokeWidth=1.4;dashed=1;dashPattern=4 3;container=1;collapsible=0;recursiveResize=0;">
-            <mxGeometry x="20" y="600" width="1090" height="755" as="geometry" />
+            <mxGeometry x="20" y="600" width="1090" height="910" as="geometry" />
           </mxCell>
         </object>
         <object id="paas-heading" label="Services | PaaS, operations and managed resources (outside the VNet)">
@@ -565,7 +565,7 @@
             <mxGeometry x="5" y="81" width="195" height="42" as="geometry" />
           </mxCell>
         </object>
-        <object id="physical-ai" label="" Source="infra/modules/ai/main.tf; infra/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Azure OpenAI account&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Created or referenced by configuration&lt;br&gt;kind=OpenAI; projects disabled&lt;br&gt;Legacy + managed deployments&lt;br&gt;PE created only for created accounts">
+        <object id="physical-ai" label="" Source="infra/modules/ai/main.tf; infra/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Azure OpenAI account&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Created or referenced by configuration&lt;br&gt;kind=OpenAI; projects disabled&lt;br&gt;Legacy + managed deployments&lt;br&gt;PE created only for created accounts&lt;br&gt;Primary member (m0) of an optional APIM backend pool">
           <mxCell vertex="1" parent="paas" style="rounded=0;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;container=1;collapsible=0;">
             <mxGeometry x="654" y="252" width="205" height="125" as="geometry" />
           </mxCell>
@@ -583,6 +583,61 @@
         <object id="physical-ai-caption" label="kind=OpenAI; projects disabled&lt;br&gt;PE only for created accounts">
           <mxCell vertex="1" parent="physical-ai" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Segoe UI;fontSize=10.5;fontColor=#75757A;fontStyle=0;spacing=0;">
             <mxGeometry x="5" y="81" width="195" height="42" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="apim-backend-pool" label="" Source="infra/modules/apim/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;APIM backend pool (optional)&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Created only for model aliases that list additional endpoints&lt;br&gt;Pool ai-pool-&amp;lt;hash&amp;gt; (azapi Pool backend) with member backends ai-model-&amp;lt;hash&amp;gt;-m&amp;lt;n&amp;gt;&lt;br&gt;Per-member priority and weight; accounting stays per model">
+          <mxCell vertex="1" parent="paas" style="rounded=0;html=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#BAC3CC;strokeWidth=1.4;dashed=1;dashPattern=4 3;container=1;collapsible=0;recursiveResize=0;">
+            <mxGeometry x="15" y="750" width="1040" height="150" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="apim-backend-pool-heading" label="Optional APIM backend pool | one per model alias with additional endpoints">
+          <mxCell vertex="1" parent="apim-backend-pool" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=left;verticalAlign=middle;fontFamily=Segoe UI;fontSize=14;fontColor=#000041;fontStyle=1;spacing=0;">
+            <mxGeometry x="14" y="8" width="1010" height="28" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-0" label="" Source="infra/modules/apim/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Pool member m0&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Primary endpoint of the alias; same account as the OpenAI tile above&lt;br&gt;Native backend with circuit breaker; priority and weight configurable">
+          <mxCell vertex="1" parent="apim-backend-pool" style="rounded=0;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;container=1;collapsible=0;">
+            <mxGeometry x="20" y="40" width="230" height="105" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-0-icon" label="" IconSource="ai + machine learning\03438-icon-service-Azure-OpenAI.svg">
+          <mxCell vertex="1" parent="pool-member-0" style="shape=image;html=1;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PHN2ZyBpZD0idXVpZC1hZGJkYWU4ZS01YTQxLTQ2ZDEtOGMxOC1hYTczY2RiZmVlMzIiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjE4IiBoZWlnaHQ9IjE4IiB2aWV3Qm94PSIwIDAgMTggMTgiPjxkZWZzPjxyYWRpYWxHcmFkaWVudCBpZD0idXVpZC0yYTc0MDdhYS1iNzg3LTQ4ZGQtYTk2YS0wZDgxYWI2ZTkzYmIiIGN4PSItNjcuOTgxIiBjeT0iNzkzLjE5OSIgcj0iLjQ1IiBncmFkaWVudFRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNzkzOS4wMyAyMDM2OC4wMjkpIHJvdGF0ZSg0NSkgc2NhbGUoMjUuMDkxIC0zNC4xNDkpIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjODNiOWY5IiAvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwNzhkNCIgLz48L3JhZGlhbEdyYWRpZW50PjwvZGVmcz48cGF0aCBkPSJtMCwyLjd2MTIuNmMwLDEuNDkxLDEuMjA5LDIuNywyLjcsMi43aDEyLjZjMS40OTEsMCwyLjctMS4yMDksMi43LTIuN1YyLjdjMC0xLjQ5MS0xLjIwOS0yLjctMi43LTIuN0gyLjdDMS4yMDksMCwwLDEuMjA5LDAsMi43Wk0xMC44LDB2My42YzAsMy45NzYsMy4yMjQsNy4yLDcuMiw3LjJoLTMuNmMtMy45NzYsMC03LjE5OSwzLjIyMi03LjIsNy4xOTh2LTMuNTk4YzAtMy45NzYtMy4yMjQtNy4yLTcuMi03LjJoMy42YzMuOTc2LDAsNy4yLTMuMjI0LDcuMi03LjJaIiBmaWxsPSJ1cmwoI3V1aWQtMmE3NDA3YWEtYjc4Ny00OGRkLWE5NmEtMGQ4MWFiNmU5M2JiKSIgc3Ryb2tlLXdpZHRoPSIwIiAvPjwvc3ZnPg==;verticalLabelPosition=bottom;">
+            <mxGeometry x="99" y="2" width="32" height="32" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-0-label" label="Pool member m0">
+          <mxCell vertex="1" parent="pool-member-0" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Segoe UI;fontSize=12;fontColor=#000041;fontStyle=1;spacing=0;">
+            <mxGeometry x="4" y="38" width="222" height="26" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-0-caption" label="Primary endpoint&lt;br&gt;Circuit breaker | priority / weight">
+          <mxCell vertex="1" parent="pool-member-0" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Segoe UI;fontSize=10.5;fontColor=#75757A;fontStyle=0;spacing=0;">
+            <mxGeometry x="5" y="66" width="220" height="36" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-1" label="" Source="infra/modules/apim/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Pool member m1..mN&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Same model deployed in another referenced Azure OpenAI account or region&lt;br&gt;RBAC for the APIM gateway identity is operator-granted&lt;br&gt;Native backend with circuit breaker; priority and weight configurable">
+          <mxCell vertex="1" parent="apim-backend-pool" style="rounded=0;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;container=1;collapsible=0;">
+            <mxGeometry x="270" y="40" width="230" height="105" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-1-icon" label="" IconSource="ai + machine learning\03438-icon-service-Azure-OpenAI.svg">
+          <mxCell vertex="1" parent="pool-member-1" style="shape=image;html=1;imageAspect=1;aspect=fixed;image=data:image/svg+xml,PHN2ZyBpZD0idXVpZC1hZGJkYWU4ZS01YTQxLTQ2ZDEtOGMxOC1hYTczY2RiZmVlMzIiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjE4IiBoZWlnaHQ9IjE4IiB2aWV3Qm94PSIwIDAgMTggMTgiPjxkZWZzPjxyYWRpYWxHcmFkaWVudCBpZD0idXVpZC0yYTc0MDdhYS1iNzg3LTQ4ZGQtYTk2YS0wZDgxYWI2ZTkzYmIiIGN4PSItNjcuOTgxIiBjeT0iNzkzLjE5OSIgcj0iLjQ1IiBncmFkaWVudFRyYW5zZm9ybT0idHJhbnNsYXRlKC0xNzkzOS4wMyAyMDM2OC4wMjkpIHJvdGF0ZSg0NSkgc2NhbGUoMjUuMDkxIC0zNC4xNDkpIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjODNiOWY5IiAvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwNzhkNCIgLz48L3JhZGlhbEdyYWRpZW50PjwvZGVmcz48cGF0aCBkPSJtMCwyLjd2MTIuNmMwLDEuNDkxLDEuMjA5LDIuNywyLjcsMi43aDEyLjZjMS40OTEsMCwyLjctMS4yMDksMi43LTIuN1YyLjdjMC0xLjQ5MS0xLjIwOS0yLjctMi43LTIuN0gyLjdDMS4yMDksMCwwLDEuMjA5LDAsMi43Wk0xMC44LDB2My42YzAsMy45NzYsMy4yMjQsNy4yLDcuMiw3LjJoLTMuNmMtMy45NzYsMC03LjE5OSwzLjIyMi03LjIsNy4xOTh2LTMuNTk4YzAtMy45NzYtMy4yMjQtNy4yLTcuMi03LjJoMy42YzMuOTc2LDAsNy4yLTMuMjI0LDcuMi03LjJaIiBmaWxsPSJ1cmwoI3V1aWQtMmE3NDA3YWEtYjc4Ny00OGRkLWE5NmEtMGQ4MWFiNmU5M2JiKSIgc3Ryb2tlLXdpZHRoPSIwIiAvPjwvc3ZnPg==;verticalLabelPosition=bottom;">
+            <mxGeometry x="99" y="2" width="32" height="32" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-1-label" label="Pool members m1..mN">
+          <mxCell vertex="1" parent="pool-member-1" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Segoe UI;fontSize=12;fontColor=#000041;fontStyle=1;spacing=0;">
+            <mxGeometry x="4" y="38" width="222" height="26" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-member-1-caption" label="Same model, other account / region&lt;br&gt;Circuit breaker | priority / weight">
+          <mxCell vertex="1" parent="pool-member-1" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Segoe UI;fontSize=10.5;fontColor=#75757A;fontStyle=0;spacing=0;">
+            <mxGeometry x="5" y="66" width="220" height="36" as="geometry" />
+          </mxCell>
+        </object>
+        <object id="pool-circuit-breaker-note" label="Circuit breaker on every member: trips on 429 / 5xx, Retry-After honored&lt;br&gt;Nonstreaming requests retry up to twice so another member is tried&lt;br&gt;Streaming uses the relay and the primary endpoint only (no pool failover)">
+          <mxCell vertex="1" parent="apim-backend-pool" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=left;verticalAlign=middle;fontFamily=Segoe UI;fontSize=11;fontColor=#75757A;fontStyle=0;spacing=0;">
+            <mxGeometry x="530" y="50" width="490" height="80" as="geometry" />
           </mxCell>
         </object>
         <object id="physical-events" label="" Source="infra/modules/event_hubs/main.tf" tooltip="&lt;b&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Event Hubs namespace&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;Usage event hub; Entra-only auth&lt;br&gt;APIM UAMI is the only Sender&lt;br&gt;Private endpoint: namespace&lt;br&gt;No consumer workload provisioned">
@@ -665,9 +720,9 @@
             <mxGeometry x="5" y="79" width="320" height="44" as="geometry" />
           </mxCell>
         </object>
-        <object id="physical-footer" label="Configuration view, not live inventory | * Stream when enabled; model-account UAMI and model PE only for created accounts">
+        <object id="physical-footer" label="Configuration view, not live inventory | * Stream when enabled; model-account UAMI and model PE only for created accounts | Backend pool only for aliases with additional endpoints">
           <mxCell vertex="1" parent="1" style="text;html=1;whiteSpace=wrap;overflow=hidden;align=left;verticalAlign=middle;fontFamily=Segoe UI;fontSize=11;fontColor=#75757A;fontStyle=0;spacing=0;">
-            <mxGeometry x="30" y="1930" width="1580" height="24" as="geometry" />
+            <mxGeometry x="30" y="2085" width="1580" height="24" as="geometry" />
           </mxCell>
         </object>
         <object id="api-registration" label="" Source="infra/modules/identity/main.tf">
@@ -859,7 +914,19 @@
               <mxPoint x="18" y="0" as="offset" />
               <Array as="points">
                 <mxPoint x="1190" y="215" />
-                <mxPoint x="1190" y="902" />
+                <mxPoint x="1190" y="964" />
+              </Array>
+            </mxGeometry>
+          </mxCell>
+        </object>
+        <object id="n7" label="Managed identity | pool + circuit breaker">
+          <mxCell edge="1" parent="1" source="physical-apim" target="apim-backend-pool" style="edgeStyle=none;rounded=0;html=1;endArrow=block;endFill=1;strokeColor=#0078D3;strokeWidth=2;dashed=1;fontFamily=Segoe UI;fontSize=10.5;fontStyle=2;fontColor=#0078D3;labelBackgroundColor=#FFFFFF;jumpStyle=arc;horizontal=0;exitX=0;exitY=0.74;entryX=0;entryY=0.5;exitPerimeter=0;entryPerimeter=0;">
+            <mxGeometry relative="1" as="geometry">
+              <mxPoint x="0" y="-12" as="offset" />
+              <Array as="points">
+                <mxPoint x="405" y="740" />
+                <mxPoint x="405" y="1900" />
+                <mxPoint x="475" y="1900" />
               </Array>
             </mxGeometry>
           </mxCell>
