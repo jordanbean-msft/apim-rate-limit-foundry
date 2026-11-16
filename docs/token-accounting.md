@@ -76,8 +76,12 @@ misconfigured ceiling.
 
 ## Unknown usage and interrupted streams
 
-Disconnects, provider errors, failed provider opens, missing or malformed
-usage can prevent exact accounting. The request is recorded with
+Disconnects, gateway-side failures after admission, missing or malformed
+usage can prevent exact accounting. A provider HTTP error response (4xx/5xx,
+including provider throttling) generated no tokens, so the gateway does not
+record or charge it. The same holds for a stream whose first events are a
+`rate_limit_exceeded` error before any output; the relay records nothing. Any other
+stream failure, or a throttle after output began, is still unknown usage. The request is recorded with
 `status: usage_unknown` and null token counts, never fabricated zero tokens, and
 is charged a **conservative, documented fallback** so budgets still decrement:
 

@@ -106,7 +106,13 @@
         <set-variable name="provider-body" value="@(context.Response.Body.As&lt;string&gt;(preserveContent: true))" />
         <set-variable name="provider-status" value="@(context.Response.StatusCode)" />
         <set-variable name="provider-content-type" value='@(context.Response.Headers.GetValueOrDefault("Content-Type", "application/json"))' />
-        <include-fragment fragment-id="limiter-usage-record" />
+        <choose>
+          <!-- A provider 4xx/5xx (including throttling) generated no tokens, so it is not charged.
+               Gateway-side failures after admission may have consumed tokens and stay in on-error. -->
+          <when condition='@((int)context.Variables["provider-status"] &lt; 400)'>
+            <include-fragment fragment-id="limiter-usage-record" />
+          </when>
+        </choose>
       </when>
     </choose>
   </outbound>

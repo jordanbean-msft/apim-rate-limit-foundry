@@ -89,6 +89,60 @@ def test_failed_or_inconsistent_responses_terminals_are_unknown(payload: dict) -
     assert_unknown(observer)
 
 
+THROTTLE = {"type": "error", "error": {"code": "rate_limit_exceeded", "message": "slow down"}}
+
+
+def test_throttle_before_any_output_is_a_provider_rejection_with_no_usage() -> None:
+    observer = StreamUsage("openai-responses")
+
+    observer.feed(responses_event({"type": "response.created", "response": {"usage": None}}))
+    observer.feed(responses_event(THROTTLE))
+
+    assert observer.rejected
+    assert_unknown(observer)
+
+
+def test_response_failed_throttle_then_error_event_is_a_provider_rejection() -> None:
+    observer = StreamUsage("openai-responses")
+    failed = {
+        "type": "response.failed",
+        "response": {"status": "failed", "usage": None, "error": {"code": "rate_limit_exceeded"}},
+    }
+
+    observer.feed(responses_event({"type": "response.created", "response": {"usage": None}}))
+    observer.feed(responses_event(failed))
+    observer.feed(responses_event(THROTTLE))
+
+    assert observer.rejected
+    assert_unknown(observer)
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [{"type": "response.output_text.delta", "delta": "hi"}, THROTTLE],
+        [{"type": "error", "error": {"code": "server_error"}}],
+    ],
+)
+def test_errors_after_output_or_other_errors_are_not_free(events: list[dict]) -> None:
+    observer = StreamUsage("openai-responses")
+
+    for event in events:
+        observer.feed(responses_event(event))
+
+    assert not observer.rejected
+    assert_unknown(observer)
+
+
+def test_chat_content_marks_generation_so_a_later_throttle_is_still_charged() -> None:
+    observer = StreamUsage("openai-chat")
+
+    observer.feed(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+    observer.feed(b'data: {"error":{"code":"rate_limit_exceeded"}}\n\n')
+
+    assert not observer.rejected
+
+
 def test_events_after_the_responses_terminal_are_ambiguous() -> None:
     observer = StreamUsage("openai-responses")
     terminal = {"type": "response.completed", "response": {"status": "completed", "usage": {}}}

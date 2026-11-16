@@ -131,27 +131,30 @@ def upstream_reply(status: int, content_type: str, chunks: list[bytes]) -> Simpl
 
 
 @pytest.mark.parametrize(
-    ("reply", "expected_status", "expected_body"),
+    ("reply", "expected_status", "expected_body", "charged"),
     [
         (
             upstream_reply(500, "application/json", [b"x" * 70_000]),
             500,
             b"provider_stream_unavailable",
+            False,
         ),
         (
             upstream_reply(502, "text/html", [b"<h1>bad gateway</h1>"]),
             502,
             b"provider_stream_unavailable",
+            False,
         ),
-        (upstream_reply(200, "application/json", [b'{"ok":1}']), 502, b'{"ok":1}'),
+        (upstream_reply(200, "application/json", [b'{"ok":1}']), 502, b'{"ok":1}', True),
     ],
 )
-async def test_unusable_provider_replies_become_bounded_errors_charged_as_unknown(
+async def test_unusable_provider_replies_become_bounded_errors_charged_only_when_ok(
     engine: Engine,
     settings: Settings,
     reply: SimpleNamespace,
     expected_status: int,
     expected_body: bytes,
+    charged: bool,
 ) -> None:
     await admit(engine)
     credential = AsyncMock()
@@ -175,4 +178,5 @@ async def test_unusable_provider_replies_become_bounded_errors_charged_as_unknow
     assert (status, content_type) == (expected_status, "application/json")
     assert expected_body in b"".join([chunk async for chunk in body])
     reply.close.assert_called_once()
-    assert (await engine.counters.usage("stream-1"))["data"]["status"] == "usage_unknown"
+    recorded = await engine.counters.usage("stream-1")
+    assert (recorded["data"]["status"] == "usage_unknown") if charged else recorded is None

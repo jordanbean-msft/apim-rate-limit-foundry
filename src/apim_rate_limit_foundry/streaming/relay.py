@@ -92,7 +92,9 @@ class StreamRelay:
 
         The iterator releases its response after consumption. Open failures
         attempt unknown-usage accounting (charged at the pinned upper bound) before
-        propagating. Non-SSE/non-200 replies are bounded JSON errors, never
+        propagating. A non-200 provider reply (throttling, rejection) generated no
+        tokens and is not charged; a 200 with a non-SSE body is charged as unknown.
+        Non-SSE/non-200 replies are bounded JSON errors, never
         buffered model output.
         """
         try:
@@ -145,7 +147,8 @@ class StreamRelay:
                     body_buffer = bytearray(b'{"error":"provider_stream_unavailable"}')
             finally:
                 response.close()
-            await self._record(request_id, "usage_unknown", None)
+            if response.status == 200:
+                await self._record(request_id, "usage_unknown", None)
             return status, "application/json", self._error(bytes(body_buffer)), response_headers
         return (
             response.status,
@@ -194,6 +197,9 @@ class StreamRelay:
             usage: dict[str, Any] | None = observer.finish()
         except (ValueError, KeyError, TypeError):
             usage = None
+        if usage is None and observer.rejected:
+            emit("stream_rejected_by_provider", level=logging.WARNING)
+            return
         status: Literal["actual", "usage_unknown"] = (
             "actual" if usage is not None else "usage_unknown"
         )

@@ -199,6 +199,13 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIsNone(root.find("./outbound//retry"))
         self.assertIsNone(root.find("./on-error//retry"))
 
+    def test_provider_error_responses_are_not_charged(self) -> None:
+        outbound = inference().find("outbound")
+        gate = outbound.find(".//choose/when/choose/when")
+        self.assertIn('"provider-status"', gate.get("condition"))
+        self.assertIn("&lt; 400".replace("&lt;", "<"), gate.get("condition"))
+        self.assertIsNotNone(gate.find("include-fragment"))
+
     def test_record_uses_provider_object_unknown_is_explicit_and_no_cost_math(self) -> None:
         text = render("fragments/usage-record.xml.tftpl")
         root = ET.fromstring(text)

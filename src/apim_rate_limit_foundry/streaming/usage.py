@@ -31,6 +31,8 @@ class StreamUsage:
         self.complete = False
         self.terminated = False
         self.invalid = False
+        self.generating = False
+        self.rejected = False
 
     def feed(self, chunk: bytes) -> None:
         """Observe arbitrary byte boundaries without disrupting stream forwarding.
@@ -153,6 +155,10 @@ class StreamUsage:
         if self.complete:
             # Multiple terminal usage payloads cannot safely be priced as one request.
             raise ValueError("Data after terminal usage")
+        self._note_generation(payload)
+        if self._is_throttle_rejection(payload):
+            self.rejected = True
+            raise ValueError("Provider throttled the request before generating output")
         if not isinstance(payload, dict) or "error" in payload:
             raise ValueError("Invalid provider event")
         if self.protocol == "openai-chat":
@@ -172,6 +178,30 @@ class StreamUsage:
                 self.complete = True
             elif kind in ("error", "response.failed"):
                 raise ValueError("Provider stream failed")
+
+    def _note_generation(self, payload: Any) -> None:
+        """Remember once the provider has produced any output, which may be billed."""
+        if not isinstance(payload, dict):
+            return
+        kind = payload.get("type")
+        if isinstance(kind, str) and ("delta" in kind or "output_item" in kind):
+            self.generating = True
+        if payload.get("choices"):
+            self.generating = True
+
+    def _is_throttle_rejection(self, payload: Any) -> bool:
+        """A throttle error before any output means the request consumed no tokens.
+
+        Azure reports it as a top-level ``error`` event or as ``response.failed``
+        carrying ``response.error``, usually both in sequence.
+        """
+        if not isinstance(payload, dict) or self.generating:
+            return False
+        error = payload.get("error")
+        response = payload.get("response")
+        if not isinstance(error, dict) and isinstance(response, dict):
+            error = response.get("error")
+        return isinstance(error, dict) and error.get("code") == "rate_limit_exceeded"
 
     @staticmethod
     def _usage(value: Any) -> dict[str, Any]:

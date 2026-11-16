@@ -477,6 +477,20 @@ async def test_failed_final_accounting_is_logged_not_raised(engine, settings) ->
     relay._record.assert_awaited_once_with("missing", "usage_unknown", None)
 
 
+async def test_stream_throttled_before_output_is_not_charged(engine, settings) -> None:
+    async def chunks(size):
+        yield b'data: {"type":"response.created","response":{"usage":null}}\n\n'
+        yield b'data: {"type":"error","error":{"code":"rate_limit_exceeded"}}\n\n'
+
+    response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
+    relay = StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
+    relay._record = AsyncMock()
+
+    assert len([c async for c in relay._stream("throttled", "openai-responses", response)]) == 2
+
+    relay._record.assert_not_awaited()
+
+
 async def test_runtime_shares_and_closes_one_http_session(settings) -> None:
     runtime = Runtime(settings)
     session = runtime.http_session()
@@ -543,9 +557,7 @@ async def test_provider_open_failure_is_charged_the_upper_bound_on_the_shared_se
     assert session.calls[0][1]["timeout"].total == settings.stream_timeout_seconds
 
 
-async def test_provider_error_reply_is_bounded_json_and_charged_the_upper_bound(
-    engine, settings
-) -> None:
+async def test_provider_error_reply_is_bounded_json_and_not_charged(engine, settings) -> None:
     await engine.check(stream_check("provider-429"))
     credential = AsyncMock()
     credential.get_token.return_value = SimpleNamespace(token="token")
@@ -571,4 +583,4 @@ async def test_provider_error_reply_is_bounded_json_and_charged_the_upper_bound(
     assert [chunk async for chunk in body] == [b'{"error":"slow down"}']
     response.close.assert_called_once()
     await engine.background.flush()
-    assert (await persisted_usage(engine))[0]["data"]["cost_micro_usd"] == UPPER_BOUND
+    assert await persisted_usage(engine) == []
