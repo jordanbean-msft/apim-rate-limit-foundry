@@ -16,10 +16,15 @@ Microsoft service icons embedded as SVGs rather than external image links.
 | [Physical architecture](physical-architecture.drawio) | Private deployment; Identity and access | Terraform resource placement, subnet integration, private endpoints, app registrations and managed-identity permissions |
 
 The physical view illustrates `public_network_access_enabled=false`.
-It describes the current configuration model,
-not a live deployment inventory. Optional streaming and created versus referenced
-model resources are labeled explicitly. PaaS resources remain outside the VNet;
-private endpoint NICs and outbound integration are separate concepts.
+It describes the current configuration model, not a live deployment inventory.
+Optional streaming and created versus referenced model resources are labeled
+explicitly. PaaS resources remain outside the VNet; private endpoint NICs and
+outbound integration are separate concepts.
+
+The VNet and subnet layout is illustrative. This Terraform consumes existing
+subnets through the `apim_subnet_id`, `functions_subnet_id`, `web_subnet_id` and
+`private_endpoint_subnet_id` input variables and does not create the VNet,
+subnets or private DNS zones.
 
 ## Physical deployment style
 
@@ -83,18 +88,17 @@ separately. The remaining VNet space is unallocated growth capacity.
 
 ## Icons
 
-Service icons were embedded without modification from the local Microsoft icon
-library at `C:\Users\jordanbean\OneDrive - Microsoft\Pictures\Icons`.
-Each icon shape records its relative original path in the `IconSource` property.
-The files remain portable without access to that directory or the internet.
+Service icons come from the Microsoft Azure architecture icons and were embedded
+without modification. Each icon shape records its relative original path in the
+`IconSource` property. The files remain portable without access to the original
+icon set or the internet.
 
 The Azure OpenAI icon represents the actual `kind=OpenAI` account, not a Foundry
 project or agent service. Both Azure Managed Redis and the Government Redis Cache
 variant use their corresponding icons. The physical view uses the current
 Microsoft Entra ID tenant icon and distinct icons for app registrations,
-enterprise applications and Entra managed identities. Terraform uses the local
-`More Icons\logos\terraform.svg` asset. Microsoft Graph uses the local
-`More Icons\other\graph-api.svg` asset. Generic notes and boundaries use ordinary
+enterprise applications and Entra managed identities. Terraform and Microsoft Graph
+use their respective logo assets. Generic notes and boundaries use ordinary
 draw.io shapes rather than unrelated service icons.
 
 ## Application registrations
@@ -133,7 +137,7 @@ configuration changes. The primary evidence is:
 
 * [Gateway policies and fragments](../../apim/)
 * [Budget API and accounting engine](../../src/apim_rate_limit_foundry/)
-* [Streaming Function](../../stream/function_app.py) and [relay](../../src/apim_rate_limit_foundry/streaming/relay.py)
+* [Streaming Function entry point](../../stream/function_app.py) and [relay](../../src/apim_rate_limit_foundry/streaming/relay.py)
 * [Portal proxy](../../web/server/api-proxy.mjs) and [browser session](../../web/src/CloudSession.tsx)
 * [Terraform composition](../../infra/main.tf) and [resource modules](../../infra/modules/)
 

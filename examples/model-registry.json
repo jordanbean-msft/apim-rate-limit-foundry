@@ -1,35 +1,68 @@
 {
-  "openai-chat:sample-model": {
+  "openai-chat:gpt-5.4": {
     "api_protocol": "openai-chat",
     "endpoint": "https://example.openai.azure.com",
-    "path": "/openai/deployments/provider-chat-standard/chat/completions",
-    "model": "provider-chat-standard",
+    "path": "/openai/deployments/gpt-5.4/chat/completions",
+    "model": "gpt-5.4",
     "audience": "https://cognitiveservices.azure.com",
     "api_version": "2024-10-21",
-    "price_version": "sample-v1",
-    "max_input_tokens": 16000,
-    "max_output_tokens": 2000
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 128000,
+    "max_output_tokens": 4096
   },
-  "openai-responses:sample-model": {
+  "openai-responses:gpt-5.4": {
     "api_protocol": "openai-responses",
     "endpoint": "https://example.openai.azure.com",
     "path": "/openai/v1/responses",
-    "model": "provider-responses-standard",
+    "model": "gpt-5.4",
     "audience": "https://cognitiveservices.azure.com",
     "api_version": "",
-    "price_version": "sample-v1",
-    "max_input_tokens": 16000,
-    "max_output_tokens": 2000
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 128000,
+    "max_output_tokens": 4096
   },
-  "openai-chat:sample-fast": {
+  "openai-chat:gpt-5.4-mini": {
     "api_protocol": "openai-chat",
     "endpoint": "https://example.openai.azure.com",
-    "path": "/openai/deployments/provider-chat-fast/chat/completions",
-    "model": "provider-chat-fast",
+    "path": "/openai/deployments/gpt-5.4-mini/chat/completions",
+    "model": "gpt-5.4-mini",
     "audience": "https://cognitiveservices.azure.com",
     "api_version": "2024-10-21",
-    "price_version": "sample-v1",
-    "max_input_tokens": 16000,
-    "max_output_tokens": 2000
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 64000,
+    "max_output_tokens": 4096
+  },
+  "openai-responses:gpt-5.4-mini": {
+    "api_protocol": "openai-responses",
+    "endpoint": "https://example.openai.azure.com",
+    "path": "/openai/v1/responses",
+    "model": "gpt-5.4-mini",
+    "audience": "https://cognitiveservices.azure.com",
+    "api_version": "",
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 64000,
+    "max_output_tokens": 4096
+  },
+  "openai-chat:gpt-5.4-nano": {
+    "api_protocol": "openai-chat",
+    "endpoint": "https://example.openai.azure.com",
+    "path": "/openai/deployments/gpt-5.4-nano/chat/completions",
+    "model": "gpt-5.4-nano",
+    "audience": "https://cognitiveservices.azure.com",
+    "api_version": "2024-10-21",
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 32000,
+    "max_output_tokens": 2048
+  },
+  "openai-responses:gpt-5.4-nano": {
+    "api_protocol": "openai-responses",
+    "endpoint": "https://example.openai.azure.com",
+    "path": "/openai/v1/responses",
+    "model": "gpt-5.4-nano",
+    "audience": "https://cognitiveservices.azure.com",
+    "api_version": "",
+    "price_version": "azure-global-text-2026-11-06",
+    "max_input_tokens": 32000,
+    "max_output_tokens": 2048
   }
 }

@@ -1,6 +1,6 @@
-@gateway = https://your-apim.azure-api.net
-@accessToken = replace-with-delegated-user-token
-@subscriptionKey = replace-with-inference-product-key
+@gateway = https://<your-apim-gateway-host>
+@accessToken = <delegated-user-token-for-API_SCOPE>
+@subscriptionKey = <inference-product-subscription-key>
 
 ### Non-streaming Chat. Identity and budgets follow the validated user.
 POST {{gateway}}/foundry/chat/completions
@@ -8,7 +8,7 @@ Authorization: Bearer {{accessToken}}
 Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
 
-{"model":"sample-model","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100}
+{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100}
 
 ### Streaming Chat. The gateway also forces final provider usage.
 POST {{gateway}}/foundry/chat/completions
@@ -16,12 +16,12 @@ Authorization: Bearer {{accessToken}}
 Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
 
-{"model":"sample-model","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100,"stream":true,"stream_options":{"include_usage":true}}
+{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Say hello."}],"max_completion_tokens":100,"stream":true,"stream_options":{"include_usage":true}}
 
-### Responses
+### Responses (streaming)
 POST {{gateway}}/foundry/responses
 Authorization: Bearer {{accessToken}}
 Ocp-Apim-Subscription-Key: {{subscriptionKey}}
 Content-Type: application/json
 
-{"model":"sample-model","input":"Say hello.","max_output_tokens":100,"stream":true}
+{"model":"gpt-5.4-mini","input":"Say hello.","max_output_tokens":100,"stream":true}

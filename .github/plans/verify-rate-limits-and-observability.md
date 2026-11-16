@@ -1,5 +1,7 @@
 # Verify live rate limits and observability
 
+> **Superseded in part.** This plan describes the former reservation/settlement design (and, where mentioned, Anthropic support), which the monthly hierarchy budget redesign removed. It is a historical record, not current guidance; see [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
 Audit the existing public Commercial demo without disabling authentication, resetting
 Redis, accepting Claude terms or logging credentials, prompts, document bodies or PII.
 Keep infrastructure updates in Terraform and preserve the demo resource tags.

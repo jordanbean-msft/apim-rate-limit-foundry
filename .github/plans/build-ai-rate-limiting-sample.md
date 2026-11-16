@@ -1,5 +1,7 @@
 # Building the cross-cloud AI rate-limiting sample
 
+> **Superseded in part.** This plan describes the former reservation/settlement design (and, where mentioned, Anthropic support), which the monthly hierarchy budget redesign removed. It is a historical record, not current guidance; see [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
 The approved detailed plan is the session's `plan.md`. This checklist tracks execution.
 No live Azure resources are provisioned without operator configuration and credentials.
 

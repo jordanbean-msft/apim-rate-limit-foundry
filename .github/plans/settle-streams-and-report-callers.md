@@ -1,5 +1,7 @@
 # Trusted streaming settlement and caller observability
 
+> **Superseded in part.** This plan describes the former reservation/settlement design (and, where mentioned, Anthropic support), which the monthly hierarchy budget redesign removed. It is a historical record, not current guidance; see [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
 Resolve review items 1 and 3 without changing subscription products or group/tier authorization.
 Keep reserve/settle decisions in the Python limiter. Observe provider SSE through a separate
 managed-identity-protected Python streaming Function, rather than buffering APIM responses or

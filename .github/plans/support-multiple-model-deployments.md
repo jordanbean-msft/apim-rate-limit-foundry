@@ -1,5 +1,7 @@
 # Support multiple model deployments
 
+> **Superseded in part.** This plan describes the former reservation/settlement design (and, where mentioned, Anthropic support), which the monthly hierarchy budget redesign removed. It is a historical record, not current guidance; see [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
 ## Contract and scope
 
 - Keep the existing Chat, Responses and Messages routes and conservative

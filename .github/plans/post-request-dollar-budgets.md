@@ -1,6 +1,6 @@
 # Post-request dollar budgets
 
-Source: approved session plan, `34977282-45ef-426e-ab3b-d62e79acff16/plan.md`.
+Source: approved session plan.
 The code cutover preserves historical usage without relabeling. The subsequent
 Azure resource retirement was explicitly approved by the user.
 

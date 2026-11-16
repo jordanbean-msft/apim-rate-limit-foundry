@@ -19,8 +19,14 @@ uv run python scripts/seed.py --apply
 ```
 
 The first invocation previews illustrative records. The second explicitly writes
-organizations, assignments, prices and budgets. Configure a model registry that
-matches those aliases before inference; sample endpoints are not callable models.
+organizations, assignments, prices and budgets. The sample prices target the
+`gpt-5.4`, `gpt-5.4-mini` and `gpt-5.4-nano` aliases and the
+`azure-global-text-2026-11-06` price version, matching
+[`infra/managed-models.example.json`](../infra/managed-models.example.json) and
+the [example registry](../examples/model-registry.json). Prices are illustrative.
+Configure a model registry that matches those aliases before inference; the
+example endpoint is a placeholder, not a callable model. Try the aliases with
+[`examples/gateway.http`](../examples/gateway.http).
 
 For persistent local stores, `docker compose up -d` starts Redis/Azurite on
 loopback. Set both local endpoint settings in `.env`, create the configured Table,
@@ -69,3 +75,10 @@ tests require their separately documented local test settings.
 
 See `.vscode/tasks.json` for grouped validation and `.vscode/launch.json` for
 debuggers. Deployment and live acceptance are separate from local fixture tests.
+
+## Calling the deployed gateway
+
+Inference calls (`/foundry/...`) need an inference-product subscription key plus an
+Entra token for the gateway audience. Portal API calls (`/portal/...`) need the
+separate portal-product subscription key plus a token for the portal API scope;
+an inference key is rejected there with `401`.

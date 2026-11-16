@@ -1,5 +1,7 @@
 # Supporting three LLM API protocols
 
+> **Superseded.** The Anthropic and `normalization/` paths described here were removed by the monthly hierarchy budget redesign and live on historical branches only. Kept as a historical record.
+
 Extend the existing gateway end to end without changing Document Intelligence or Language behavior.
 Preserve the current chat route, existing price records, durable reservations and consumer scoping.
 Streaming remains conservative; do not parse/buffer SSE in APIM.
