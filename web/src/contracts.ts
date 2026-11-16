@@ -45,6 +45,8 @@ export interface Price {
   version: string;
   input_per_million: string;
   cached_input_per_million: string;
+  /** Optional; when absent the API charges cache-write tokens at the uncached input rate. */
+  cache_write_per_million?: string;
   output_per_million: string;
 }
 
@@ -99,8 +101,13 @@ export interface UsageRecord {
   status: 'actual' | 'usage_unknown';
   input_tokens: number | null;
   cached_input_tokens: number | null;
+  cache_write_tokens?: number | null;
   output_tokens: number | null;
   cost_micro_usd: number | null;
+  /** Unknown usage carries an estimated upper-bound charge so budgets still decrement. */
+  cost_basis?: 'provider_usage' | 'estimated_upper_bound';
+  /** Real counts above the model bounds pinned at admission; still priced as reported. */
+  out_of_bounds?: boolean;
   price_version: string;
 }
 
@@ -116,8 +123,10 @@ export interface ChargebackRow {
   month: string;
   input_tokens: number | null;
   cached_input_tokens: number | null;
+  cache_write_tokens?: number | null;
   output_tokens: number | null;
   cost_micro_usd: number | null;
+  cost_basis?: string;
   unknown_requests: number;
 }
 

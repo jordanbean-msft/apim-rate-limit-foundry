@@ -74,7 +74,7 @@ async def test_budget_api_records_usage_and_serves_scoped_chargeback(
         assert "business_unit,cost_center" in csv_export.text
 
 
-async def test_unknown_usage_is_visible_and_malformed_usage_is_not_falsely_charged(
+async def test_unknown_usage_is_visible_and_charged_the_upper_bound(
     settings: Settings, engine: Engine
 ) -> None:
     app = create_app(settings, engine)
@@ -104,11 +104,13 @@ async def test_unknown_usage_is_visible_and_malformed_usage_is_not_falsely_charg
         )
         event = result.json()["event"]
         assert event["status"] == "usage_unknown"
-        assert event["cost_micro_usd"] is None
+        assert event["cost_basis"] == "estimated_upper_bound"
+        assert event["cost_micro_usd"] == 131072 * 2 + 32768 * 4
         await engine.background.flush()
         rows = await client.get(f"/api/chargeback?month={event['month']}", headers=ADMIN)
         assert rows.json()[0]["unknown_requests"] == 1
-        assert rows.json()[0]["cost_micro_usd"] is None
+        assert rows.json()[0]["cost_micro_usd"] == event["cost_micro_usd"]
+        assert rows.json()[0]["input_tokens"] is None
 
 
 async def test_config_crud_hierarchy_validation_and_removed_routes(
@@ -139,3 +141,58 @@ async def test_config_crud_hierarchy_validation_and_removed_routes(
             405,
         )
         assert (await client.post("/api/counters/rebuild", headers=ADMIN)).status_code == 405
+
+
+async def test_usage_month_parameter_is_validated_and_scopes_history(
+    settings: Settings, engine: Engine
+) -> None:
+    app = create_app(settings, engine)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/usage?month=2030-13", headers=ADMIN)).status_code == 400
+        assert (await client.get("/api/usage?month=2000-01", headers=ADMIN)).json() == []
+        assert (await client.get("/api/usage?month=bad", headers=READER)).status_code == 400
+
+
+async def test_models_listing_requires_an_assignment_for_readers(
+    settings: Settings, engine: Engine
+) -> None:
+    app = create_app(settings, engine)
+    stranger = {**READER, "X-Local-Principal-Id": "stranger"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/models", headers=stranger)).json() == []
+        assert (await client.get("/api/models", headers=READER)).status_code == 200
+
+
+async def test_unknown_collections_are_not_found_for_every_verb(
+    settings: Settings, engine: Engine
+) -> None:
+    app = create_app(settings, engine)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/secrets", headers=ADMIN)).status_code == 404
+        assert (await client.put("/api/secrets/x", json={}, headers=ADMIN)).status_code == 404
+        assert (await client.delete("/api/secrets/x", headers=ADMIN)).status_code == 404
+        for collection in ("budgets", "organizations", "assignments", "prices"):
+            assert (await client.get(f"/api/{collection}", headers=ADMIN)).status_code == 200
+
+
+async def test_invalid_stored_configuration_is_reported_without_its_contents(
+    settings: Settings, engine: Engine
+) -> None:
+    budget = await engine.repository.get("budgets", "budget-team")
+    assert budget is not None
+    await engine.repository.mutate(
+        "budgets", "budget-team", {**budget, "limit_micro_usd": "secret-value"}, {"id": "audit"}
+    )
+    app = create_app(settings, engine)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/budgets", headers=ADMIN)
+    assert response.status_code == 400
+    assert "budget-team" in response.text and "secret-value" not in response.text

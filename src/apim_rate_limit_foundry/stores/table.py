@@ -13,55 +13,66 @@ from azure.data.tables import UpdateMode
 from azure.data.tables.aio import TableClient
 
 from apim_rate_limit_foundry.accounting import digest
-from apim_rate_limit_foundry.stores.contracts import Record
+from apim_rate_limit_foundry.stores.contracts import LEDGER_PARTITION, Record
 from apim_rate_limit_foundry.telemetry import emit, observe_dependency
 
 
 class TableRepository:
-    """Single-partition records allow atomic configuration-plus-audit transactions."""
+    """Ledger-partition records allow atomic configuration-plus-audit transactions.
+
+    Usage history is keyed by its own tenant/month partition, so reports query one
+    partition instead of filtering every row. History written before this keying
+    sits in the ledger partition and is not read or migrated (sample scope).
+    """
 
     def __init__(self, client: TableClient) -> None:
         """Bind the Table client whose lifetime is closed with this repository."""
         self.client = client
 
     @staticmethod
-    def entity(collection: str, record_id: str, record: Record) -> Record:
-        """Encode a JSON payload under a hashed collection/ID row in the ledger partition."""
+    def entity(
+        collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
+    ) -> Record:
+        """Encode a JSON payload under a hashed collection/ID row in a partition."""
         return {
-            "PartitionKey": "ledger",
+            "PartitionKey": partition,
             "RowKey": digest(collection, record_id),
             "collection": collection,
             "payload": json.dumps(record, separators=(",", ":")),
         }
 
     @observe_dependency("table", "get")
-    async def get(self, collection: str, record_id: str) -> Record | None:
+    async def get(
+        self, collection: str, record_id: str, partition: str = LEDGER_PARTITION
+    ) -> Record | None:
         """Return decoded payload or None for a missing entity; other errors propagate."""
         try:
-            entity = await self.client.get_entity("ledger", digest(collection, record_id))
+            entity = await self.client.get_entity(partition, digest(collection, record_id))
         except ResourceNotFoundError:
             emit("durable_record_read", collection=collection, status="not_found")
             return None
         return json.loads(entity["payload"])
 
     @observe_dependency("table", "list")
-    async def list(self, collection: str) -> list[Record]:
-        """Materialize all matching pages, leaving tombstone and tenant filtering to callers."""
+    async def list(self, collection: str, partition: str = LEDGER_PARTITION) -> list[Record]:
+        """Materialize one partition's matching pages, leaving tombstone filtering to callers."""
         entities = self.client.query_entities(
-            "PartitionKey eq 'ledger' and collection eq @collection",
-            parameters={"collection": collection},
+            "PartitionKey eq @partition and collection eq @collection",
+            parameters={"partition": partition, "collection": collection},
         )
         return [json.loads(e["payload"]) async for e in entities]
 
     @observe_dependency("table", "create")
-    async def create(self, collection: str, record_id: str, record: Record) -> Record:
+    async def create(
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
+    ) -> Record:
         """Return the create-once winner; duplicate IDs never overwrite history."""
-        saved, _ = await self.create_if_absent(collection, record_id, record)
+        saved, _ = await self.create_if_absent(collection, record_id, record, partition)
         return saved
 
     @observe_dependency("table", "create_if_absent")
     async def create_if_absent(
-        self, collection: str, record_id: str, record: Record
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
     ) -> tuple[Record, bool]:
         """Create a record or read its existing winner and return a creation flag.
 
@@ -69,11 +80,11 @@ class TableRepository:
         between conflict and read is an explicit error, not a successful create.
         """
         try:
-            await self.client.create_entity(self.entity(collection, record_id, record))
+            await self.client.create_entity(self.entity(collection, record_id, record, partition))
             return record, True
         except ResourceExistsError:
             emit("durable_record_replayed", collection=collection, replayed=True)
-            existing = await self.get(collection, record_id)
+            existing = await self.get(collection, record_id, partition)
             if existing is None:
                 raise RuntimeError("Durable record disappeared") from None
             return existing, False

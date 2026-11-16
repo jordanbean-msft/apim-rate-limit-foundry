@@ -57,7 +57,11 @@ export function UsageTable({ records }: { records: UsageRecord[] }) {
                     <Badge appearance="tint" color="warning">
                       Usage unknown
                     </Badge>
-                    <div className="fine-print">Not charged as zero</div>
+                    <div className="fine-print">
+                      {record.cost_micro_usd === null
+                        ? 'Not charged as zero'
+                        : `${microUsd(record.cost_micro_usd)} estimated upper bound`}
+                    </div>
                   </>
                 )}
               </td>

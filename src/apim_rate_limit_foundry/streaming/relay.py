@@ -33,11 +33,17 @@ class StreamRelay:
     """Bind streaming dispatch and final accounting to an existing Redis admission."""
 
     def __init__(
-        self, engine: Engine, credential: AsyncTokenCredential, settings: Settings
+        self,
+        engine: Engine,
+        credential: AsyncTokenCredential,
+        settings: Settings,
+        session: aiohttp.ClientSession,
     ) -> None:
+        """Bind collaborators; the caller owns the shared HTTP session's lifetime."""
         self.engine = engine
         self.credential = ObservedCredential(credential)
         self.settings = settings
+        self.session = session
 
     async def open(
         self, tenant_id: str, request_id: str, body: bytes
@@ -84,18 +90,11 @@ class StreamRelay:
     ) -> tuple[int, str, AsyncIterator[bytes], dict[str, str]]:
         """Acquire provider credentials and return an owned response-body iterator.
 
-        The iterator closes its session after consumption. Open failures close it
-        immediately and attempt unknown-usage accounting before propagating.
-        Non-SSE/non-200 replies are bounded JSON errors, never buffered model output.
+        The iterator releases its response after consumption. Open failures
+        attempt unknown-usage accounting (charged at the pinned upper bound) before
+        propagating. Non-SSE/non-200 replies are bounded JSON errors, never
+        buffered model output.
         """
-        session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(
-                total=self.settings.stream_timeout_seconds,
-                connect=10,
-                sock_read=self.settings.stream_timeout_seconds,
-            ),
-            auto_decompress=True,
-        )
         try:
             with http_dependency_span("provider.stream_open", "model-provider") as span:
                 token = await self.credential.get_token(
@@ -108,16 +107,20 @@ class StreamRelay:
                     "Accept-Encoding": "identity",
                     **outgoing_trace_headers(request_id),
                 }
-                response = await session.post(
+                response = await self.session.post(
                     f"{str(backend.endpoint).rstrip('/')}{backend.path}",
                     params={"api-version": backend.api_version} if backend.api_version else {},
                     headers=headers,
                     data=body,
                     allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(
+                        total=self.settings.stream_timeout_seconds,
+                        connect=10,
+                        sock_read=self.settings.stream_timeout_seconds,
+                    ),
                 )
                 dependency_http_status(span, response.status)
         except BaseException:
-            await session.close()
             await self._record(request_id, "usage_unknown", None)
             raise
         content_type = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
@@ -142,13 +145,12 @@ class StreamRelay:
                     body_buffer = bytearray(b'{"error":"provider_stream_unavailable"}')
             finally:
                 response.close()
-                await session.close()
             await self._record(request_id, "usage_unknown", None)
             return status, "application/json", self._error(bytes(body_buffer)), response_headers
         return (
             response.status,
             "text/event-stream",
-            self._stream(request_id, protocol, response, session),
+            self._stream(request_id, protocol, response),
             response_headers,
         )
 
@@ -162,66 +164,43 @@ class StreamRelay:
         request_id: str,
         protocol: ApiProtocol,
         response: aiohttp.ClientResponse,
-        session: aiohttp.ClientSession,
     ) -> AsyncIterator[bytes]:
-        """Yield original chunks, then finalize only observed terminal usage.
+        """Yield original chunks, then finalize whatever terminal usage was observed.
 
-        Observation never changes chunk contents. Cancellation/disconnection still
-        closes sockets and attempts shielded final accounting; a worker crash can
-        lose that attempt and any process-local persistence/export jobs.
+        Observation never changes chunk contents. Normal completion, provider
+        errors and client disconnects share one shielded finalization: observed
+        usage is priced, otherwise the engine charges its conservative upper bound.
+        A worker crash can lose that attempt and any process-local persistence/export.
         """
         token: Token[str] = correlation_id.set(request_id)
         observer = StreamUsage(protocol, self.settings.stream_max_event_bytes)
-        usage: dict[str, Any] | None
-        finalized = False
         try:
             async for chunk in response.content.iter_chunked(8192):
                 # The observer retains only bounded SSE framing/usage, not the full response.
                 observer.feed(chunk)
                 yield chunk
-            try:
-                usage = observer.finish()
-            except (ValueError, KeyError, TypeError):
-                await self._record(request_id, "usage_unknown", None)
-            else:
-                await self._record(request_id, "actual", usage)
-            finalized = True
         except (asyncio.CancelledError, GeneratorExit):
             raise
-        except (
-            OSError,
-            aiohttp.ClientError,
-            AzureError,
-            RedisError,
-            ValueError,
-            KeyError,
-            TypeError,
-        ) as error:
+        except (OSError, aiohttp.ClientError, AzureError) as error:
             emit("stream_usage_unknown", level=logging.WARNING, error_type=type(error).__name__)
         finally:
             response.close()
-            await session.close()
-            if not finalized:
-                try:
-                    usage = observer.finish()
-                except (ValueError, KeyError, TypeError):
-                    usage = None
-                try:
-                    await asyncio.shield(
-                        self._record(
-                            request_id, "actual" if usage is not None else "usage_unknown", usage
-                        )
-                    )
-                except (
-                    OSError,
-                    aiohttp.ClientError,
-                    AzureError,
-                    RedisError,
-                    ValueError,
-                    Conflict,
-                ):
-                    emit("usage_record_failed", level=logging.ERROR, status="usage_unknown")
+            await self._finalize(request_id, observer)
             correlation_id.reset(token)
+
+    async def _finalize(self, request_id: str, observer: StreamUsage) -> None:
+        """Record observed terminal usage, or unknown usage, shielded from cancellation."""
+        try:
+            usage: dict[str, Any] | None = observer.finish()
+        except (ValueError, KeyError, TypeError):
+            usage = None
+        status: Literal["actual", "usage_unknown"] = (
+            "actual" if usage is not None else "usage_unknown"
+        )
+        try:
+            await asyncio.shield(self._record(request_id, status, usage))
+        except (OSError, aiohttp.ClientError, AzureError, RedisError, ValueError):
+            emit("usage_record_failed", level=logging.ERROR, status=status)
 
     async def _record(
         self,
@@ -265,19 +244,16 @@ class StreamRelay:
                 token = await self.credential.get_token(
                     f"{self.settings.api_audience.rstrip('/')}/.default"
                 )
-                timeout = aiohttp.ClientTimeout(total=3)
-                async with (
-                    aiohttp.ClientSession(timeout=timeout) as session,
-                    session.post(
-                        self.settings.apim_usage_event_url,
-                        json=usage_event,
-                        headers={
-                            "Authorization": f"Bearer {token.token}",
-                            **outgoing_trace_headers(usage_event.get("request_id")),
-                        },
-                        allow_redirects=False,
-                    ) as response,
-                ):
+                async with self.session.post(
+                    self.settings.apim_usage_event_url,
+                    json=usage_event,
+                    headers={
+                        "Authorization": f"Bearer {token.token}",
+                        **outgoing_trace_headers(usage_event.get("request_id")),
+                    },
+                    allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as response:
                     dependency_http_status(span, response.status)
                     if response.status >= 300:
                         emit(

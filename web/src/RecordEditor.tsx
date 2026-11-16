@@ -35,6 +35,10 @@ const priceFields = [
   ['cached_input_per_million', 'Cached input · USD per million tokens'],
   ['output_per_million', 'Output · USD per million tokens'],
 ] as const;
+const cacheWriteField = [
+  'cache_write_per_million',
+  'Cache write · USD per million tokens (optional; blank uses the uncached input rate)',
+] as const;
 const decimal = /^(0|[1-9]\d*)(\.\d{1,12})?$/;
 
 /** Convert stored integer micro-USD into editable decimal dollars without binary rounding. */
@@ -227,18 +231,20 @@ function parseDraft(
     return assignment;
   }
   // Price rates retain decimal strings (up to 12 places); they are not budget micro-USD.
-  const validatePrice = (key: (typeof priceFields)[number][0], label: string) => {
+  const validatePrice = (key: string, label: string) => {
     const value = str(key);
     if (!decimal.test(value))
       throw new Error(`${label} must be a non-negative decimal USD amount.`);
     return value;
   };
-  return {
+  const price = {
     id,
     model: required('model', 'Model'),
     version: required('version', 'Version'),
     ...Object.fromEntries(priceFields.map(([key, label]) => [key, validatePrice(key, label)])),
   } as Price;
+  if (str(cacheWriteField[0])) price.cache_write_per_million = validatePrice(...cacheWriteField);
+  return price;
 }
 
 /** Collection-aware form with exact monetary conversion and API-backed save confirmation. */
@@ -463,7 +469,7 @@ export function RecordEditor({
                   <>
                     {select('model', 'Model alias', priceModelChoices)}
                     {input('version', 'Price version')}
-                    {priceFields.map(([key, label]) =>
+                    {[...priceFields, cacheWriteField].map(([key, label]) =>
                       input(key, label, 'Exact decimal USD string; not micro-USD.'),
                     )}
                   </>

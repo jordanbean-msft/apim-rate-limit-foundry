@@ -45,10 +45,10 @@ def test_seed_apply_uses_access_token_and_real_collection_routes(monkeypatch) ->
 
     saved_price = json.loads(
         next(
-            request for request in requests if request.url.path == "/api/prices/sample-model-v1"
+            request for request in requests if request.url.path == "/api/prices/gpt-5.4-v1"
         ).content
     )
-    assert saved_price["cached_input_per_million"] == "0.20"
+    assert saved_price["cached_input_per_million"] == "0.25"
     assert {request.url.path.split("/")[2] for request in requests} == {
         "organizations",
         "assignments",

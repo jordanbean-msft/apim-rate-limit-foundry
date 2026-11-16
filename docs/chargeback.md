@@ -10,8 +10,12 @@ Use `format=csv` for downstream finance import. Groups preserve business unit,
 cost center, department, team, user reference, application subscription and model.
 
 Sum **one cost per actual request**, not user plus team plus department counters.
-Unknown requests are separately counted in `unknown_requests`; their cost is not
-assumed zero. Reports read eventually persisted Table history, not live Redis
+Unknown requests are separately counted in `unknown_requests`. Their cost is not
+assumed zero: they carry an estimated upper bound (`cost_basis` is
+`estimated_upper_bound`) priced from the model's pinned token limits, so they can
+overstate spend. The CSV ends with `cache_write_tokens` and `cost_basis` columns.
+`GET /api/usage` reads one month at a time (`month=YYYY-MM`, default current
+month). Reports read eventually persisted Table history, not live Redis
 balances. The process-local background writer can lose request/usage writes on
 restart, failure or saturation; history can lag or permanently differ from live
 spend. Redis loss can also reset spend without changing retained Table history.

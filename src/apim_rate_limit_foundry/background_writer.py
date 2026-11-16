@@ -9,8 +9,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextvars import Context, copy_context
 
-from azure.core.exceptions import AzureError
-
 from apim_rate_limit_foundry.telemetry import emit
 
 
@@ -63,10 +61,13 @@ class BackgroundWriter:
     async def _execute(
         collection: str, record_id: str, operation: Callable[[], Awaitable[object]]
     ) -> None:
-        """Log expected storage/serialization failures and continue without retrying."""
+        """Log any job failure and continue, so one bad job never strands the queue.
+
+        Cancellation still propagates; failed jobs are not retried.
+        """
         try:
             await operation()
-        except (AzureError, OSError, ValueError) as error:
+        except Exception as error:
             emit(
                 "background_write_failed",
                 level=logging.WARNING,

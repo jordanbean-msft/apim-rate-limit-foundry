@@ -31,7 +31,7 @@
             <mxGeometry width="36" y="18" x="14" as="geometry" height="36" />
           </mxCell>
         </object>
-        <object label="&lt;b&gt;AI model&lt;/b&gt;&lt;br&gt;Azure OpenAI&lt;br&gt;&lt;br&gt;Generate the response&lt;br&gt;and report token usage" Source="infra/modules/ai/main.tf; infra/main.tf" id="provider">
+        <object label="&lt;b&gt;AI model&lt;/b&gt;&lt;br&gt;Azure OpenAI, optional&lt;br&gt;APIM backend pool&lt;br&gt;Generate the response&lt;br&gt;and report token usage" Source="infra/modules/ai/main.tf; infra/main.tf" id="provider">
           <mxCell parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#0078D4;strokeWidth=2;fontFamily=Segoe UI;fontSize=14;spacingLeft=64;spacingRight=12;spacingTop=12;spacingBottom=12;align=left;container=1;collapsible=0;recursiveResize=0;" vertex="1">
             <mxGeometry height="160" width="290" x="1150" y="350" as="geometry" />
           </mxCell>
@@ -51,7 +51,7 @@
             <mxGeometry width="36" y="18" x="14" as="geometry" height="36" />
           </mxCell>
         </object>
-        <object label="&lt;b&gt;Budget service&lt;/b&gt;&lt;br&gt;Azure Functions&lt;br&gt;&lt;br&gt;Check user, team and department&lt;br&gt;budgets; record actual usage" Source="src/apim_rate_limit_foundry/api.py; src/apim_rate_limit_foundry/engine.py" id="budget">
+        <object label="&lt;b&gt;Budget service&lt;/b&gt;&lt;br&gt;Azure Functions&lt;br&gt;&lt;br&gt;Check user, team and department&lt;br&gt;budgets; record actual usage" Source="src/apim_rate_limit_foundry/api.py; src/apim_rate_limit_foundry/engine/" id="budget">
           <mxCell parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#107C10;strokeWidth=2;fontFamily=Segoe UI;fontSize=14;spacingLeft=64;spacingRight=12;spacingTop=12;spacingBottom=12;align=left;container=1;collapsible=0;recursiveResize=0;" vertex="1">
             <mxGeometry height="160" width="300" x="550" y="720" as="geometry" />
           </mxCell>

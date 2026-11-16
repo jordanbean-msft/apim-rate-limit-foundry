@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     stream_max_event_bytes: int = Field(default=65536, ge=8192, le=1048576)
     stream_max_body_bytes: int = Field(default=131072, ge=1024, le=1048576)
     stream_timeout_seconds: int = Field(default=180, ge=10, le=210)
+    dashboard_query_timeout_seconds: int = Field(default=20, ge=5, le=120)
     azure_dashboard_id: str = ""
     log_analytics_workspace_id: str = ""
     log_analytics_workspace_resource_id: str = ""

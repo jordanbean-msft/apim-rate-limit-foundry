@@ -1,17 +1,18 @@
 import json
+from contextlib import nullcontext
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, ServiceResponseTimeoutError
 from azure.monitor.query import LogsBatchQuery, LogsQueryResult, LogsTable
 from pydantic import ValidationError
 
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.engine import Engine
-from apim_rate_limit_foundry.reports.dashboard import DashboardService
+from apim_rate_limit_foundry.reports.dashboard import TIMEOUT_MESSAGE, DashboardService
 
 UUID = "00000000-0000-0000-0000-000000000001"
 BASE = f"/subscriptions/{UUID}/resourceGroups/demo/providers"
@@ -50,12 +51,13 @@ def dashboard_part(index: int, *, scope: str = WORKSPACE, chart: str = "Line") -
     }
 
 
-def dashboard_service(parts: dict) -> DashboardService:
+def dashboard_service(parts: dict, **overrides: object) -> DashboardService:
     settings = Settings(
         _env_file=None,
         azure_dashboard_id=DASHBOARD,
         log_analytics_workspace_id=UUID,
         log_analytics_workspace_resource_id=WORKSPACE,
+        **overrides,
     )
     service = DashboardService(settings, AsyncMock())
     service.arm = MagicMock()
@@ -194,6 +196,46 @@ async def test_dashboard_api_requires_admin_and_rejects_client_query_inputs(
         service.fetch.side_effect = AzureError("private diagnostic detail")
         response = await client.get("/api/dashboard", headers=ADMIN)
         assert response.status_code == 503 and "private" not in response.text
+
+
+@pytest.mark.parametrize("error", [TimeoutError("private"), ServiceResponseTimeoutError("private")])
+async def test_dashboard_api_reports_timeouts_as_a_clean_gateway_timeout(
+    settings: Settings, engine: Engine, error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = MagicMock(spec=DashboardService)
+    service.fetch = AsyncMock(side_effect=error)
+    app = create_app(settings, engine, service)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/dashboard", headers=ADMIN)
+    assert response.status_code == 504
+    assert response.json() == {"detail": "Dashboard telemetry timed out. Retry later."}
+
+
+async def test_query_timeout_is_configurable_and_marks_tiles_as_timed_out() -> None:
+    service = dashboard_service({"0": dashboard_part(0)}, dashboard_query_timeout_seconds=40)
+    service.logs.query_batch.side_effect = ServiceResponseTimeoutError("private backend detail")
+    with (
+        patch(
+            "apim_rate_limit_foundry.reports.dashboard.LogsBatchQuery", wraps=LogsBatchQuery
+        ) as make_query,
+        patch("apim_rate_limit_foundry.reports.dashboard.asyncio.timeout") as deadline,
+    ):
+        deadline.return_value = nullcontext()
+        tiles = await service.fetch("1h")
+    assert make_query.call_args.kwargs["server_timeout"] == 40
+    deadline.assert_called_once_with(55)
+    assert tiles[0]["error"] == TIMEOUT_MESSAGE and tiles[0]["rows"] == []
+    assert "private" not in json.dumps(tiles)
+
+
+def test_logs_client_read_timeout_follows_the_query_timeout() -> None:
+    with patch("apim_rate_limit_foundry.reports.dashboard.LogsQueryClient") as client:
+        dashboard_service({}, dashboard_query_timeout_seconds=40)
+    assert client.call_args.kwargs["read_timeout"] == 45
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, dashboard_query_timeout_seconds=1)
 
 
 @pytest.mark.parametrize("cloud", ["commercial", "government"])

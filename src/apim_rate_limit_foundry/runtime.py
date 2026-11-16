@@ -1,5 +1,6 @@
 """Compose process-scoped clients while keeping cloud and local stores explicit."""
 
+import aiohttp
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 
@@ -13,7 +14,7 @@ from apim_rate_limit_foundry.stores.table import TableRepository
 
 
 class Runtime:
-    """Own the engine, shared credential and optional dashboard query clients."""
+    """Own the engine, shared credential, HTTP session and optional dashboard query clients."""
 
     def __init__(self, settings: Settings) -> None:
         """Select paired local stores or Entra-authenticated Azure dependencies.
@@ -23,6 +24,7 @@ class Runtime:
         """
         self.credential: DefaultAzureCredential | None = None
         self.dashboard: DashboardService | None = None
+        self._http_session: aiohttp.ClientSession | None = None
         if settings.local_store_enabled:
             if settings.local_redis_url and settings.local_table_connection_string:
                 table = TableClient.from_connection_string(
@@ -65,6 +67,15 @@ class Runtime:
             if settings.azure_dashboard_id:
                 self.dashboard = DashboardService(settings, self.credential)
 
+    def http_session(self) -> aiohttp.ClientSession:
+        """Share one outbound HTTP session, created on first use inside the running loop.
+
+        Callers set per-request timeouts; the session is closed with the runtime.
+        """
+        if self._http_session is None:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
+
     async def close(self) -> None:
         """Drain best-effort jobs before closing the clients those jobs still need.
 
@@ -75,5 +86,7 @@ class Runtime:
             await self.dashboard.close()
         await self.engine.repository.close()
         await self.engine.counters.close()
+        if self._http_session:
+            await self._http_session.close()
         if self.credential:
             await self.credential.close()

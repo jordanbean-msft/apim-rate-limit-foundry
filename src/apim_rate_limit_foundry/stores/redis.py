@@ -42,6 +42,7 @@ class RedisCounters:
         self.client = client
         self.static_client = client is not None
         self.expires = 0
+        self.retired: list[Redis] = []
         self.connection_lock = asyncio.Lock()
 
     @classmethod
@@ -57,33 +58,57 @@ class RedisCounters:
 
     @observe_dependency("redis", "connection")
     async def connection(self) -> Redis:
-        """Serialize client creation and refresh Entra tokens five minutes before expiry.
+        """Return the live client, refreshing its Entra token five minutes before expiry.
 
-        Injected clients bypass credential refresh. Redis I/O uses two-second
-        socket/connect timeouts; credential and connection errors reach callers.
+        One caller renews the token; while it does, others keep using the still-valid
+        client instead of queueing, so commands are not serialized behind a lock. Only
+        a missing or fully expired client waits for the refresh. Injected clients
+        bypass credential refresh. Redis I/O uses two-second socket/connect timeouts;
+        credential and connection errors reach callers.
+        """
+        if self.static_client:
+            assert self.client is not None
+            return self.client
+        if self.client is None or (self._expiring() and not self._valid_while_refreshing()):
+            await self._refresh()
+        assert self.client is not None
+        return self.client
+
+    def _valid_while_refreshing(self) -> bool:
+        """Report whether another caller is renewing a token that has not yet expired."""
+        return self.connection_lock.locked() and time.time() < self.expires
+
+    def _expiring(self) -> bool:
+        """Report whether the token must be renewed before it can serve more commands."""
+        return time.time() >= self.expires - 300
+
+    async def _refresh(self) -> None:
+        """Swap in a client with a fresh token and defer closing the one it replaces.
+
+        In-flight commands may still be using the old client, so it is retired and
+        closed only at the next refresh (a full token lifetime later) or on close().
         """
         async with self.connection_lock:
-            if self.static_client:
-                assert self.client is not None
-                return self.client
-            if self.client is None or time.time() >= self.expires - 300:
-                if self.credential is None:
-                    raise ValueError("An Azure credential is required for cloud Redis")
-                token = await self.credential.get_token(self.settings.redis_scope)
-                if self.client:
-                    await self.client.aclose()
-                self.client = Redis(
-                    host=self.settings.redis_host,
-                    port=self.settings.redis_port,
-                    username=self.settings.redis_username,
-                    password=token.token,
-                    ssl=True,
-                    decode_responses=True,
-                    socket_timeout=2,
-                    socket_connect_timeout=2,
-                )
-                self.expires = token.expires_on
-            return self.client
+            if self.client is not None and not self._expiring():
+                return
+            if self.credential is None:
+                raise ValueError("An Azure credential is required for cloud Redis")
+            token = await self.credential.get_token(self.settings.redis_scope)
+            previous = self.client
+            self.client = Redis(
+                host=self.settings.redis_host,
+                port=self.settings.redis_port,
+                username=self.settings.redis_username,
+                password=token.token,
+                ssl=True,
+                decode_responses=True,
+                socket_timeout=2,
+                socket_connect_timeout=2,
+            )
+            self.expires = token.expires_on
+            stale, self.retired = self.retired, [previous] if previous else []
+            for client in stale:
+                await client.aclose()
 
     @observe_dependency("redis", "configuration")
     async def configuration(self) -> Record | None:
@@ -181,6 +206,7 @@ class RedisCounters:
         }
 
     async def close(self) -> None:
-        """Close the current Redis client; the shared credential remains caller-owned."""
-        if self.client:
-            await self.client.aclose()
+        """Close current and retired Redis clients; the shared credential remains caller-owned."""
+        for client in [*self.retired, *([self.client] if self.client else [])]:
+            await client.aclose()
+        self.retired = []

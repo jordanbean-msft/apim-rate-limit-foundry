@@ -41,6 +41,10 @@ For JSON backups, `uv run python scripts/archive_legacy_config.py --input export
 a SHA-256 digest. It does not connect to Azure or infer organizational ownership.
 Store the archive securely: it can contain tenant and principal identifiers.
 
+Usage history is keyed by Table partition `usage:<tenant>:<YYYY-MM>` so reports
+query one month directly. Records written under the earlier single `ledger`
+partition are not read or migrated by this sample.
+
 Current configuration can be seeded from `examples/` with `scripts/seed.py`;
 the script defaults to dry run and never migrates old financial history.
 

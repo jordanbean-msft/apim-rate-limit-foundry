@@ -98,7 +98,7 @@ async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
             if "tenant_id" in record:
                 record["tenant_id"] = tenant
     await cache.cache_configuration(snapshot)
-    engine.counters = cache
+    engine = Engine(engine.repository, cache, engine.settings)
     release = asyncio.Event()
     started = asyncio.Event()
 

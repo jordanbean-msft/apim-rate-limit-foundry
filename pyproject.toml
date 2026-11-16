@@ -52,15 +52,20 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
 asyncio_mode = "auto"
-testpaths = ["tests", "scripts/tests"]
+pythonpath = ["."]
+testpaths = ["tests", "scripts/tests", "apim/tests"]
 
 [tool.coverage.run]
-source = ["src/apim_rate_limit_foundry"]
-omit = ["tests/*"]
+include = [
+  "src/apim_rate_limit_foundry/*",
+  "function_app.py",
+  "stream/function_app.py",
+]
+omit = ["tests/*", ".venv/*"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 70
+fail_under = 95
 
 [tool.coverage.xml]
 output = "coverage.xml"

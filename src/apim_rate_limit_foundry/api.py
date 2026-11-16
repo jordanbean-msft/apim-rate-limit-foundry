@@ -13,20 +13,22 @@ import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, ServiceResponseTimeoutError
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from redis.exceptions import RedisError
 
 from apim_rate_limit_foundry.auth import Identity, authenticate
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import CONFIG_MODELS, Engine
 from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecordRequest
 from apim_rate_limit_foundry.reports.dashboard import DashboardPeriod, DashboardService
 from apim_rate_limit_foundry.request_telemetry import RequestTelemetryMiddleware
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict, Record
 from apim_rate_limit_foundry.telemetry import emit
+
+MONTH_PATTERN = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
 
 def create_app(
@@ -126,7 +128,8 @@ def create_app(
         HTTP 200 contains tile metadata, columns, rows, truncation and per-tile
         errors; unavailable tiles must not be interpreted as zero activity.
         Invalid query keys yield 400; unavailable dashboard configuration or a
-        failed overall fetch yields 503. Arbitrary KQL/workspace input is rejected.
+        failed overall fetch yields 503; a query or overall deadline timeout yields
+        504. Arbitrary KQL/workspace input is rejected.
         """
         actor.require("RateLimit.Admin")
         if (
@@ -139,7 +142,10 @@ def create_app(
             raise HTTPException(503, "Dashboard telemetry is not configured")
         try:
             return await service.fetch(period)
-        except (AzureError, ValueError, KeyError, TypeError, TimeoutError) as error:
+        except (TimeoutError, ServiceResponseTimeoutError) as error:
+            emit("dashboard_timeout", level=logging.WARNING, error_type=type(error).__name__)
+            raise HTTPException(504, "Dashboard telemetry timed out. Retry later.") from error
+        except (AzureError, ValueError, KeyError, TypeError) as error:
             emit("dashboard_unavailable", level=logging.WARNING, error_type=type(error).__name__)
             raise HTTPException(503, "Dashboard telemetry is unavailable. Retry later.") from error
 
@@ -177,10 +183,10 @@ def create_app(
         an empty list. Provider credentials and endpoints are never returned.
         """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        if "RateLimit.Admin" not in actor.roles:
-            assignment = await get_engine()._assignment(actor.tenant_id, actor.principal_id)
-            if assignment is None:
-                return []
+        if "RateLimit.Admin" not in actor.roles and not await get_engine().has_assignment(
+            actor.tenant_id, actor.principal_id
+        ):
+            return []
         return [
             {
                 "id": key,
@@ -195,11 +201,17 @@ def create_app(
         ]
 
     @app.get("/api/usage")
-    async def usage(actor: Auth) -> list[Record]:
-        """Return eventually persisted tenant usage, restricted to self for readers."""
+    async def usage(actor: Auth, month: str | None = None) -> list[Record]:
+        """Return eventually persisted tenant usage for ``month=YYYY-MM`` (default: current).
+
+        Restricted to the caller's own events for readers. Invalid month syntax
+        yields 400.
+        """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
+        if month is not None and MONTH_PATTERN.fullmatch(month) is None:
+            raise HTTPException(400, "Month must use YYYY-MM")
         return await get_engine().usage(
-            actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles
+            actor.tenant_id, actor.principal_id, "RateLimit.Admin" in actor.roles, month
         )
 
     @app.get("/api/budgets/status")
@@ -228,7 +240,7 @@ def create_app(
         Invalid month syntax yields 400; unsupported typed query values yield 422.
         """
         actor.require("RateLimit.Admin", "RateLimit.Reader")
-        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None:
+        if MONTH_PATTERN.fullmatch(month) is None:
             raise HTTPException(400, "Month must use YYYY-MM")
         principal = None if "RateLimit.Admin" in actor.roles else actor.principal_id
         rows = await get_engine().chargeback(actor.tenant_id, month, principal)
@@ -249,6 +261,8 @@ def create_app(
             "output_tokens",
             "cost_micro_usd",
             "unknown_requests",
+            "cache_write_tokens",
+            "cost_basis",
         ]
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -266,7 +280,7 @@ def create_app(
         Supported collections are budgets, organizations, assignments and prices;
         unknown collection names return 404. Record schemas match the PUT bodies.
         """
-        if collection not in ("budgets", "organizations", "assignments", "prices"):
+        if collection not in CONFIG_MODELS:
             raise HTTPException(404)
         actor.require("RateLimit.Admin")
         return [
@@ -287,7 +301,7 @@ def create_app(
         unlike admission/usage mirrors, this operation waits for its Table write.
         """
         actor.require("RateLimit.Admin")
-        if collection not in ("budgets", "organizations", "assignments", "prices"):
+        if collection not in CONFIG_MODELS:
             raise HTTPException(404)
         result = await get_engine().save_configuration(
             collection, record_id, body, actor.tenant_id, actor.principal_id
@@ -303,7 +317,7 @@ def create_app(
         mutation/audit completes before Redis invalidation; usage history is retained.
         """
         actor.require("RateLimit.Admin")
-        if collection not in ("budgets", "organizations", "assignments", "prices"):
+        if collection not in CONFIG_MODELS:
             raise HTTPException(404)
         await get_engine().delete_configuration(
             collection, record_id, actor.tenant_id, actor.principal_id

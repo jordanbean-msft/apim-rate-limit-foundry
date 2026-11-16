@@ -1,6 +1,7 @@
 """Separate HTTP-streaming Function host; Easy Auth, not function keys, authenticates it."""
 
 import logging
+from functools import cache
 
 import aiohttp
 import azure.functions as func
@@ -22,7 +23,12 @@ from apim_rate_limit_foundry.telemetry import emit, safe_id
 settings = Settings()
 configure_monitoring(settings)
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
-runtime: Runtime | None = None
+
+
+@cache
+def get_runtime() -> Runtime:
+    """Build the process-wide runtime once so connections are reused across invocations."""
+    return Runtime(settings)
 
 
 @app.route(route="api/stream", methods=[func.HttpMethod.POST])
@@ -40,7 +46,6 @@ async def stream_provider(req: Request) -> Response:
     unavailability 503. Final Redis accounting and best-effort Table/export jobs
     run as the stream terminates; headers cannot promise their future success.
     """
-    global runtime
     try:
         actor = authenticate(req, settings)
         actor.require("RateLimit.Gateway")
@@ -52,12 +57,10 @@ async def stream_provider(req: Request) -> Response:
             body.extend(chunk)
             if len(body) > settings.stream_max_body_bytes:
                 raise HTTPException(413, "Stream request exceeds bound")
-        if runtime is None:
-            # Reuse connections across invocations instead of constructing clients per chunk.
-            runtime = Runtime(settings)
+        runtime = get_runtime()
         if runtime.credential is None:
             raise HTTPException(503, "Managed identity is required for provider streams")
-        relay = StreamRelay(runtime.engine, runtime.credential, settings)
+        relay = StreamRelay(runtime.engine, runtime.credential, settings, runtime.http_session())
         status, content_type, chunks, provider_headers = await relay.open(
             actor.tenant_id, request_id, bytes(body)
         )

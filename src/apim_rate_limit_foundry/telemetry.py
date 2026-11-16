@@ -65,6 +65,9 @@ _FIELDS = frozenset(
         "input_tokens",
         "output_tokens",
         "cached_input_tokens",
+        "cache_write_tokens",
+        "cost_basis",
+        "out_of_bounds",
         "uncached_input_tokens",
         "total_tokens",
         "cache_hit",
@@ -121,6 +124,9 @@ _EVENTS = frozenset(
         "background_writes_abandoned",
         "idempotency_conflict",
         "dashboard_unavailable",
+        "dashboard_timeout",
+        "configuration_record_invalid",
+        "usage_out_of_bounds",
         "dashboard_query_failed",
         "metric_record_failed",
     }
@@ -361,41 +367,6 @@ def observe_dependency(
         async def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
             with dependency_span(dependency, operation):
                 return await function(*args, **kwargs)
-
-        return wrapped
-
-    return decorate
-
-
-def observe_operation(
-    operation: str,
-) -> Callable[[Callable[_P, Awaitable[_T]]], Callable[_P, Coroutine[Any, Any, _T]]]:
-    """Add domain start/completion/failure logs without creating a separate span."""
-
-    def decorate(function: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
-        @wraps(function)
-        async def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-            start = perf_counter()
-            emit("operation_started", operation=operation)
-            try:
-                result = await function(*args, **kwargs)
-            except Exception as error:
-                emit(
-                    "operation_failed",
-                    level=logging.ERROR,
-                    operation=operation,
-                    error_type=type(error).__name__,
-                    status="error",
-                    duration_ms=round((perf_counter() - start) * 1000, 3),
-                )
-                raise
-            emit(
-                "operation_completed",
-                operation=operation,
-                status="ok",
-                duration_ms=round((perf_counter() - start) * 1000, 3),
-            )
-            return result
 
         return wrapped
 

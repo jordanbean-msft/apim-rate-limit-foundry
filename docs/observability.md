@@ -136,6 +136,9 @@ span was not sampled. Export remains asynchronous and best effort.
 | `budget_decision` | Model/protocol, streaming flag, original request ID, allow/deny reason, denied budget IDs, pinned month/price and replay flag. Fresh decisions also include matching budget IDs/counts. Replays return the original decision without reevaluating budgets. |
 | `budget_evaluated` | One snapshot per applicable budget on a fresh decision: scope, wildcard/model, limit, spent, remaining, allow/deny and reset time. Opaque user and assigned hierarchy references permit investigation without raw Entra identities. |
 | `usage_recorded` | Newly Redis-accepted actual/unknown usage, immutable usage-v2 identifiers and pinned attribution. Actual logs add uncached input, total tokens and cache-hit flag. Acceptance is not confirmation of a Table write. |
+| `usage_out_of_bounds` | Provider-reported tokens exceeded the pinned model bounds. The real counts are still priced and the record is flagged `out_of_bounds`. |
+| `configuration_record_invalid` | A current-schema configuration record failed validation; the request fails closed instead of silently dropping the record. |
+| `dashboard_timeout` | A Log Analytics dashboard query exceeded `DASHBOARD_QUERY_TIMEOUT_SECONDS`; tiles show a timeout message. |
 | `usage_record_replayed` | Existing Redis accounting returned on retry or concurrent usage acceptance within the replay window. Does not emit another `usage_recorded` event or duplicate token/cost metrics. |
 | `dependency_completed`, `limiter_dependency_unavailable` | Table/Redis operation latency/outcome and dependency failures. Redis unavailability fails closed; background Table write failure does not reverse accepted usage. Dependency spans link to their enclosing request/operation. |
 | `usage_event_publish_failed`, `metric_record_failed` | Best-effort downstream publication or operational metric recording failed; these events do not establish Table persistence. |
@@ -158,7 +161,7 @@ spend must not be added together.
 | `limiter.budget.decisions` | Decision attempts by configured model, protocol, streaming, allowed and replayed. Filter out replayed attempts for unique admissions/blocks. |
 | `limiter.usage.records` | Accounting attempts by configured model, protocol, streaming, actual/unknown and replayed. |
 | `limiter.usage.tokens` | Only newly Redis-accepted actual tokens, split into disjoint `uncached_input`, `cached_input` and `output`. |
-| `limiter.usage.cost` | Only newly Redis-accepted actual cost, in **micro-USD**, not USD; not proof of Table persistence. |
+| `limiter.usage.cost` | Only newly Redis-accepted cost, in **micro-USD**, not USD, split by a `cost_basis` attribute (actual or `estimated_upper_bound`); not proof of Table persistence. |
 
 Usage token/cost dimensions are model, protocol, streaming and status, plus token
 type on the token counter. No request, correlation, user, tenant, subscription or

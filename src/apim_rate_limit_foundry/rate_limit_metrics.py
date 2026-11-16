@@ -70,22 +70,29 @@ class RateLimitMetrics:
 
     @_best_effort
     def usage(self, event: dict[str, Any], replayed: bool) -> None:
-        """Count all usage observations but add tokens/cost only for fresh actual usage.
+        """Count all usage observations; add tokens for fresh actual usage and cost for any charge.
 
-        Cached input is a subset of input, so it is removed from uncached tokens
-        before summing categories. Unknown usage is unpriced, not a zero-cost event.
+        Cached and cache-write input are subsets of input, so they are removed from
+        uncached tokens before summing categories. Unknown usage adds no tokens but
+        its estimated upper-bound cost is recorded under that ``cost_basis``.
         """
         attributes = {key: event[key] for key in ("model", "api_protocol", "streaming", "status")}
         self.records.add(1, {**attributes, "replayed": replayed})
-        if replayed or event["status"] != "actual":
+        if replayed:
             return
-        for kind, count in (
-            ("uncached_input", event["input_tokens"] - event["cached_input_tokens"]),
-            ("cached_input", event["cached_input_tokens"]),
-            ("output", event["output_tokens"]),
-        ):
-            self.tokens.add(count, {**attributes, "token_type": kind})
-        self.cost.add(event["cost_micro_usd"], attributes)
+        if event["status"] == "actual":
+            cached = event["cached_input_tokens"]
+            cache_write = event.get("cache_write_tokens") or 0
+            for kind, count in (
+                ("uncached_input", event["input_tokens"] - cached - cache_write),
+                ("cached_input", cached),
+                ("cache_write_input", cache_write),
+                ("output", event["output_tokens"]),
+            ):
+                self.tokens.add(count, {**attributes, "token_type": kind})
+        if event["cost_micro_usd"] is not None:
+            cost_basis = event.get("cost_basis") or "provider_usage"
+            self.cost.add(event["cost_micro_usd"], {**attributes, "cost_basis": cost_basis})
 
 
 rate_metrics = RateLimitMetrics(get_meter(__name__))

@@ -3,6 +3,7 @@
 from typing import Any, Protocol
 
 Record = dict[str, Any]
+LEDGER_PARTITION = "ledger"
 
 
 class Repository(Protocol):
@@ -10,22 +11,29 @@ class Repository(Protocol):
 
     Storage errors propagate. Reads may include tombstones, leaving visibility
     and tenant filtering to the engine. Record creation never replaces an ID.
+    Configuration and audit share the default ledger partition so they can change
+    atomically; high-volume history passes its own partition so reads can be scoped
+    by it instead of scanning the whole collection.
     """
 
-    async def get(self, collection: str, record_id: str) -> Record | None:
+    async def get(
+        self, collection: str, record_id: str, partition: str = LEDGER_PARTITION
+    ) -> Record | None:
         """Return the stored record (including tombstones), or None when absent."""
         ...
 
-    async def list(self, collection: str) -> list[Record]:
-        """Return collection records without application visibility filtering."""
+    async def list(self, collection: str, partition: str = LEDGER_PARTITION) -> list[Record]:
+        """Return one partition's collection records without visibility filtering."""
         ...
 
-    async def create(self, collection: str, record_id: str, record: Record) -> Record:
+    async def create(
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
+    ) -> Record:
         """Create once, returning the existing record if the ID already exists."""
         ...
 
     async def create_if_absent(
-        self, collection: str, record_id: str, record: Record
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
     ) -> tuple[Record, bool]:
         """Return (winning record, created), without comparing replay payloads."""
         ...
@@ -92,5 +100,11 @@ class CounterStore(Protocol):
 
 class Conflict(ValueError):  # noqa: N818
     """Signal an incompatible identity, replay or record state to the API boundary."""
+
+    pass
+
+
+class InvalidConfiguration(ValueError):  # noqa: N818
+    """Signal a stored current-schema configuration record that fails validation."""
 
     pass

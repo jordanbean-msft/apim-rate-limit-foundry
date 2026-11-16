@@ -276,6 +276,45 @@ describe('monthly budgets, assignments and price cards', () => {
   });
 });
 
+describe('optional cache-write price', () => {
+  const models = [
+    {
+      id: 'openai-chat:gpt-4o',
+      model: 'gpt-4o',
+      api_protocol: 'openai-chat' as const,
+      deployment_name: 'chat',
+      price_version: 'v1',
+      max_input_tokens: 1000,
+      max_output_tokens: 1000,
+    },
+  ];
+
+  it.each([
+    ['', undefined],
+    ['1.25', '1.25'],
+  ])('submits cache-write rate %j as %j', async (typed, expected) => {
+    const user = userEvent.setup();
+    const save = vi.fn().mockResolvedValue(undefined);
+    wrap(
+      <RecordEditor
+        collection="prices"
+        organizations={[]}
+        assignments={[]}
+        models={models}
+        onSave={save}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.type(screen.getByLabelText(/^ID/), 'rate-v1');
+    await user.selectOptions(screen.getByLabelText(/Model alias/), 'gpt-4o');
+    await user.type(screen.getByLabelText(/^Price version/), 'v1');
+    if (typed) await user.type(screen.getByLabelText(/Cache write/), typed);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0][0].cache_write_per_million).toBe(expected);
+  });
+});
+
 describe('authorization, MTD status and exports', () => {
   it('combines admin budget status and configuration in one searchable, editable grid', async () => {
     const user = userEvent.setup();

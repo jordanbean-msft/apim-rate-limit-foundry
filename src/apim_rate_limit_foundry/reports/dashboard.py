@@ -14,7 +14,7 @@ from typing import Literal
 
 from azure.core import AsyncPipelineClient
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.core.exceptions import AzureError, HttpResponseError
+from azure.core.exceptions import AzureError, HttpResponseError, ServiceResponseTimeoutError
 from azure.core.pipeline.policies import AsyncBearerTokenCredentialPolicy
 from azure.monitor.query import LogsBatchQuery, LogsQueryResult
 from azure.monitor.query.aio import LogsQueryClient
@@ -32,6 +32,8 @@ from apim_rate_limit_foundry.telemetry import (
 
 DashboardPeriod = Literal["1h", "24h", "7d"]
 MAX_ROWS = 1000
+UNAVAILABLE_MESSAGE = "Telemetry is unavailable or incomplete. Refresh to retry."
+TIMEOUT_MESSAGE = "Telemetry query timed out. Refresh to retry."
 
 
 class DashboardService:
@@ -64,7 +66,7 @@ class DashboardService:
             observed_credential,
             endpoint=settings.logs_endpoint,
             connection_timeout=5,
-            read_timeout=25,
+            read_timeout=settings.dashboard_query_timeout_seconds + 5,
             retry_total=0,
         )
 
@@ -149,7 +151,7 @@ class DashboardService:
                         self.settings.log_analytics_workspace_id,
                         query,
                         timespan=None,
-                        server_timeout=20,
+                        server_timeout=self.settings.dashboard_query_timeout_seconds,
                     )
                 )
             else:
@@ -158,26 +160,30 @@ class DashboardService:
                         self.settings.log_analytics_workspace_id,
                         query,
                         timespan=duration[period],
-                        server_timeout=20,
+                        server_timeout=self.settings.dashboard_query_timeout_seconds,
                     )
                 )
         with http_dependency_span("dashboard.query_batch", "log-analytics") as span:
             batch_error: AzureError | None = None
+            unavailable = UNAVAILABLE_MESSAGE
             try:
                 results = await self.logs.query_batch(requests)
             except AzureError as error:
                 batch_error = error
+                timed_out = isinstance(error, ServiceResponseTimeoutError)
+                if timed_out:
+                    unavailable = TIMEOUT_MESSAGE
                 emit(
                     "dashboard_query_failed",
                     level=logging.WARNING,
                     dependency="log-analytics",
                     operation="query_batch",
-                    status="unavailable",
+                    status="timeout" if timed_out else "unavailable",
                     error_type=type(error).__name__,
                     records=len(tiles),
                 )
                 results = []
-            output = self._render_results(tiles, results)
+            output = self._render_results(tiles, results, unavailable)
             if batch_error is not None:
                 dependency_error(span, batch_error)
             elif any(tile["error"] for tile in output):
@@ -188,7 +194,9 @@ class DashboardService:
                 span.set_status(StatusCode.OK)
             return output
 
-    def _render_results(self, tiles: list[Record], results: list) -> list[Record]:
+    def _render_results(
+        self, tiles: list[Record], results: list, unavailable: str = UNAVAILABLE_MESSAGE
+    ) -> list[Record]:
         """Map positional batch responses to bounded, query-free portal tile objects.
 
         Each object carries chart/axis metadata, typed columns, at most 1000 rows,
@@ -201,7 +209,7 @@ class DashboardService:
             item.update(columns=[], rows=[], error=None, truncated=False)
             result = results[index] if index < len(results) else None
             if not isinstance(result, LogsQueryResult):
-                item["error"] = "Telemetry is unavailable or incomplete. Refresh to retry."
+                item["error"] = unavailable
             else:
                 table = next(
                     (table for table in result.tables if table.name == "PrimaryResult"), None
@@ -229,14 +237,14 @@ class DashboardService:
         return output
 
     async def fetch(self, period: DashboardPeriod) -> list[Record]:
-        """Fetch current deployed tiles and their data within a 35-second deadline.
+        """Fetch current deployed tiles and their data within the query timeout plus 15 seconds.
 
         Read the configured ARM resource using the dashboard API version, validate
         metadata, then run batches of at most twenty queries concurrently. Preserve
         tile ordering while flattening batch results. No client-supplied workspace,
         dashboard ID or query can override the configured resource.
         """
-        async with asyncio.timeout(35):
+        async with asyncio.timeout(self.settings.dashboard_query_timeout_seconds + 15):
             request = self.arm.get(
                 f"{self.settings.management_endpoint}{self.settings.azure_dashboard_id}",
                 params={"api-version": "2020-09-01-preview"},

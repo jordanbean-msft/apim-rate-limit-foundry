@@ -147,6 +147,9 @@ export function ChargebackReport({ api, refreshKey }: { api: PortalApi; refreshK
                     {row.cost_micro_usd === null
                       ? 'Unknown — no actual usage reported'
                       : microUsd(row.cost_micro_usd)}
+                    {row.cost_basis === 'estimated_upper_bound' && (
+                      <div className="fine-print">Estimated upper bound</div>
+                    )}
                   </td>
                   <td>{row.unknown_requests.toLocaleString()}</td>
                 </tr>

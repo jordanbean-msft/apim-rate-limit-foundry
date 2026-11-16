@@ -8,7 +8,7 @@ import time
 from copy import deepcopy
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.stores.contracts import Record
+from apim_rate_limit_foundry.stores.contracts import LEDGER_PARTITION, Record
 
 
 class MemoryRepository:
@@ -16,7 +16,7 @@ class MemoryRepository:
 
     def __init__(self) -> None:
         """Initialize isolated records and an opt-in durable-failure injection flag."""
-        self.records: dict[tuple[str, str], Record] = {}
+        self.records: dict[tuple[str, str, str], Record] = {}
         self.fail = False
 
     def check(self) -> None:
@@ -24,27 +24,35 @@ class MemoryRepository:
         if self.fail:
             raise OSError("Injected durable storage failure")
 
-    async def get(self, collection: str, record_id: str) -> Record | None:
+    async def get(
+        self, collection: str, record_id: str, partition: str = LEDGER_PARTITION
+    ) -> Record | None:
         """Return a detached record, including tombstones, or None."""
         self.check()
-        return deepcopy(self.records.get((collection, record_id)))
+        return deepcopy(self.records.get((partition, collection, record_id)))
 
-    async def list(self, collection: str) -> list[Record]:
-        """Return detached collection records without filtering tombstones or tenants."""
+    async def list(self, collection: str, partition: str = LEDGER_PARTITION) -> list[Record]:
+        """Return detached partition records without filtering tombstones or tenants."""
         self.check()
-        return [deepcopy(value) for (name, _), value in self.records.items() if name == collection]
+        return [
+            deepcopy(value)
+            for (owner, name, _), value in self.records.items()
+            if owner == partition and name == collection
+        ]
 
-    async def create(self, collection: str, record_id: str, record: Record) -> Record:
+    async def create(
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
+    ) -> Record:
         """Return the create-once winner without replacing an existing payload."""
-        saved, _ = await self.create_if_absent(collection, record_id, record)
+        saved, _ = await self.create_if_absent(collection, record_id, record, partition)
         return saved
 
     async def create_if_absent(
-        self, collection: str, record_id: str, record: Record
+        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
     ) -> tuple[Record, bool]:
         """Save a detached first value and report whether this call created it."""
         self.check()
-        key = (collection, record_id)
+        key = (partition, collection, record_id)
         existing = self.records.get(key)
         if existing is not None:
             return deepcopy(existing), False
@@ -56,11 +64,11 @@ class MemoryRepository:
     ) -> None:
         """Replace/tombstone configuration and save its audit without an intervening await."""
         self.check()
-        key = (collection, record_id)
+        key = (LEDGER_PARTITION, collection, record_id)
         self.records[key] = (
             deepcopy(record) if record is not None else {"id": record_id, "_deleted": True}
         )
-        self.records["audit", audit["id"]] = deepcopy(audit)
+        self.records[LEDGER_PARTITION, "audit", audit["id"]] = deepcopy(audit)
 
     async def close(self) -> None:
         pass

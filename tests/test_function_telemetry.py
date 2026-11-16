@@ -46,7 +46,10 @@ from apim_rate_limit_foundry.telemetry import (
     outgoing_trace_headers,
     request_trace_context,
 )
+from tests.fakes import FakeHttpSession, persisted_usage
 
+# Host-wide default ceilings (131072 input, 32768 output) at the fixture's 2/4 USD per million.
+UNKNOWN_UPPER_BOUND = 131072 * 2 + 32768 * 4
 TRACE_ID = "12345678901234567890123456789012"
 TRACEPARENT = f"00-{TRACE_ID}-1234567890123456-01"
 GATEWAY = {
@@ -65,7 +68,12 @@ def capture(
     reader = InMemoryMetricReader()
     meter_provider = MeterProvider(metric_readers=[reader])
     metrics = RateLimitMetrics(meter_provider.get_meter("test"))
-    for module in ("engine", "request_telemetry", "streaming.request_telemetry"):
+    for module in (
+        "engine.admission_service",
+        "engine.usage_recorder",
+        "request_telemetry",
+        "streaming.request_telemetry",
+    ):
         monkeypatch.setattr(f"apim_rate_limit_foundry.{module}.rate_metrics", metrics)
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
@@ -136,7 +144,10 @@ async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
     assert all(r.request_id and r.api_protocol == "openai-chat" for r in decisions)
     budgets = [r for r in capture.logs if r.msg == "budget_evaluated"]
     assert len(budgets) == 9
-    assert all(r.spent_micro_usd == 190 and r.remaining_micro_usd == 0 for r in budgets[-3:])
+    assert all(
+        r.spent_micro_usd == 190 + UNKNOWN_UPPER_BOUND and r.remaining_micro_usd == 0
+        for r in budgets[-3:]
+    )
     assert {r.subject_type for r in budgets[-3:]} == {"user", "team", "department"}
     usage = [r for r in capture.logs if r.msg == "usage_recorded"]
     actual_log = next(r for r in usage if r.status == "actual")
@@ -147,8 +158,10 @@ async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
     assert len([r for r in capture.logs if r.msg == "usage_record_replayed"]) == 1
     assert {
         p.attributes["token_type"]: p.value for p in _points(capture, "limiter.usage.tokens")
-    } == {"uncached_input": 40, "cached_input": 60, "output": 20}
-    assert sum(p.value for p in _points(capture, "limiter.usage.cost")) == 190
+    } == {"uncached_input": 40, "cached_input": 60, "cache_write_input": 0, "output": 20}
+    assert {
+        p.attributes["cost_basis"]: p.value for p in _points(capture, "limiter.usage.cost")
+    } == {"provider_usage": 190, "estimated_upper_bound": UNKNOWN_UPPER_BOUND}
     assert sum(p.value for p in _points(capture, "limiter.usage.records")) == 3
     for name in ("limiter.budget.decisions", "limiter.usage.records", "limiter.usage.tokens"):
         assert all(
@@ -174,7 +187,8 @@ async def test_unknown_usage_is_explained_without_fabricated_tokens_or_cost(
     record = next(r for r in capture.logs if r.msg == "usage_recorded")
     assert record.status == "usage_unknown" and record.reason == reason
     assert not hasattr(record, "input_tokens")
-    assert not hasattr(record, "cost_micro_usd")
+    assert record.cost_micro_usd == UNKNOWN_UPPER_BOUND
+    assert record.cost_basis == "estimated_upper_bound"
     assert not _points(capture, "limiter.usage.tokens")
     assert "private-payload" not in repr([r.__dict__ for r in capture.logs])
 
@@ -196,7 +210,7 @@ async def test_conflicts_and_metric_failures_do_not_change_accounting(
     )
     assert result["replayed"] is False
     await engine.background.flush()
-    assert len(await engine.repository.list("usage_v2")) == 1
+    assert len(await persisted_usage(engine)) == 1
     assert any(r.msg == "metric_record_failed" for r in capture.logs)
     assert "private-export-error" not in repr([r.__dict__ for r in capture.logs])
 
@@ -362,35 +376,18 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
         content=SimpleNamespace(iter_chunked=chunks),
         close=Mock(),
     )
-    provider_session = SimpleNamespace(close=AsyncMock())
 
-    async def post(*args, **kwargs):
+    def post(url, **kwargs):
+        if url == settings.apim_usage_event_url:
+            wire["callback"] = kwargs["headers"]
+            wire["event"] = kwargs["json"]
+            return SimpleNamespace(status=204)
         wire["provider"] = kwargs["headers"]
         return provider_response
 
-    provider_session.post = post
-
-    class CallbackSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        def post(self, *args, **kwargs):
-            wire["callback"] = kwargs["headers"]
-            wire["event"] = kwargs["json"]
-            result = AsyncMock()
-            result.__aenter__.return_value = SimpleNamespace(status=204)
-            return result
-
     credential = AsyncMock()
     credential.get_token.return_value.token = "not-logged"
-    relay = StreamRelay(engine, credential, settings)
-    monkeypatch.setattr(
-        "apim_rate_limit_foundry.streaming.relay.aiohttp.ClientSession",
-        lambda **kwargs: provider_session,
-    )
+    relay = StreamRelay(engine, credential, settings, FakeHttpSession(post))
 
     @trace_stream_request
     async def handler(req: Request) -> StreamingResponse:
@@ -400,10 +397,6 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
             json.dumps(
                 {"model": "model-1", "stream": True, "stream_options": {"include_usage": True}}
             ).encode(),
-        )
-        monkeypatch.setattr(
-            "apim_rate_limit_foundry.streaming.relay.aiohttp.ClientSession",
-            lambda **kwargs: CallbackSession(),
         )
         return StreamingResponse(body, status_code=status, media_type=content_type, headers=headers)
 
@@ -428,7 +421,7 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
             await iterator.athrow(asyncio.CancelledError())
 
     await engine.background.flush()
-    records = await engine.repository.list("usage_v2")
+    records = await persisted_usage(engine)
     assert len(records) == 1 and records[0]["data"]["status"] == "actual"
     assert wire["event"]["request_id"] == "inference-1"
     assert "trace_id" not in wire["event"] and "traceparent" not in wire["event"]
@@ -464,7 +457,7 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
     assert len(terminal) == 1
     assert terminal[0].status == ("ok" if completion == "complete" else "error")
     assert correlation_id.get() == ""
-    provider_session.close.assert_awaited_once()
+    provider_response.close.assert_called_once()
 
 
 async def test_concurrent_requests_cannot_leak_trace_or_correlation_context(
@@ -716,7 +709,10 @@ async def test_redis_token_refresh_and_connections_are_correlated_without_creden
         counters.expires = 0
         assert await counters.connection() is second
     assert credential.get_token.await_count == 2
+    first.aclose.assert_not_awaited()
+    await counters.close()
     first.aclose.assert_awaited_once()
+    second.aclose.assert_awaited_once()
     spans = capture.spans.get_finished_spans()
     connections = [span for span in spans if span.name == "redis.connection"]
     tokens = [span for span in spans if span.name == "managed-identity.get_token"]
@@ -798,7 +794,6 @@ async def test_callback_acceptance_and_failures_keep_immutable_ids_private(
     engine: Engine,
     settings: Settings,
     capture: SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings.api_audience = "api://gateway"
     settings.apim_usage_event_url = (
@@ -808,15 +803,7 @@ async def test_callback_acceptance_and_failures_keep_immutable_ids_private(
     credential.get_token.return_value = AccessToken("private-detail", 9999999999)
     if outcome == "identity_error":
         credential.get_token.side_effect = AzureError("private-detail")
-    session = AsyncMock()
-    session.__aenter__.return_value = session
-    response = AsyncMock()
-    response.__aenter__.return_value = SimpleNamespace(status=outcome)
-    session.post = Mock(return_value=response)
-    monkeypatch.setattr(
-        "apim_rate_limit_foundry.streaming.relay.aiohttp.ClientSession",
-        Mock(return_value=session),
-    )
+    session = FakeHttpSession(lambda url, **kwargs: SimpleNamespace(status=outcome))
     event = {
         "event_id": "immutable-event",
         "request_id": "original-request",
@@ -824,7 +811,7 @@ async def test_callback_acceptance_and_failures_keep_immutable_ids_private(
         "private": "private-detail",
     }
     original = dict(event)
-    relay = StreamRelay(engine, credential, settings)
+    relay = StreamRelay(engine, credential, settings, session)
     token = correlation_id.set("different-correlation")
     try:
         with trace.get_tracer("test").start_as_current_span(
@@ -856,7 +843,7 @@ async def test_callback_acceptance_and_failures_keep_immutable_ids_private(
         if outcome == 503:
             assert callback.attributes["error.type"] == "http_503"
         assert publication.span_id == f"{callback.context.span_id:016x}"
-        assert session.post.call_args.kwargs["headers"]["X-Correlation-ID"] == "original-request"
+        assert session.calls[0][1]["headers"]["X-Correlation-ID"] == "original-request"
     _assert_private_dependencies(capture)
 
 

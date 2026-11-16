@@ -8,13 +8,29 @@ versioned pricing, actual usage and authorized reports.
 | --- | --- |
 | `api.py`, `auth.py` | FastAPI contracts and independent Gateway/Admin/Reader authorization |
 | `models/` | Typed organization, assignment, budget, price and usage contracts |
-| `engine.py`, `accounting.py` | Redis-recorded-spend decisions without reservations and replay-protected actual-cost accounting |
+| `engine/`, `accounting.py` | Redis-recorded-spend decisions without reservations and replay-protected actual-cost accounting; see the engine layout below |
 | `stores/` | Durable configuration/history and Redis operational configuration/context/replay/spend |
 | `background_writer.py` | Bounded process-local best-effort request/usage Table writer |
 | `streaming/` | Incremental OpenAI SSE relay, in-process terminal Redis accounting and background APIM callback |
 | `reports/` | Scoped spend/chargeback and Admin-only shared Azure dashboard queries |
 | `runtime.py`, `config.py` | Dependency injection, lifecycle and centralized settings |
 | `telemetry.py` | Allowlisted structured events without prompts or credentials |
+
+## Engine layout
+
+`engine/engine.py` is a thin `Engine` facade that wires one service per concern and
+delegates; callers (`api.py`, `runtime.py`, `streaming/relay.py`) keep using it.
+
+| Module | Responsibility |
+| --- | --- |
+| `configuration_reader.py` | Validated configuration listing and the coalesced shared cache snapshot |
+| `configuration_validator.py` | Assignment, organization and budget hierarchy rules |
+| `configuration_service.py` | Configuration save/delete with tenant checks, audit and cache invalidation |
+| `admission_resolver.py` | Assignment, organization, price, budget and model-bound lookups pinned at admission |
+| `admission_service.py` | Budget check, request-ID replay and admission telemetry |
+| `usage_recorder.py` | Pricing against admission snapshots, replay-safe Redis recording and the Table mirror |
+| `report_service.py`, `chargeback_aggregator.py` | Usage history, budget status and chargeback grouping |
+| `catalog.py`, `events.py`, `keys.py` | Collection/schema constants, the durable event envelope and stable identifiers |
 
 `function_app.py` and `stream/function_app.py` are separate Function entry points
 because the streaming host uses HTTP streaming extensions. Neither performs agent
@@ -26,7 +42,10 @@ budgets; eventual Table history drives reports. Warm admission never reads Table
 cold configuration misses may. Admin CRUD is durable-first and invalidates shared
 configuration. Actual usage increments all six hierarchy wildcard/model counters
 atomically with its replay marker. There is no global ledger lock or rebuild.
-Event Hub messages mean Redis accepted usage, not that Table persisted it. The
+Unknown usage is never free: the engine prices it at the upper bound pinned in the
+admission context (`accounting.price_usage`). Usage history is keyed by tenant and
+month so reports read one Table partition. Event Hub messages mean Redis accepted
+usage, not that Table persisted it. The
 background writer's bounded queue can drop/lose writes, so neither history nor
 events promise financial completeness. See [operations](operations.md) for TTLs
 and failure behavior.
