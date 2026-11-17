@@ -39,11 +39,9 @@ const periods: { value: DashboardPeriod; label: string }[] = [
 /** Load period-scoped query tiles with independent tile diagnostics and responsive chart sizing. */
 export function Dashboard({
   api,
-  fixtureMode,
   onAction,
 }: {
   api: PortalApi;
-  fixtureMode: boolean;
   onAction?: (action: InsightAction) => void;
 }) {
   const [period, setPeriod] = useState<DashboardPeriod>('24h');
@@ -137,12 +135,6 @@ export function Dashboard({
           </Button>
         </div>
       </div>
-      {fixtureMode && (
-        <p className="secondary">
-          Local fixture mode — these charts are illustrative fixtures, not live Azure dashboard
-          data.
-        </p>
-      )}
       {hasLoaded && !error && (
         <InsightsPanel
           insights={insights}

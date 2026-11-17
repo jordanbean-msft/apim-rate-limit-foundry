@@ -2,10 +2,13 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import demoFixtures from '../../demo/data/office.json';
+import seedModels from '../../examples/model-registry.json';
+import seedPrices from '../../examples/prices.json';
 import { Portal } from '../src/Portal';
 import { RecordEditor } from '../src/RecordEditor';
 import type { Assignment, Organization } from '../src/contracts';
-import { createDemoApi } from '../src/demo';
+import { createDemoApi } from './fixtures/api';
 import * as telemetry from '../src/telemetry';
 import { TelemetryBoundary } from '../src/TelemetryBoundary';
 
@@ -41,12 +44,124 @@ function wrap(children: React.ReactNode) {
   return render(<FluentProvider theme={webLightTheme}>{children}</FluentProvider>);
 }
 
+describe('Office-themed sample data', () => {
+  it('keeps portal and seed memberships, budget subjects, and model pricing consistent', async () => {
+    const api = createDemoApi(demoFixtures);
+    const organizations = await api.list('organizations');
+    const assignments = await api.list('assignments');
+    const budgets = await api.list('budgets');
+    const models = await api.list('models');
+    const prices = await api.list('prices');
+
+    expect(prices).toEqual(seedPrices);
+    expect(
+      budgets.map(({ id, subject_type, subject_id }) => ({ id, subject_type, subject_id })),
+    ).toEqual(
+      expect.arrayContaining(
+        demoFixtures.collections.budgets.map(({ id, subject_type, subject_id }) => ({
+          id,
+          subject_type,
+          subject_id,
+        })),
+      ),
+    );
+    for (const assignment of assignments) {
+      const team = organizations.find((organization) => organization.id === assignment.team_id);
+      expect(team).toMatchObject({
+        kind: 'team',
+        tenant_id: assignment.tenant_id,
+        department_id: assignment.department_id,
+      });
+      expect(organizations).toContainEqual(
+        expect.objectContaining({
+          id: assignment.department_id,
+          tenant_id: assignment.tenant_id,
+          kind: 'department',
+        }),
+      );
+    }
+    for (const budget of budgets) {
+      const subjects =
+        budget.subject_type === 'user'
+          ? assignments.map((assignment) => assignment.principal_id)
+          : organizations
+              .filter((organization) => organization.kind === budget.subject_type)
+              .map((organization) => organization.id);
+      expect(subjects).toContain(budget.subject_id);
+    }
+    for (const model of models) {
+      expect(seedModels).toMatchObject({
+        [model.id]: expect.objectContaining({
+          model: model.model,
+          api_protocol: model.api_protocol,
+          price_version: model.price_version,
+          max_input_tokens: model.max_input_tokens,
+          max_output_tokens: model.max_output_tokens,
+        }),
+      });
+      expect(prices).toContainEqual(
+        expect.objectContaining({
+          model: model.model,
+          version: model.price_version,
+        }),
+      );
+    }
+  });
+
+  it('keeps usage and chargeback dimensions and actual costs aligned with the price cards', async () => {
+    const api = createDemoApi(demoFixtures);
+    const usage = await api.list('usage');
+    const prices = await api.list('prices');
+    const report = await api.chargeback(usage[0].month, 'json');
+    expect(Array.isArray(report)).toBe(true);
+    if (!Array.isArray(report)) throw new Error('Expected JSON chargeback rows');
+
+    for (const record of usage) {
+      const row = report.find(
+        (candidate) => candidate.team_id === record.team_id && candidate.model === record.model,
+      );
+      expect(row).toMatchObject({
+        department_id: record.department_id,
+        business_unit: record.business_unit,
+        cost_center: record.cost_center,
+        user_ref: record.user_ref,
+        subscription_id: record.subscription_id,
+        input_tokens: record.input_tokens,
+        cached_input_tokens: record.cached_input_tokens,
+        output_tokens: record.output_tokens,
+        cost_micro_usd: record.cost_micro_usd,
+        unknown_requests: record.status === 'usage_unknown' ? 1 : 0,
+      });
+      if (record.status === 'actual') {
+        const price = prices.find(
+          (candidate) =>
+            candidate.model === record.model && candidate.version === record.price_version,
+        );
+        if (!price) throw new Error('Usage has no matching price card');
+        if (
+          record.input_tokens === null ||
+          record.cached_input_tokens === null ||
+          record.output_tokens === null
+        )
+          throw new Error('Actual usage requires token counts');
+        expect(record.cost_micro_usd).toBe(
+          Math.ceil(
+            (record.input_tokens - record.cached_input_tokens) * Number(price.input_per_million) +
+              record.cached_input_tokens * Number(price.cached_input_per_million) +
+              record.output_tokens * Number(price.output_per_million),
+          ),
+        );
+      }
+    }
+  });
+});
+
 describe('recommended actions', () => {
   it('turns a coverage gap into a prefilled path to create a budget', async () => {
     const user = userEvent.setup();
     wrap(
       <Portal
-        api={createDemoApi()}
+        api={createDemoApi(demoFixtures)}
         roles={['RateLimit.Admin']}
         identity="admin"
         cloud="commercial"
@@ -63,7 +178,7 @@ describe('recommended actions', () => {
   it('gives readers guidance without administrator-only actions', async () => {
     wrap(
       <Portal
-        api={createDemoApi()}
+        api={createDemoApi(demoFixtures)}
         roles={['RateLimit.Reader']}
         identity="reader"
         cloud="commercial"
@@ -79,7 +194,7 @@ describe('portal telemetry outcomes', () => {
   it('logs page, refresh and failed/successful delete results without identity or record data', async () => {
     const user = userEvent.setup();
     const log = vi.spyOn(telemetry, 'track');
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     vi.spyOn(api, 'remove').mockRejectedValueOnce(new Error('private-server-message'));
     wrap(
       <Portal
@@ -87,7 +202,6 @@ describe('portal telemetry outcomes', () => {
         roles={['RateLimit.Admin']}
         identity="private-identity"
         cloud="commercial"
-        demo
       />,
     );
     await waitFor(() =>
@@ -99,7 +213,7 @@ describe('portal telemetry outcomes', () => {
     );
     expect(log).toHaveBeenCalledWith('portal_page', { page: 'overview', outcome: 'success' });
     await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
-    await user.click(screen.getByRole('button', { name: 'Delete engineering-monthly' }));
+    await user.click(screen.getByRole('button', { name: 'Delete sales-department-monthly' }));
     await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('private-server-message');
     expect(log).toHaveBeenCalledWith('portal_configuration', {
@@ -118,7 +232,7 @@ describe('portal telemetry outcomes', () => {
       }),
     );
     expect(JSON.stringify(log.mock.calls)).not.toContain('private');
-    expect(JSON.stringify(log.mock.calls)).not.toContain('engineering-monthly');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('sales-department-monthly');
   });
 
   it('logs a cancelled editor without submitting form contents', async () => {
@@ -352,51 +466,56 @@ describe('optional cache-write price', () => {
 describe('authorization, MTD status and exports', () => {
   it('combines admin budget status and configuration in one searchable, editable grid', async () => {
     const user = userEvent.setup();
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     const status = await api.budgetStatus();
     vi.spyOn(api, 'budgetStatus').mockResolvedValue(status.reverse());
     wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
     await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
     const table = await screen.findByRole('table', { name: 'budgets' });
-    const name = await within(table).findByText('Engineering monthly');
+    const name = await within(table).findByText('Sales monthly');
     const row = within(name.closest('tr')!);
     expect(screen.getAllByRole('table')).toHaveLength(1);
     expect(row.getByText('$250.00')).toBeInTheDocument();
-    expect(row.getByText('$0.00318')).toBeInTheDocument();
-    expect(row.getByText('$249.99682')).toBeInTheDocument();
+    expect(row.getByText('$0.005424')).toBeInTheDocument();
+    expect(row.getByText('$249.994576')).toBeInTheDocument();
     expect(screen.getByText(/UTC calendar month/)).toBeInTheDocument();
     expect(row.getByText('Enabled')).toBeInTheDocument();
-    expect(row.getByRole('button', { name: 'Delete engineering-monthly' })).toBeInTheDocument();
+    expect(
+      row.getByRole('button', { name: 'Delete sales-department-monthly' }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();
-    await user.type(screen.getByRole('textbox', { name: 'Search budgets' }), 'engineering-monthly');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Search budgets' }),
+      'sales-department-monthly',
+    );
     expect(within(table).getAllByRole('row')).toHaveLength(2);
-    await user.click(row.getByRole('button', { name: 'Edit engineering-monthly' }));
-    expect(await screen.findByLabelText(/^Budget name/)).toHaveValue('Engineering monthly');
+    await user.click(row.getByRole('button', { name: 'Edit sales-department-monthly' }));
+    expect(await screen.findByLabelText(/^Budget name/)).toHaveValue('Sales monthly');
   });
 
   it('keeps disabled and missing-status budgets visible without inventing spending totals', async () => {
     const user = userEvent.setup();
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     const budgets = await api.list('budgets');
     await api.save('budgets', { ...budgets[0], enabled: false });
     vi.spyOn(api, 'budgetStatus').mockResolvedValue([]);
     wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
     await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
-    const disabled = await screen.findByText('Engineering monthly');
+    const disabled = await screen.findByText('Sales monthly');
     const disabledRow = within(disabled.closest('tr')!);
     expect(disabledRow.getByText('Disabled')).toBeInTheDocument();
     expect(disabledRow.getAllByText('Not applicable')).toHaveLength(2);
     expect(
-      disabledRow.getByRole('button', { name: 'Edit engineering-monthly' }),
+      disabledRow.getByRole('button', { name: 'Edit sales-department-monthly' }),
     ).toBeInTheDocument();
-    const enabled = screen.getByText('Platform monthly');
+    const enabled = screen.getByText('Scranton Sales monthly');
     expect(within(enabled.closest('tr')!).getAllByText('Unavailable')).toHaveLength(2);
     expect(screen.getAllByRole('table')).toHaveLength(1);
   });
 
   it('keeps admin budget actions available when the spend-status request fails', async () => {
     const user = userEvent.setup();
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     vi.spyOn(api, 'budgetStatus').mockRejectedValue(new Error('Spend status unavailable.'));
     wrap(<Portal api={api} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
     await user.click(screen.getByRole('button', { name: 'Monthly budgets' }));
@@ -404,7 +523,7 @@ describe('authorization, MTD status and exports', () => {
     const table = screen.getByRole('table', { name: 'budgets' });
     expect(within(table).getAllByText('Unavailable')).toHaveLength(6);
     expect(
-      within(table).getByRole('button', { name: 'Edit engineering-monthly' }),
+      within(table).getByRole('button', { name: 'Edit sales-department-monthly' }),
     ).toBeInTheDocument();
     expect(table).not.toHaveTextContent('$0.00');
     expect(screen.getAllByRole('table')).toHaveLength(1);
@@ -414,7 +533,7 @@ describe('authorization, MTD status and exports', () => {
     const user = userEvent.setup();
     wrap(
       <Portal
-        api={createDemoApi()}
+        api={createDemoApi(demoFixtures)}
         roles={['RateLimit.Reader']}
         identity="reader"
         cloud="commercial"
@@ -424,7 +543,7 @@ describe('authorization, MTD status and exports', () => {
     const table = await screen.findByRole('table', {
       name: 'Monthly actual spend and remaining budgets',
     });
-    expect(within(table).getByText(/Engineering monthly/)).toBeInTheDocument();
+    expect(within(table).getByText('Sales monthly')).toBeInTheDocument();
     expect(table).toHaveTextContent('$0.90');
     expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Create/ })).not.toBeInTheDocument();
@@ -434,7 +553,7 @@ describe('authorization, MTD status and exports', () => {
 
   it('renders unknown chargeback counts without inventing zero tokens or dollars', async () => {
     const user = userEvent.setup();
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     vi.spyOn(api, 'chargeback').mockResolvedValue([
       {
         business_unit: 'Product',
@@ -464,7 +583,7 @@ describe('authorization, MTD status and exports', () => {
 
   it('lets a reader view chargeback and export both contract formats', async () => {
     const user = userEvent.setup();
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     const chargeback = vi.spyOn(api, 'chargeback');
     const createUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:export');
     const revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
@@ -488,7 +607,7 @@ describe('authorization, MTD status and exports', () => {
   });
 
   it('does not request portal data for gateway-only identities', () => {
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     const list = vi.spyOn(api, 'list');
     wrap(<Portal api={api} roles={['RateLimit.Gateway']} identity="Gateway" cloud="commercial" />);
     expect(screen.getByRole('heading', { name: 'Access not assigned' })).toBeInTheDocument();
@@ -496,10 +615,10 @@ describe('authorization, MTD status and exports', () => {
   });
 
   it('keeps API failures visible without substituting demo records', async () => {
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     vi.spyOn(api, 'list').mockRejectedValue(new Error('API unavailable.'));
     wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="Reader" cloud="commercial" />);
     expect(await screen.findAllByText(/API unavailable/)).not.toHaveLength(0);
-    expect(screen.queryByText('gpt-4o')).not.toBeInTheDocument();
+    expect(screen.queryByText('gpt-5.4')).not.toBeInTheDocument();
   });
 });

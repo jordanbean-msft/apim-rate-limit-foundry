@@ -70,10 +70,10 @@ describe('public runtime configuration', () => {
     ).toThrow();
     expect(() => buildConfig({ ...valid, AZURE_CLOUD: '' })).toThrow();
   });
-  it('requires explicit demo opt-in and never falls back from invalid real configuration', () => {
+  it('requires real identity and API settings even when a retired demo flag is present', () => {
     expect(() => buildConfig({})).toThrow();
-    expect(buildConfig({ WEB_DEMO_MODE: 'true' }).demoMode).toBe(true);
-    expect(() => buildConfig({ WEB_DEMO_MODE: 'yes' })).toThrow();
+    expect(() => buildConfig({ WEB_DEMO_MODE: 'true' })).toThrow();
+    expect(buildConfig({ ...valid, WEB_DEMO_MODE: 'true' })).not.toHaveProperty('demoMode');
     expect(() => buildConfig({ ...valid, WEB_CLIENT_ID: '' })).toThrow();
   });
   it('publishes the native logout mode without exposing its federation setting', () => {

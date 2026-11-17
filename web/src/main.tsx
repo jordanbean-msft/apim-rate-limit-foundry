@@ -5,13 +5,11 @@ import { Button, FluentProvider, Spinner, webLightTheme } from '@fluentui/react-
 import { createMsal } from './auth';
 import { CloudSession } from './CloudSession';
 import type { RuntimeConfig } from './contracts';
-import { createDemoApi } from './demo';
-import { Portal } from './Portal';
 import { initializeTelemetry, track } from './telemetry';
 import { TelemetryBoundary } from './TelemetryBoundary';
 import './styles.css';
 
-/** Load public runtime settings before enabling either explicit demo mode or Entra sign-in. */
+/** Load public runtime settings before enabling Entra sign-in. */
 function Bootstrap() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [error, setError] = useState('');
@@ -20,37 +18,36 @@ function Bootstrap() {
   useEffect(() => {
     // Retries/unmounts invalidate prior completions without cancelling the configuration fetch.
     let active = true;
+    setConfig(null);
+    setError('');
     fetch('/config.json', { cache: 'no-store', credentials: 'same-origin' })
       .then(async (response) => {
         if (!response.ok) throw new Error('Configuration not available');
         const value = (await response.json()) as RuntimeConfig;
         if (
           !['commercial', 'government'].includes(value.cloud) ||
-          typeof value.demoMode !== 'boolean' ||
           typeof value.apiProxyEnabled !== 'boolean'
         ) {
           throw new Error('Invalid public configuration');
         }
-        if (active) {
-          initializeTelemetry(value);
-          track('portal_bootstrap', { action: 'configuration', outcome: 'success' });
-          setConfig(value);
-          setError('');
-        }
+        if (!active) return;
+        initializeTelemetry(value);
+        track('portal_bootstrap', { action: 'configuration', outcome: 'success' });
+        setConfig(value);
+        setError('');
       })
       .catch(() => {
         track('portal_bootstrap', { action: 'configuration', outcome: 'failure' });
         if (active)
           setError(
-            'The portal is not configured. Set the required web runtime settings and restart the server. No demo fallback was enabled.',
+            'The portal is not configured. Set the required web runtime settings and restart the server.',
           );
       });
     return () => {
       active = false;
     };
   }, [attempt]);
-  // Never initialize authentication against missing settings or silently fall back to demo data.
-  const msal = useMemo(() => (config && !config.demoMode ? createMsal(config) : null), [config]);
+  const msal = useMemo(() => (config ? createMsal(config) : null), [config]);
   useEffect(() => {
     if (!msal) {
       setMsalReady(false);
@@ -75,7 +72,6 @@ function Bootstrap() {
       active = false;
     };
   }, [msal]);
-  const demo = useMemo(() => createDemoApi(), []);
   if (error)
     return (
       <main className="welcome">
@@ -91,16 +87,6 @@ function Bootstrap() {
       <main className="welcome">
         <Spinner label="Loading secure configuration…" />
       </main>
-    );
-  if (config.demoMode)
-    return (
-      <Portal
-        api={demo}
-        roles={['RateLimit.Admin', 'RateLimit.Reader']}
-        identity="Local demo administrator"
-        cloud={config.cloud}
-        demo
-      />
     );
   if (!msalReady)
     return (

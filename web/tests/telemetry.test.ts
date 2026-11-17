@@ -40,7 +40,6 @@ const config: RuntimeConfig = {
   apiScope: '',
   apiBaseUrl: '',
   apiProxyEnabled: false,
-  demoMode: true,
   appInsights: {
     connectionString:
       'InstrumentationKey=11111111-1111-1111-1111-111111111111;IngestionEndpoint=https://dc.applicationinsights.us/',

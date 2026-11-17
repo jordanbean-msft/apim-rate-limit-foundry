@@ -172,7 +172,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
         event: 'portal_started',
         port,
         cloud: config.cloud,
-        demoMode: config.demoMode,
         browserTelemetry: Boolean(config.appInsights),
       });
     });

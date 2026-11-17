@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Dashboard } from '../src/components/Dashboard';
 import { Portal } from '../src/Portal';
 import type { DashboardTile, PortalApi } from '../src/contracts';
-import { createDemoApi } from '../src/demo';
+import { createDemoApi } from './fixtures/api';
+import demoFixtures from '../../demo/data/office.json';
 
 const tableTile = (title: string, rows: DashboardTile['rows'] = [['ok']]): DashboardTile => ({
   id: title,
@@ -90,7 +91,6 @@ describe('Azure dashboard page', () => {
         api={dashboardApi(
           vi.fn().mockResolvedValue([tableTile('Supporting evidence'), tokens, lifecycle, cache]),
         )}
-        fixtureMode={false}
       />,
     );
     const chart = await screen.findByRole('img', {
@@ -115,7 +115,7 @@ describe('Azure dashboard page', () => {
 
   it('shows loading, selectable periods, and accessible data details', async () => {
     const dashboard = vi.fn().mockResolvedValue([tableTile('Native dashboard table')]);
-    wrap(<Dashboard api={dashboardApi(dashboard)} fixtureMode={false} />);
+    wrap(<Dashboard api={dashboardApi(dashboard)} />);
     expect(screen.getByRole('status')).toHaveTextContent('Loading Azure dashboard tiles');
     expect(await screen.findByText('Native dashboard table')).toBeInTheDocument();
     expect(dashboard).toHaveBeenCalledWith('24h');
@@ -130,7 +130,7 @@ describe('Azure dashboard page', () => {
       .fn()
       .mockRejectedValueOnce(new Error('Service unavailable (HTTP 503).'))
       .mockResolvedValueOnce([]);
-    wrap(<Dashboard api={dashboardApi(dashboard)} fixtureMode={false} />);
+    wrap(<Dashboard api={dashboardApi(dashboard)} />);
     expect(await screen.findByText(/Service unavailable \(HTTP 503\)/)).toBeInTheDocument();
     expect(screen.queryByText(/fixture/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }));
@@ -148,7 +148,7 @@ describe('Azure dashboard page', () => {
           }),
       )
       .mockResolvedValueOnce([tableTile('Newest range')]);
-    wrap(<Dashboard api={dashboardApi(dashboard)} fixtureMode={false} />);
+    wrap(<Dashboard api={dashboardApi(dashboard)} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'Dashboard time range' }), {
       target: { value: '7d' },
     });
@@ -166,10 +166,7 @@ describe('Azure dashboard page', () => {
       tableTile('Empty tile', []),
       { ...tableTile('Bounded tile'), truncated: true },
     ];
-    wrap(<Dashboard api={dashboardApi(vi.fn().mockResolvedValue(tiles))} fixtureMode />);
-    expect(
-      screen.getByText(/Local fixture mode — these charts are illustrative fixtures/),
-    ).toBeInTheDocument();
+    wrap(<Dashboard api={dashboardApi(vi.fn().mockResolvedValue(tiles))} />);
     expect(await screen.findByText('Query failed safely.')).toBeInTheDocument();
     expect(screen.getByText('No data for this time range.')).toBeInTheDocument();
     expect(
@@ -178,12 +175,12 @@ describe('Azure dashboard page', () => {
   });
 
   it('keeps dashboard navigation administrator-only and never requests it for readers', async () => {
-    const api = createDemoApi();
+    const api = createDemoApi(demoFixtures);
     const dashboard = vi.spyOn(api, 'dashboard');
     wrap(<Portal api={api} roles={['RateLimit.Reader']} identity="reader" cloud="commercial" />);
     expect(screen.queryByRole('button', { name: 'Azure dashboard' })).not.toBeInTheDocument();
     expect(dashboard).not.toHaveBeenCalled();
-    const adminApi = createDemoApi();
+    const adminApi = createDemoApi(demoFixtures);
     const adminDashboard = vi.spyOn(adminApi, 'dashboard').mockResolvedValue([]);
     wrap(<Portal api={adminApi} roles={['RateLimit.Admin']} identity="admin" cloud="commercial" />);
     fireEvent.click(screen.getAllByRole('button', { name: 'Azure dashboard' })[0]);

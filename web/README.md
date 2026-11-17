@@ -1,4 +1,9 @@
-# AI Budget Control portal
+---
+title: AI Budget Control portal
+description: Configure and run the authenticated Fluent UI gateway administration portal.
+---
+
+## Overview
 
 Accessible React + TypeScript + Fluent UI v9 portal, hosted by a framework-free Node
 server. Use Node **24 LTS**.
@@ -33,7 +38,6 @@ or export settings in the shell for both servers. Never place secrets in Vite va
 | `API_SCOPE`                             | Full delegated scope under that audience, e.g. `api://<backend-app-id>/access_as_user`                                                                                                                              |
 | `API_BASE_URL`                          | HTTPS APIM `/portal` upstream in proxy mode; direct API collection root is used only for non-proxy local development                                                                                                |
 | `PORT`                                  | Optional Node listening port; default `8080`                                                                                                                                                                        |
-| `WEB_DEMO_MODE`                         | Optional; defaults off. Only exact `true` enables an in-memory local demo                                                                                                                                           |
 | `WEB_PLATFORM_AUTH_ENABLED`             | Terraform sets `true` for App Service; logout clears its session after MSAL sign-out. Defaults off for local development.                                                                                           |
 | `WEB_API_PROXY_ENABLED`                 | Terraform sets `true` in production. Enables the same-origin `/api/*` proxy; `false` retains direct local development.                                                                                              |
 | `PORTAL_APIM_SUBSCRIPTION_KEY`          | Server-only Key Vault reference for the APIM product key; required by the proxy and never sent to or exposed in the browser.                                                                                        |
@@ -85,7 +89,7 @@ The Web platform enables ID-token issuance for App Service's native hybrid
 `code id_token` response; implicit **access-token** issuance remains disabled.
 MSAL still uses authorization code + PKCE for delegated **API access tokens**.
 The App Service sign-in cookie does not grant API roles or replace these tokens.
-Sign-out clears MSAL/Entra and then the native App Service session. Local Vite/demo
+Sign-out clears MSAL/Entra and then the native App Service session. Local Vite
 development does not depend on App Service middleware.
 
 ### Remembered sign-in and SSO
@@ -118,18 +122,10 @@ held in a revocable in-memory blob URL; denied consent, missing photos and Graph
 errors fall back to initials. Profile names and photo data are never sent to
 telemetry or persisted by the portal.
 
-For intentional local demonstration:
-
-```bash
-WEB_DEMO_MODE=true npm run dev
-# or after npm run build:
-WEB_DEMO_MODE=true npm start
-```
-
-The prominent demo banner remains visible on every screen. Fixtures are not live
-Azure prices and changes disappear on reload. Auth/config/API failure **never**
-silently switches to demo mode. Never enable the demo flag on a shared production
-deployment.
+The portal always uses authenticated API access. There is no browser-only demo
+mode or bundled fixture dataset. Optional fictional records are deployed to
+isolated backend stores with the separate [demo loader](../demo/README.md).
+The retired `WEB_DEMO_MODE` setting no longer bypasses identity configuration.
 
 ## Screens and server contracts
 
@@ -158,7 +154,7 @@ deployed dashboard. Admin-only configuration mutations use `PUT
 `DELETE /{budgets|organizations|assignments|prices}/{id}`. Reader sessions do
 not load management collections or send writes.
 
-The Azure dashboard is visible only to RateLimit.Admin because it contains workspace-wide telemetry. It requests `/dashboard?period=1h|24h|7d`; production maps this through the same-origin proxy, while direct local development uses the configured API root. The browser never sends KQL or workspace identifiers. The tile titles, axes, chart definitions and tabular values come from the deployed Azure dashboard. Per-tile query failures, empty results and server truncation are shown independently; request-level failures remain retryable. Each chart exposes a detail table. In local demo mode the dashboard uses clearly labeled fixtures and does not represent live Azure data.
+The Azure dashboard is visible only to RateLimit.Admin because it contains workspace-wide telemetry. It requests `/dashboard?period=1h|24h|7d`; production maps this through the same-origin proxy, while direct local development uses the configured API root. The browser never sends KQL or workspace identifiers. The tile titles, axes, chart definitions and tabular values come from the deployed Azure dashboard. Per-tile query failures, empty results and server truncation are shown independently; request-level failures remain retryable. Each chart exposes a detail table. Loading fictional backend records does not fabricate dashboard telemetry.
 
 Reader requests contain no caller-selected identity or hierarchy filter; the
 backend derives the signed-in user's access scope from explicit assignments.
@@ -196,7 +192,7 @@ deployment-managed. Refresh is manual; there is no websocket, automatic polling,
 pagination or live price feed.
 
 The portal does not execute inference, configure gateway capabilities, or establish
-Government model availability. Its demo metadata and local unit tests do not prove
+Government model availability. Its model metadata and local unit tests do not prove
 live cloud access or interactive sign-in. Source navigation and extension boundaries
 are in the [code guide](../docs/code-guide.md).
 
@@ -256,7 +252,7 @@ unknown methods), safe `route` (`runtime_config|page|asset|api_proxy|other`), nu
 plus fixed `api_*` categories). The same correlation ID is returned to the browser,
 logged and forwarded to APIM. With export configured, logs also include random
 W3C `traceId` and `spanId`.
-`portal_started` includes port, cloud, demoMode and browserTelemetry.
+`portal_started` includes port, cloud and browserTelemetry.
 `portal_server_error` includes only `startup_configuration|listen_error`.
 The same allowlisted outcomes are exported as correlated `AppTraces`, alongside
 one manual `AppRequests` span per Node request and one `AppDependencies` span per
@@ -343,9 +339,8 @@ MSAL operations. Initial config failure cannot be sent from a fresh browser
 because there is no validated destination yet; use the Node/hosting outcome.
 StrictMode development can repeat lifecycle events. Page events count rendered
 navigation, not audit-authoritative writes. Configuration events and API events
-are separate results, not additive mutation counts. Demo mode remains explicitly
-opt-in; if telemetry is configured for a demo, its navigation/configuration/refresh
-events are exported, but the in-memory fixture API produces no HTTP API events.
+are separate results, not additive mutation counts. Loading fictional backend
+records does not bypass authentication or change the portal's telemetry handling.
 
 ## Authenticated GUI verification (operator harness only)
 

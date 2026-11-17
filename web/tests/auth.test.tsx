@@ -39,7 +39,6 @@ const config: RuntimeConfig = {
   apiBaseUrl: '/api',
   apiProxyEnabled: true,
   platformAuthEnabled: true,
-  demoMode: false,
 };
 const account = {
   homeAccountId: 'remembered',

@@ -52,7 +52,7 @@ export function safeLog(record) {
     if (Number.isFinite(record[key]) && record[key] >= 0 && record[key] <= max)
       safe[key] = Math.round(record[key]);
   }
-  for (const key of ['demoMode', 'browserTelemetry']) {
+  for (const key of ['browserTelemetry']) {
     if (typeof record[key] === 'boolean') safe[key] = record[key];
   }
   if (typeof record.correlationId === 'string' && uuid.test(record.correlationId))

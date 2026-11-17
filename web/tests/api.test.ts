@@ -16,7 +16,6 @@ describe('authenticated API', () => {
         apiScope: 'api://api/access_as_user',
         apiBaseUrl: 'https://gateway.example.us/portal',
         apiProxyEnabled: false,
-        demoMode: false,
         platformAuthEnabled,
       });
       expect(instance.getConfiguration().auth.postLogoutRedirectUri).toBe(

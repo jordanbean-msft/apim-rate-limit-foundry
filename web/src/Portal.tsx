@@ -231,7 +231,6 @@ export function Portal({
   roles,
   identity,
   cloud,
-  demo = false,
   profileGreeting,
   onSignOut,
 }: {
@@ -239,7 +238,6 @@ export function Portal({
   roles: Role[];
   identity: string;
   cloud: string;
-  demo?: boolean;
   profileGreeting?: React.ReactNode;
   onSignOut?: () => void;
 }) {
@@ -520,15 +518,6 @@ export function Portal({
           </div>
         </header>
         <main id="main" tabIndex={-1}>
-          {demo && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                <strong>Local demo — fixture data only.</strong> No authentication or Azure calls.
-                Edits live only in this browser session and reset on reload; prices are
-                illustrative.
-              </MessageBarBody>
-            </MessageBar>
-          )}
           {!canRead ? (
             <section className="surface empty-state">
               <ShieldCheckmarkRegular />
@@ -603,7 +592,7 @@ export function Portal({
                   />
                 )}
               {page === 'dashboard' ? (
-                <Dashboard api={api} fixtureMode={demo} onAction={runInsightAction} />
+                <Dashboard api={api} onAction={runInsightAction} />
               ) : page === 'overview' ? (
                 <Overview
                   status={status}

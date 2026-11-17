@@ -154,7 +154,6 @@ export interface RuntimeConfig {
   apiScope: string;
   apiBaseUrl: string;
   apiProxyEnabled: boolean;
-  demoMode: boolean;
   platformAuthEnabled?: boolean;
   appInsights?: { connectionString: string; ingestionOrigin: string };
 }
@@ -175,7 +174,7 @@ export interface DashboardTile {
   truncated: boolean;
 }
 
-/** Authenticated API boundary shared by live HTTP access and explicitly selected local fixtures. */
+/** Authenticated API boundary consumed by portal views. */
 export interface PortalApi {
   dashboard(period: DashboardPeriod): Promise<DashboardTile[]>;
   list<K extends Collection>(collection: K): Promise<Collections[K][]>;
