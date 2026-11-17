@@ -9,9 +9,10 @@ from copy import deepcopy
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.stores.contracts import LEDGER_PARTITION, Record
+from apim_rate_limit_foundry.stores.create_once import CreateOnceRepository
 
 
-class MemoryRepository:
+class MemoryRepository(CreateOnceRepository):
     """Emulate create-once records and audited replacements without external I/O."""
 
     def __init__(self) -> None:
@@ -39,13 +40,6 @@ class MemoryRepository:
             for (owner, name, _), value in self.records.items()
             if owner == partition and name == collection
         ]
-
-    async def create(
-        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
-    ) -> Record:
-        """Return the create-once winner without replacing an existing payload."""
-        saved, _ = await self.create_if_absent(collection, record_id, record, partition)
-        return saved
 
     async def create_if_absent(
         self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
@@ -105,15 +99,17 @@ class MemoryCounters:
     async def cache_configuration(self, snapshot: Record) -> None:
         """Replace the snapshot with a deep copy and a fresh monotonic expiry."""
         self._check()
-        self.snapshot = (
-            time.monotonic() + self.settings.configuration_cache_seconds,
-            deepcopy(snapshot),
-        )
+        self.snapshot = self._expiring(self.settings.configuration_cache_seconds, snapshot)
 
     async def invalidate_configuration(self) -> None:
         """Discard the snapshot so the next engine check reloads durable configuration."""
         self._check()
         self.snapshot = None
+
+    @staticmethod
+    def _expiring(seconds: int, record: Record) -> tuple[float, Record]:
+        """Pair a detached copy with its monotonic expiry."""
+        return time.monotonic() + seconds, deepcopy(record)
 
     def _get(self, records: dict[str, tuple[float, Record]], key: str) -> Record | None:
         """Read a detached, unexpired replay value or return None."""
@@ -132,10 +128,7 @@ class MemoryCounters:
         prior = await self.request(request_id)
         if prior is not None:
             return prior, False
-        self.requests[request_id] = (
-            time.monotonic() + self.settings.request_cache_seconds,
-            deepcopy(record),
-        )
+        self.requests[request_id] = self._expiring(self.settings.request_cache_seconds, record)
         return deepcopy(record), True
 
     async def usage(self, request_id: str) -> Record | None:
@@ -156,10 +149,7 @@ class MemoryCounters:
         if isinstance(amount, int):
             for key in data.get("counter_keys", []):
                 self.counts[key] = self.counts.get(key, 0) + amount
-        self.usages[request_id] = (
-            time.monotonic() + self.settings.request_cache_seconds,
-            deepcopy(record),
-        )
+        self.usages[request_id] = self._expiring(self.settings.request_cache_seconds, record)
         return deepcopy(record), True
 
     async def totals(self, month: str, keys: list[str]) -> dict[str, int]:

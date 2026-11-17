@@ -1,5 +1,7 @@
 """Lua invoked by RedisCounters; all script keys must share the same cluster slot."""
 
+import hashlib
+
 RECORD_USAGE = """
 -- KEYS: usage replay key, monthly spend hash.
 -- ARGV: record JSON, replay TTL, spend TTL, integer micro-USD, field-name JSON.
@@ -22,3 +24,5 @@ end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 return {ARGV[1], 1}
 """
+
+RECORD_USAGE_SHA = hashlib.sha1(RECORD_USAGE.encode(), usedforsecurity=False).hexdigest()

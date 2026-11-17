@@ -11,12 +11,13 @@ import time
 
 from azure.identity.aio import DefaultAzureCredential
 from redis.asyncio import Redis
+from redis.exceptions import NoScriptError
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.observed_credential import ObservedCredential
 from apim_rate_limit_foundry.stores.contracts import Record
-from apim_rate_limit_foundry.stores.scripts import RECORD_USAGE
-from apim_rate_limit_foundry.telemetry import observe_dependency
+from apim_rate_limit_foundry.stores.scripts import RECORD_USAGE, RECORD_USAGE_SHA
+from apim_rate_limit_foundry.telemetry import dependency_span, observe_dependency
 
 
 class RedisCounters:
@@ -45,6 +46,28 @@ class RedisCounters:
         self.retired: list[Redis] = []
         self.connection_lock = asyncio.Lock()
 
+    @staticmethod
+    def _request_key(request_id: str) -> str:
+        return f"{{limiter}}:request:v3:{request_id}"
+
+    @staticmethod
+    def _usage_key(request_id: str) -> str:
+        return f"{{limiter}}:usage:v3:{request_id}"
+
+    @staticmethod
+    def _spend_key(month: str) -> str:
+        return f"{{limiter}}:spend:v3:{month}"
+
+    @staticmethod
+    def _decode(value: str | bytes | None) -> Record | None:
+        """Deserialize a stored JSON record, treating a missing key as None."""
+        return json.loads(value) if value is not None else None
+
+    async def _read(self, key: str) -> Record | None:
+        """Read and deserialize one JSON value, without extending its expiry."""
+        client = await self.connection()
+        return self._decode(await client.get(key))
+
     @classmethod
     def from_url(cls, settings: Settings, url: str) -> "RedisCounters":
         """Build a URL-based test/local client only when explicit local mode permits it."""
@@ -56,7 +79,6 @@ class RedisCounters:
             Redis.from_url(url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2),
         )
 
-    @observe_dependency("redis", "connection")
     async def connection(self) -> Redis:
         """Return the live client, refreshing its Entra token five minutes before expiry.
 
@@ -64,7 +86,9 @@ class RedisCounters:
         client instead of queueing, so commands are not serialized behind a lock. Only
         a missing or fully expired client waits for the refresh. Injected clients
         bypass credential refresh. Redis I/O uses two-second socket/connect timeouts;
-        credential and connection errors reach callers.
+        credential and connection errors reach callers. Only an actual refresh is
+        traced: the common path is an in-memory check, and each Redis command
+        already has its own dependency span.
         """
         if self.static_client:
             assert self.client is not None
@@ -93,30 +117,30 @@ class RedisCounters:
                 return
             if self.credential is None:
                 raise ValueError("An Azure credential is required for cloud Redis")
-            token = await self.credential.get_token(self.settings.redis_scope)
-            previous = self.client
-            self.client = Redis(
-                host=self.settings.redis_host,
-                port=self.settings.redis_port,
-                username=self.settings.redis_username,
-                password=token.token,
-                ssl=True,
-                decode_responses=True,
-                socket_timeout=2,
-                socket_connect_timeout=2,
-            )
-            self.expires = token.expires_on
-            stale, self.retired = self.retired, [previous] if previous else []
-            for client in stale:
-                await client.aclose()
+            with dependency_span("redis", "connection"):
+                token = await self.credential.get_token(self.settings.redis_scope)
+                previous = self.client
+                self.client = Redis(
+                    host=self.settings.redis_host,
+                    port=self.settings.redis_port,
+                    username=self.settings.redis_username,
+                    password=token.token,
+                    ssl=True,
+                    decode_responses=True,
+                    socket_timeout=2,
+                    socket_connect_timeout=2,
+                )
+                self.expires = token.expires_on
+                stale, self.retired = self.retired, [previous] if previous else []
+                for client in stale:
+                    await client.aclose()
 
     @observe_dependency("redis", "configuration")
     async def configuration(self) -> Record | None:
         """Deserialize the shared configuration snapshot, returning None on a cache miss."""
-        client = await self.connection()
-        value = await client.get(self.configuration_key)
-        return json.loads(value) if value is not None else None
+        return await self._read(self.configuration_key)
 
+    @observe_dependency("redis", "cache_configuration")
     async def cache_configuration(self, snapshot: Record) -> None:
         """Serialize a detached snapshot and reset its configured cache TTL."""
         client = await self.connection()
@@ -126,6 +150,7 @@ class RedisCounters:
             ex=self.settings.configuration_cache_seconds,
         )
 
+    @observe_dependency("redis", "invalidate_configuration")
     async def invalidate_configuration(self) -> None:
         """Delete the shared snapshot after durable configuration changes."""
         client = await self.connection()
@@ -134,9 +159,7 @@ class RedisCounters:
     @observe_dependency("redis", "request")
     async def request(self, request_id: str) -> Record | None:
         """Read admission context directly, without refreshing its expiry or consulting Table."""
-        client = await self.connection()
-        value = await client.get(f"{{limiter}}:request:v3:{request_id}")
-        return json.loads(value) if value is not None else None
+        return await self._read(self._request_key(request_id))
 
     @observe_dependency("redis", "admit")
     async def admit(self, request_id: str, record: Record) -> tuple[Record, bool]:
@@ -148,7 +171,7 @@ class RedisCounters:
         """
         client = await self.connection()
         created = await client.set(
-            f"{{limiter}}:request:v3:{request_id}",
+            self._request_key(request_id),
             json.dumps(record, separators=(",", ":")),
             ex=self.settings.request_cache_seconds,
             nx=True,
@@ -163,9 +186,7 @@ class RedisCounters:
     @observe_dependency("redis", "usage")
     async def usage(self, request_id: str) -> Record | None:
         """Read the finalized usage replay value without extending the replay window."""
-        client = await self.connection()
-        value = await client.get(f"{{limiter}}:usage:v3:{request_id}")
-        return json.loads(value) if value is not None else None
+        return await self._read(self._usage_key(request_id))
 
     @observe_dependency("redis", "record")
     async def record(self, request_id: str, record: Record) -> tuple[Record, bool]:
@@ -180,18 +201,31 @@ class RedisCounters:
         amount = data.get("cost_micro_usd")
         keys = data["counter_keys"] if isinstance(amount, int) else []
         client = await self.connection()
-        result = await client.eval(
-            RECORD_USAGE,
-            2,
-            f"{{limiter}}:usage:v3:{request_id}",
-            f"{{limiter}}:spend:v3:{data['month']}",
+        arguments = (
+            self._usage_key(request_id),
+            self._spend_key(data["month"]),
             json.dumps(record, separators=(",", ":")),
             self.settings.request_cache_seconds,
             self.counter_retention_seconds,
             str(amount if isinstance(amount, int) else 0),
             json.dumps(keys, separators=(",", ":")),
         )
+        result = await self._run_record_script(client, arguments)
         return json.loads(result[0]), bool(result[1])
+
+    @staticmethod
+    async def _run_record_script(client: Redis, arguments: tuple[str | int, ...]) -> list:
+        """Run the usage script by SHA, loading its body only when the server lacks it.
+
+        EVALSHA avoids resending and re-hashing the script on every charge. A server
+        without the cached script (restart, failover, flush) reports NOSCRIPT, and
+        one SCRIPT LOAD followed by a retry restores it.
+        """
+        try:
+            return await client.evalsha(RECORD_USAGE_SHA, 2, *arguments)
+        except NoScriptError:
+            await client.script_load(RECORD_USAGE)
+            return await client.evalsha(RECORD_USAGE_SHA, 2, *arguments)
 
     @observe_dependency("redis", "totals")
     async def totals(self, month: str, keys: list[str]) -> dict[str, int]:
@@ -199,7 +233,7 @@ class RedisCounters:
         if not keys:
             return {}
         client = await self.connection()
-        values = await client.hmget(f"{{limiter}}:spend:v3:{month}", keys)
+        values = await client.hmget(self._spend_key(month), keys)
         return {
             key: int(value) if value is not None else 0
             for key, value in zip(keys, values, strict=True)

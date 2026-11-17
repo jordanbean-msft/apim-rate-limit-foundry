@@ -1,10 +1,14 @@
+import hashlib
 import json
 from unittest.mock import AsyncMock
 
 import pytest
+from redis.exceptions import NoScriptError
 
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.stores.redis import RedisCounters
+from apim_rate_limit_foundry.stores.scripts import RECORD_USAGE, RECORD_USAGE_SHA
+from apim_rate_limit_foundry.telemetry.dependency import dependency_span
 
 
 class FakeRedis:
@@ -14,7 +18,8 @@ class FakeRedis:
         self.values: dict[str, str] = {}
         self.expiry: dict[str, int] = {}
         self.hashes: dict[str, dict[str, str]] = {}
-        self.eval = AsyncMock()
+        self.evalsha = AsyncMock()
+        self.script_load = AsyncMock()
         self.aclose = AsyncMock()
 
     async def get(self, key: str) -> str | None:
@@ -108,7 +113,7 @@ async def test_usage_reads_return_none_until_finalized(
 async def test_record_submits_hierarchy_keys_only_for_known_costs(
     counters: RedisCounters, redis: FakeRedis
 ) -> None:
-    redis.eval.side_effect = [
+    redis.evalsha.side_effect = [
         [json.dumps({"id": "known"}), 1],
         [json.dumps({"id": "unknown"}), 0],
     ]
@@ -124,10 +129,27 @@ async def test_record_submits_hierarchy_keys_only_for_known_costs(
     assert await counters.record("one", known) == ({"id": "known"}, True)
     assert await counters.record("two", unknown) == ({"id": "unknown"}, False)
 
-    known_call, unknown_call = (call.args for call in redis.eval.await_args_list)
+    known_call, unknown_call = (call.args for call in redis.evalsha.await_args_list)
     assert known_call[2:4] == ("{limiter}:usage:v3:one", "{limiter}:spend:v3:2030-01")
     assert (known_call[7], json.loads(known_call[8])) == ("7", ["k"])
     assert (unknown_call[7], json.loads(unknown_call[8])) == ("0", [])
+
+
+async def test_record_loads_the_script_once_when_the_server_lacks_it(
+    counters: RedisCounters, redis: FakeRedis
+) -> None:
+    redis.evalsha.side_effect = [NoScriptError("NOSCRIPT"), [json.dumps({"id": "known"}), 1]]
+    record = {"id": "known", "data": {"month": "2030-01", "cost_micro_usd": 7, "counter_keys": []}}
+
+    assert await counters.record("one", record) == ({"id": "known"}, True)
+
+    redis.script_load.assert_awaited_once_with(RECORD_USAGE)
+    assert redis.evalsha.await_count == 2
+    assert redis.evalsha.await_args_list[0].args[0] == RECORD_USAGE_SHA
+
+
+async def test_record_script_sha_matches_its_body() -> None:
+    assert hashlib.sha1(RECORD_USAGE.encode()).hexdigest() == RECORD_USAGE_SHA
 
 
 async def test_totals_treat_missing_spend_as_zero_and_skip_empty_reads(
@@ -146,3 +168,21 @@ async def test_close_releases_the_client(counters: RedisCounters, redis: FakeRed
     await counters.close()
 
     redis.aclose.assert_awaited_once()
+
+
+async def test_configuration_cache_writes_and_invalidations_are_dependency_spans(
+    counters: RedisCounters, redis: FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operations: list[str] = []
+    real = dependency_span
+
+    def spy(dependency: str, operation: str):
+        operations.append(f"{dependency}.{operation}")
+        return real(dependency, operation)
+
+    monkeypatch.setattr("apim_rate_limit_foundry.telemetry.dependency.dependency_span", spy)
+
+    await counters.cache_configuration({"budgets": []})
+    await counters.invalidate_configuration()
+
+    assert operations == ["redis.cache_configuration", "redis.invalidate_configuration"]

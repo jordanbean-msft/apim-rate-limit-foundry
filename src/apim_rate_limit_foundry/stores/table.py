@@ -14,10 +14,11 @@ from azure.data.tables.aio import TableClient
 
 from apim_rate_limit_foundry.accounting import digest
 from apim_rate_limit_foundry.stores.contracts import LEDGER_PARTITION, Record
+from apim_rate_limit_foundry.stores.create_once import CreateOnceRepository
 from apim_rate_limit_foundry.telemetry import emit, observe_dependency
 
 
-class TableRepository:
+class TableRepository(CreateOnceRepository):
     """Ledger-partition records allow atomic configuration-plus-audit transactions.
 
     Usage history is keyed by its own tenant/month partition, so reports query one
@@ -61,14 +62,6 @@ class TableRepository:
             parameters={"partition": partition, "collection": collection},
         )
         return [json.loads(e["payload"]) async for e in entities]
-
-    @observe_dependency("table", "create")
-    async def create(
-        self, collection: str, record_id: str, record: Record, partition: str = LEDGER_PARTITION
-    ) -> Record:
-        """Return the create-once winner; duplicate IDs never overwrite history."""
-        saved, _ = await self.create_if_absent(collection, record_id, record, partition)
-        return saved
 
     @observe_dependency("table", "create_if_absent")
     async def create_if_absent(

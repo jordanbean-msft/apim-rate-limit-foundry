@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecordRequest
 from apim_rate_limit_foundry.stores.redis import RedisCounters
 
@@ -85,12 +85,12 @@ async def test_real_redis_configuration_is_invalidated_and_expiring(
     assert await cache.configuration() is None
 
 
-async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
-    cache: RedisCounters, engine: Engine, monkeypatch: pytest.MonkeyPatch
+async def test_real_redis_enforces_live_budgets_while_table_is_blocked(
+    cache: RedisCounters, gateway: GatewayServices, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant = uuid4().hex
     snapshot = {
-        collection: await engine.configuration(collection)
+        collection: await gateway.configuration.list(collection)
         for collection in ("assignments", "organizations", "budgets", "prices")
     }
     for records in snapshot.values():
@@ -98,7 +98,7 @@ async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
             if "tenant_id" in record:
                 record["tenant_id"] = tenant
     await cache.cache_configuration(snapshot)
-    engine = Engine(engine.repository, cache, engine.settings)
+    gateway = GatewayServices.create(gateway.repository, cache, gateway.settings)
     release = asyncio.Event()
     started = asyncio.Event()
 
@@ -108,9 +108,9 @@ async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
         return args[-1]
 
     no_reads = AsyncMock(side_effect=AssertionError("Table read on the warm Redis path"))
-    monkeypatch.setattr(engine.repository, "list", no_reads)
-    monkeypatch.setattr(engine.repository, "get", no_reads)
-    monkeypatch.setattr(engine.repository, "create", blocked_write)
+    monkeypatch.setattr(gateway.repository, "list", no_reads)
+    monkeypatch.setattr(gateway.repository, "get", no_reads)
+    monkeypatch.setattr(gateway.repository, "create", blocked_write)
     request = BudgetCheck(
         request_id=uuid4().hex,
         tenant_id=tenant,
@@ -122,9 +122,9 @@ async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
     )
     try:
         async with asyncio.timeout(1):
-            assert (await engine.check(request))["allowed"]
+            assert (await gateway.admission.check(request))["allowed"]
             await started.wait()
-            accepted = await engine.record_usage(
+            accepted = await gateway.usage.record(
                 UsageRecordRequest(
                     request_id=request.request_id,
                     status="actual",
@@ -136,11 +136,13 @@ async def test_real_redis_engine_enforces_live_budgets_while_table_is_blocked(
                 )
             )
             assert accepted["event"]["cost_micro_usd"] == 100
-            denied = await engine.check(request.model_copy(update={"request_id": uuid4().hex}))
+            denied = await gateway.admission.check(
+                request.model_copy(update={"request_id": uuid4().hex})
+            )
             assert not denied["allowed"]
             assert len(denied["denied_budget_ids"]) == 3
             assert not release.is_set()
         no_reads.assert_not_awaited()
     finally:
         release.set()
-        await engine.background.flush()
+        await gateway.background.flush()
