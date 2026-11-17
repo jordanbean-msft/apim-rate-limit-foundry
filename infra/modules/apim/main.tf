@@ -70,19 +70,6 @@ resource "azurerm_api_management_logger" "this" {
   }
   depends_on = [azurerm_role_assignment.telemetry]
 }
-resource "azurerm_api_management_logger" "usage" {
-  name                = "usage-events"
-  api_management_name = azapi_resource.this.name
-  resource_group_name = var.resource_group_name
-  resource_id         = var.event_hub.id
-  buffered            = true
-  description         = "Best-effort Redis-accepted usage v2; not proof of Table persistence. APIM is the only producer."
-  eventhub {
-    name                             = var.event_hub.name
-    endpoint_uri                     = var.event_hub.endpoint_address
-    user_assigned_identity_client_id = var.identity.client_id
-  }
-}
 locals {
   policy_root = "${path.module}/../../../apim"
   shared = {
@@ -91,8 +78,6 @@ locals {
     api_audience          = var.api_audience
     api_client_id         = trimprefix(var.api_audience, "api://")
     gateway_client_id     = var.identity.client_id
-    function_client_id    = var.function_identity.client_id
-    function_principal_id = var.function_identity.principal_id
     function_url          = var.function_url
     stream_url            = var.stream_url
     streaming_enabled     = var.streaming_enabled
@@ -107,9 +92,13 @@ locals {
     max_input_tokens      = var.max_input_tokens
     model_registry        = replace(jsonencode(local.policy_registry), "\"", "\\\"")
   }
-  # Only pooled aliases carry the extra flag, so single-endpoint policy text is unchanged.
+  # The policy reads each entry's backend_id, so this module alone owns the naming rule. Pools use a
+  # distinct prefix so a single backend can convert to a pool without a name clash; only pooled
+  # aliases carry the extra flag.
   policy_registry = {
-    for key, model in var.model_registry : key => merge(model, contains(keys(var.model_pools), key) ? { pool = true } : {})
+    for key, model in var.model_registry : key => merge(model, {
+      backend_id = "${contains(keys(var.model_pools), key) ? "ai-pool" : "ai-model"}-${substr(sha256(key), 0, 12)}"
+    }, contains(keys(var.model_pools), key) ? { pool = true } : {})
   }
   pool_hashes = { for key in keys(var.model_pools) : key => substr(sha256(key), 0, 12) }
   pool_members = merge([
@@ -133,7 +122,7 @@ locals {
       if !contains(keys(var.model_pools), key)
     }
   )
-  fragments = toset(["identity", "model-lookup", "budget-check", "usage-record"])
+  fragments = toset(["identity", "model-lookup", "budget-check", "usage-record", "strip-caller-headers"])
   ai_paths = {
     foundry   = "/chat/completions"
     responses = "/responses"
@@ -146,7 +135,7 @@ locals {
     foundry   = templatefile("${local.policy_root}/policies/foundry-admission.xml.tftpl", local.shared)
     responses = templatefile("${local.policy_root}/policies/responses-admission.xml.tftpl", local.shared)
   }
-  portal_reads = { for collection in ["health", "dashboard", "models", "budgets", "organizations", "prices", "assignments", "usage", "audit", "chargeback"] :
+  portal_reads = { for collection in ["health", "dashboard", "models", "budgets", "organizations", "prices", "assignments", "usage", "chargeback"] :
     "get-${collection}" => { method = "GET", path = "/${collection}", parameter = false }
   }
   portal_writes = merge([
@@ -264,46 +253,11 @@ resource "azurerm_api_management_api_operation_policy" "submit" {
   operation_id        = azurerm_api_management_api_operation.submit[each.key].operation_id
   xml_content = templatefile("${local.policy_root}/policies/ai.xml.tftpl", merge(local.shared, {
     api_protocol         = each.value.api_protocol
-    model                = each.value.model
-    model_lookup         = each.value.api_protocol == "" ? "" : "<include-fragment fragment-id=\"limiter-model-lookup\" />"
     legacy_default_alias = try(var.legacy_defaults[each.key], "")
-    endpoint             = each.value.endpoint
-    backend_id           = "ai-${each.key}"
-    ai_audience          = each.value.audience
-    api_version          = each.value.api_version
-    price_version        = each.value.price_version
-    backend_path         = local.backend_paths[each.key]
     admission            = local.admission[each.key]
     llm_policy           = var.config.enable_optional_llm_policy ? templatefile("${local.policy_root}/policies/llm-limit.xml.tftpl", local.shared) : ""
   }))
-  depends_on = [azurerm_api_management_policy_fragment.this, azurerm_api_management_logger.usage]
-}
-resource "azurerm_api_management_api" "internal" {
-  name                  = "internal-usage"
-  resource_group_name   = var.resource_group_name
-  api_management_name   = azapi_resource.this.name
-  revision              = "1"
-  display_name          = "Function-only Redis-accepted usage callback"
-  path                  = "internal"
-  protocols             = ["https"]
-  subscription_required = false
-}
-resource "azurerm_api_management_api_operation" "usage_events" {
-  operation_id        = "usage-events"
-  api_name            = azurerm_api_management_api.internal.name
-  api_management_name = azapi_resource.this.name
-  resource_group_name = var.resource_group_name
-  display_name        = "Publish recorded usage"
-  method              = "POST"
-  url_template        = "/usage-events"
-}
-resource "azurerm_api_management_api_operation_policy" "usage_events" {
-  api_name            = azurerm_api_management_api.internal.name
-  api_management_name = azapi_resource.this.name
-  resource_group_name = var.resource_group_name
-  operation_id        = azurerm_api_management_api_operation.usage_events.operation_id
-  xml_content         = templatefile("${local.policy_root}/policies/usage-events.xml.tftpl", local.shared)
-  depends_on          = [azurerm_api_management_logger.usage]
+  depends_on = [azurerm_api_management_policy_fragment.this]
 }
 resource "azurerm_api_management_api" "portal" {
   name                  = "portal"
@@ -383,11 +337,11 @@ resource "azurerm_api_management_api_policy" "portal" {
   xml_content         = templatefile("${local.policy_root}/policies/portal.xml.tftpl", local.shared)
 }
 resource "azurerm_api_management_api_diagnostic" "this" {
-  for_each                  = setunion(toset(keys(local.api_backends)), toset(["portal", "internal"]))
+  for_each                  = setunion(toset(keys(local.api_backends)), toset(["portal"]))
   identifier                = "applicationinsights"
   resource_group_name       = var.resource_group_name
   api_management_name       = azapi_resource.this.name
-  api_name                  = each.key == "portal" ? azurerm_api_management_api.portal.name : (each.key == "internal" ? azurerm_api_management_api.internal.name : azurerm_api_management_api.ai[each.key].name)
+  api_name                  = each.key == "portal" ? azurerm_api_management_api.portal.name : azurerm_api_management_api.ai[each.key].name
   api_management_logger_id  = azurerm_api_management_logger.this.id
   always_log_errors         = true
   sampling_percentage       = var.config.diagnostic_sampling_percentage

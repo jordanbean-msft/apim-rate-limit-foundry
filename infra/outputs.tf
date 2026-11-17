@@ -97,7 +97,3 @@ output "EVENT_HUB_RESOURCE_ID" {
   description = "Hub-scoped producer authorization and consumer onboarding."
   value       = module.event_hubs.id
 }
-output "APIM_USAGE_EVENT_URL" {
-  description = "Function-only managed-identity callback; not a public client API."
-  value       = "${module.apim.gateway_url}/internal/usage-events"
-}

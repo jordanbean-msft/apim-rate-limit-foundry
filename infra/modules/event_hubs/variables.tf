@@ -26,8 +26,8 @@ variable "workspace_id" {
   description = "Shared Log Analytics workspace resource ID."
   type        = string
 }
-variable "gateway_principal_id" {
-  description = "Only APIM receives the Event Hubs sender role."
+variable "sender_principal_id" {
+  description = "Only the Function workload receives the Event Hubs sender role."
   type        = string
 }
 variable "config" {

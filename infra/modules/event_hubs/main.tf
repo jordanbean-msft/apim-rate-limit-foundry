@@ -30,10 +30,10 @@ resource "azurerm_eventhub" "usage" {
   message_retention = var.config.message_retention
 }
 resource "azurerm_role_assignment" "sender" {
-  name                 = uuidv5("dns", "${azurerm_eventhub.usage.id}/${var.gateway_principal_id}/Azure Event Hubs Data Sender")
+  name                 = uuidv5("dns", "${azurerm_eventhub.usage.id}/${var.sender_principal_id}/Azure Event Hubs Data Sender")
   scope                = azurerm_eventhub.usage.id
   role_definition_name = "Azure Event Hubs Data Sender"
-  principal_id         = var.gateway_principal_id
+  principal_id         = var.sender_principal_id
 }
 resource "time_sleep" "propagation" {
   create_duration = var.config.propagation_wait_duration

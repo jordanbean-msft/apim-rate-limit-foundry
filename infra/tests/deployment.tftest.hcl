@@ -192,17 +192,6 @@ run "government_private_openai_only" {
   }
   assert {
     condition = (
-      module.apim.usage_telemetry_contract.logger.hub_id == module.event_hubs.id &&
-      module.apim.usage_telemetry_contract.logger.identity_client_id == module.identity.gateway.client_id &&
-      endswith(module.apim.usage_telemetry_contract.logger.endpoint_address, ".servicebus.usgovcloudapi.net") &&
-      module.apim.usage_telemetry_contract.callback.subscription_required == false &&
-      strcontains(module.apim.usage_telemetry_contract.callback.policy, module.identity.function.principal_id) &&
-      strcontains(module.apim.usage_telemetry_contract.callback.policy, module.identity.function.client_id)
-    )
-    error_message = "Use native managed-identity logging, sovereign EH DNS and a Function-specific callback, never user claims or secrets."
-  }
-  assert {
-    condition = (
       keys(output.LLM_GATEWAY_ROUTES) == ["foundry"] &&
       output.LLM_GATEWAY_ROUTES.foundry.path == "/foundry/chat/completions" &&
       keys(module.apim.ai_backends) == ["ai-foundry", "ai-model-${substr(sha256("openai-chat:sample-model"), 0, 12)}"] &&

@@ -5,9 +5,5 @@ union isfuzzy=true
    | summarize Value = todouble(sum(Total)) by Signal = MetricName, Resource = _ResourceId),
   (AppTraces
    | where Message == "usage_event_publish_failed"
-   | summarize Value = todouble(count()) by Signal = Message, Resource = AppRoleName),
-  (ApiManagementGatewayLogs
-   | mv-expand Error = Errors
-   | where tostring(Error.Source) has "log-to-eventhub"
-   | summarize Value = todouble(count()) by Signal = "APIM logger policy errors", Resource = _ResourceId)
+   | summarize Value = todouble(count()) by Signal = Message, Resource = AppRoleName)
 | order by Signal asc

@@ -144,45 +144,34 @@ availability verification. Capability/private/native-token-policy attestations
 are operator assertions, not claims of regional availability.
 `price_version` pins a published Python price card; APIM does no cost calculation.
 
-## Native Event Hubs export
+## Event Hubs export
 
 `modules/event_hubs` creates a Standard namespace and usage hub with explicitly
 configured throughput/partitions/retention, TLS 1.2 and disabled local auth.
-Only the APIM managed identity receives **Azure Event Hubs Data Sender**, scoped
-to the hub. An explicit RBAC propagation wait precedes logger use.
-Neither Function nor web receives Event Hubs producer permissions.
-
-AzureRM **5.13** supports `eventhub.endpoint_uri` and
-`eventhub.user_assigned_identity_client_id` on `azurerm_api_management_logger`,
-so no AzAPI logger or connection string is needed. The namespace hostname uses
-the correct Commercial/Government suffix. The existing Application Insights
-logger remains separate. Latest stable provider versions were checked against
-the Terraform registry: AzureRM 5.13.0 and AzAPI 2.13.0; existing `~>` pins match.
-See the [provider logger reference](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/api_management_logger)
-and [Microsoft managed-identity logger documentation](https://learn.microsoft.com/azure/api-management/api-management-howto-log-event-hubs).
+Only the Function managed identity (`sender_principal_id`) receives **Azure Event
+Hubs Data Sender**, scoped to the hub. An explicit RBAC propagation wait precedes
+use. Neither APIM nor web receives Event Hubs permissions, and APIM has no Event
+Hub logger. The namespace hostname uses the correct Commercial/Government suffix.
 
 The namespace exports all supported diagnostic logs and metrics to the shared
 workspace; Event Hubs has no native Application Insights agent. Private mode
-adds its namespace endpoint with policy-owned DNS. APIM's integration subnet
-must resolve/reach the hub's private namespace.
+adds its namespace endpoint with policy-owned DNS. The Function hosts' network
+path must resolve/reach the hub's private namespace.
 
-The native `log-to-eventhub` policy publishes only compact normalized v2 events
-returned after Redis accepts actual/unknown usage, and only for new usage within
-the replay window. Events do not establish Table persistence.
-It is **unsampled by Application Insights** and truncates events exceeding
-**200 KB**. Keep the compact schema below 16 KiB. Delivery is best effort:
-no SDK publisher, no retries and no failed inference due to logger availability.
+The Function publishes only compact normalized v2 events with the `azure-eventhub`
+SDK after Redis accepts actual/unknown usage, and only for new usage within the
+replay window. Events do not establish Table persistence. Delivery is a
+best-effort background send: no retries and no failed inference due to Event Hub
+availability.
 Redis is the live budget authority; Table is eventual long-term history.
 Absence from Event Hubs or Table is not evidence that the request was uncharged.
 
 Streaming remains unbuffered through the narrow relay. Function runtime settings
-include `APIM_USAGE_EVENT_URL` and `API_AUDIENCE`; its managed identity receives
-the existing `RateLimit.Gateway` role for the callback. The internal APIM operation
-requires that exact identity's client/object IDs and no delegated scope. It is
-not part of either client product and cannot be invoked by portal users.
+include `EVENT_HUB_FQDN` and `EVENT_HUB_NAME`, set from the `event_hubs` module
+outputs.
 
-Outputs include `EVENT_HUB_NAMESPACE_NAME`, `EVENT_HUB_NAME`,
-`EVENT_HUB_RESOURCE_ID`, and `APIM_USAGE_EVENT_URL`; none are secrets.
+Outputs include `EVENT_HUB_NAMESPACE_NAME`, `EVENT_HUB_NAME` and
+`EVENT_HUB_RESOURCE_ID`; none are secrets.
 
 ## Single dashboard query catalog
 
@@ -217,6 +206,6 @@ services and role bindings can destroy live resources. Before an approved cutove
 export/archive previous configuration and historical usage, review a real plan
 for destructive changes, approve user/team/department mappings and price cards,
 then run explicit Chat/Responses nonstream/stream, budget exhaustion/overshoot,
-callback-auth rejection, cold-cache/invalidation, Redis failure/data-loss,
+cold-cache/invalidation, Redis failure/data-loss,
 background-write loss, Event Hub failure-isolation and chargeback
 acceptance. Never silently reinterpret old application budgets as person budgets.

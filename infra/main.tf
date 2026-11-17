@@ -272,9 +272,9 @@ module "hosting" {
     LOCAL_STORE_ENABLED                   = "false"
     MAX_INPUT_TOKENS                      = tostring(var.hosting.max_input_tokens)
     MAX_OUTPUT_TOKENS                     = tostring(var.gateway.max_output_tokens)
-    API_AUDIENCE                          = module.identity.api_audience
     GATEWAY_CLIENT_ID                     = module.identity.gateway.client_id
-    APIM_USAGE_EVENT_URL                  = "${module.apim.gateway_url}/internal/usage-events"
+    EVENT_HUB_FQDN                        = module.event_hubs.endpoint_address
+    EVENT_HUB_NAME                        = module.event_hubs.name
     MODEL_REGISTRY                        = jsonencode(local.model_registry)
     AZURE_DASHBOARD_ID                    = module.monitoring.dashboard_id
     LOG_ANALYTICS_WORKSPACE_ID            = module.monitoring.workspace_customer_id
@@ -314,8 +314,6 @@ module "apim" {
   config                        = var.gateway
   applications                  = var.applications
   identity                      = module.identity.gateway
-  function_identity             = module.identity.function
-  event_hub                     = module.event_hubs
   authority                     = local.authority
   tenant_id                     = var.azure.tenant_id
   function_url                  = local.function_url
@@ -346,7 +344,7 @@ module "event_hubs" {
   public_network_access_enabled = var.public_network_access_enabled
   private_endpoint_subnet_id    = var.network.private_endpoint_subnet_id
   workspace_id                  = module.monitoring.workspace_id
-  gateway_principal_id          = module.identity.gateway.principal_id
+  sender_principal_id           = module.identity.function.principal_id
   config                        = var.event_hubs
 }
 module "portal_key_vault" {

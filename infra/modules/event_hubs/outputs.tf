@@ -12,6 +12,6 @@ output "namespace_name" {
   value       = azurerm_eventhub_namespace.this.name
 }
 output "endpoint_address" {
-  description = "Cloud-correct namespace hostname for APIM's MI logger."
+  description = "Cloud-correct namespace hostname for the Function publishers."
   value       = "${azurerm_eventhub_namespace.this.name}.${var.azure_cloud == "government" ? "servicebus.usgovcloudapi.net" : "servicebus.windows.net"}"
 }

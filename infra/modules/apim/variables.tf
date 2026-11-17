@@ -125,14 +125,6 @@ variable "model_pools" {
     error_message = "Each pool must belong to a registry alias and contain at least two distinct member endpoints."
   }
 }
-variable "function_identity" {
-  description = "Only this Function workload may invoke the internal usage callback."
-  type        = object({ client_id = string, principal_id = string })
-}
-variable "event_hub" {
-  description = "Secretless native usage logger destination, after hub-scoped RBAC propagation."
-  type        = object({ id = string, name = string, endpoint_address = string })
-}
 variable "legacy_defaults" {
   description = "Explicit legacy default aliases only; additional model entries never become implicit defaults."
   type        = map(string)
