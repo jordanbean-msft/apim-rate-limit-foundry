@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError, InteractionStatus } from '@azure/msal-browser';
-import { Button, Spinner } from '@fluentui/react-components';
+import { Badge, Button, MessageBar, MessageBarBody, Spinner } from '@fluentui/react-components';
 import { createApi } from './api';
 import { tokenRoles } from './auth';
 import type { Role, RuntimeConfig } from './contracts';
@@ -108,14 +108,13 @@ export function CloudSession({ config }: { config: RuntimeConfig }) {
         <div className="welcome-card">
           <h1>AI gateway administration</h1>
           <p>Manage application budgets, model prices, usage and rate-limit decisions.</p>
-          <div className="cloud-label">
-            {config.cloud === 'government' ? 'Azure Government' : 'Azure Commercial'} · Entra
-            protected
-          </div>
+          <Badge appearance="outline" color="informative">
+            {config.cloud === 'government' ? 'Azure Government' : 'Azure Commercial'}
+          </Badge>
           {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
+            <MessageBar intent="error" role="alert">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
           )}
           {restoring || inProgress !== InteractionStatus.None ? (
             <Spinner label="Completing secure sign-in…" />
@@ -124,7 +123,7 @@ export function CloudSession({ config }: { config: RuntimeConfig }) {
               {interactionRequired ? 'Authorize API access' : 'Sign in with Microsoft'}
             </Button>
           )}
-          <p className="fine-print">
+          <p className="note">
             Access is governed by your organization. No data is shown before authentication.
           </p>
         </div>

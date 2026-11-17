@@ -12,13 +12,10 @@ export class TelemetryBoundary extends Component<{ children: ReactNode }, { fail
 
   /** The telemetry allowlist drops undeclared errorName; no message or stack is submitted. */
   componentDidCatch(error: Error): void {
-    track(
-      'portal_browser_error',
-      {
-        errorCategory: 'render_error',
-        errorName: error.name,
-      },
-    );
+    track('portal_browser_error', {
+      errorCategory: 'render_error',
+      errorName: error.name,
+    });
   }
 
   render(): ReactNode {

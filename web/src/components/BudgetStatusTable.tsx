@@ -1,33 +1,29 @@
-import { Badge } from '@fluentui/react-components';
+import {
+  Badge,
+  Table,
+  TableBody,
+  TableCell,
+  TableCellLayout,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
+} from '@fluentui/react-components';
 import type { BudgetStatus, Organization, Assignment } from '../contracts';
 import { microUsd } from '../format';
+import { BudgetMeter } from './BudgetMeter';
+import { MonthCaption } from './MonthCaption';
+import { levelLabels, modelLabel, sortByLevel, subjectName } from './budgetLabels';
 
 /** Explain admission-time soft-cap behavior, not a reservation or guaranteed invoice ceiling. */
 export function BudgetStatusNote() {
   return (
-    <p className="fine-print panel-footnote">
-      All matching user, team, and department budgets apply. Budgets check completed month-to-date
-      actual spend before forwarding and record provider-reported actual cost afterward. This is a
-      soft cap: concurrent in-flight requests can overshoot a limit; subsequent requests are denied.
-      These values are actual usage totals, not a guaranteed invoice ceiling.
+    <p className="note">
+      All matching user, team and department budgets apply. Spend is checked against completed
+      month-to-date actual usage before a request is forwarded, so concurrent in-flight requests can
+      overshoot a limit; later requests are then denied. Totals are actual usage, not a guaranteed
+      invoice ceiling.
     </p>
   );
-}
-
-/** Resolve optional authorized labels while retaining stable subject IDs when metadata is absent. */
-function subjectName(
-  status: BudgetStatus,
-  organizations: Organization[],
-  assignments: Assignment[],
-): string {
-  if (status.subject_type === 'user') {
-    const assignment = assignments.find((item) => item.principal_id === status.subject_id);
-    return assignment?.display_label
-      ? `${assignment.display_label} · ${status.subject_id}`
-      : status.subject_id;
-  }
-  const organization = organizations.find((item) => item.id === status.subject_id);
-  return organization ? `${organization.name} · ${organization.id}` : status.subject_id;
 }
 
 /** Display live Redis-backed monthly status independently of asynchronously persisted usage. */
@@ -46,38 +42,48 @@ export function BudgetStatusTable({
     return <p className="empty-inline">No configured monthly budgets apply to this account.</p>;
   return (
     <>
+      {status[0] && <MonthCaption month={status[0].month} />}
       <div className="table-scroll">
-        <table>
-          <caption className="visually-hidden">Monthly actual spend and remaining budgets</caption>
-          <thead>
-            <tr>
-              <th>Budget</th>
-              <th>Level / subject</th>
-              <th>Model</th>
-              <th>Actual month-to-date</th>
-              <th>Monthly limit</th>
-              <th>Remaining</th>
-            </tr>
-          </thead>
-          <tbody>
-            {status.map((item) => (
-              <tr key={item.budget_id}>
-                <td>
-                  <strong>{item.name}</strong>
-                  <div className="fine-print">{item.month} · UTC calendar month</div>
-                </td>
-                <td>
-                  <Badge appearance="tint">{item.subject_type}</Badge>
-                  <div>{subjectName(item, organizations, assignments)}</div>
-                </td>
-                <td>{item.model}</td>
-                <td>{microUsd(item.spent_micro_usd)}</td>
-                <td>{microUsd(item.limit_micro_usd)}</td>
-                <td>{microUsd(item.remaining_micro_usd)}</td>
-              </tr>
+        <Table aria-label="Monthly actual spend and remaining budgets">
+          <TableHeader>
+            <TableRow>
+              <TableHeaderCell>Budget</TableHeaderCell>
+              <TableHeaderCell>Level</TableHeaderCell>
+              <TableHeaderCell>Model</TableHeaderCell>
+              <TableHeaderCell className="num">Month-to-date</TableHeaderCell>
+              <TableHeaderCell className="num">Monthly limit</TableHeaderCell>
+              <TableHeaderCell className="num">Remaining</TableHeaderCell>
+              <TableHeaderCell className="meter-column">Used</TableHeaderCell>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sortByLevel(status).map((item) => (
+              <TableRow key={item.budget_id}>
+                <TableCell>
+                  <TableCellLayout appearance="primary" description={item.name}>
+                    {subjectName(item, organizations, assignments)}
+                  </TableCellLayout>
+                </TableCell>
+                <TableCell>
+                  <Badge appearance="tint" color="informative">
+                    {levelLabels[item.subject_type]}
+                  </Badge>
+                </TableCell>
+                <TableCell>{modelLabel(item.model)}</TableCell>
+                <TableCell className="num">{microUsd(item.spent_micro_usd)}</TableCell>
+                <TableCell className="num">{microUsd(item.limit_micro_usd)}</TableCell>
+                <TableCell className="num">{microUsd(item.remaining_micro_usd)}</TableCell>
+                <TableCell className="meter-column">
+                  <BudgetMeter
+                    label={item.name}
+                    spentMicroUsd={item.spent_micro_usd}
+                    limitMicroUsd={item.limit_micro_usd}
+                  />
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       <BudgetStatusNote />
     </>

@@ -1,3 +1,4 @@
+import { sumBy } from '../numbers';
 import type { DashboardScalar, DashboardTile } from '../contracts';
 
 export const dashboardColors = [
@@ -92,7 +93,7 @@ export function buildDashboardChartModel(tile: DashboardTile): DashboardChartMod
   }));
   // Donuts aggregate all series per category and omit non-positive slices.
   const pie = categories.flatMap((category) => {
-    const value = [...(totals.get(category)?.values() ?? [])].reduce((sum, item) => sum + item, 0);
+    const value = sumBy([...(totals.get(category)?.values() ?? [])], (item) => item);
     return value > 0
       ? [{ legend: category, data: value, color: colorForDashboardLabel(category) }]
       : [];

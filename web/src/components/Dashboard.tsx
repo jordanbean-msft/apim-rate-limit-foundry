@@ -8,8 +8,16 @@ import {
   type LineChartDataPoint,
   type VerticalStackedChartProps,
 } from '@fluentui/react-charts';
-import { Button, MessageBar, MessageBarBody, Select, Spinner } from '@fluentui/react-components';
+import {
+  Button,
+  Field,
+  MessageBar,
+  MessageBarBody,
+  Select,
+  Spinner,
+} from '@fluentui/react-components';
 import { ArrowClockwiseRegular } from '@fluentui/react-icons';
+import { utcLocale } from '../format';
 import type { DashboardChartModel } from './dashboardChartData';
 import {
   buildDashboardChartModel,
@@ -18,6 +26,9 @@ import {
   formatDashboardValue,
 } from './dashboardChartData';
 import type { DashboardPeriod, DashboardScalar, DashboardTile, PortalApi } from '../contracts';
+import { dashboardInsights } from '../insights/dashboardInsights';
+import type { InsightAction } from '../insights/types';
+import { InsightsPanel } from './InsightsPanel';
 
 const periods: { value: DashboardPeriod; label: string }[] = [
   { value: '1h', label: 'Last hour' },
@@ -26,7 +37,15 @@ const periods: { value: DashboardPeriod; label: string }[] = [
 ];
 
 /** Load period-scoped query tiles with independent tile diagnostics and responsive chart sizing. */
-export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: boolean }) {
+export function Dashboard({
+  api,
+  fixtureMode,
+  onAction,
+}: {
+  api: PortalApi;
+  fixtureMode: boolean;
+  onAction?: (action: InsightAction) => void;
+}) {
   const [period, setPeriod] = useState<DashboardPeriod>('24h');
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === 'undefined' ? 1400 : window.innerWidth,
@@ -72,15 +91,25 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
     };
   }, [refresh]);
 
-  const chartWidth = Math.max(300, Math.min(780, (viewportWidth - 340) / 2 - 36));
+  // Sidebar, page padding and tile padding are subtracted; one column below the grid breakpoint.
+  const chartWidth = Math.max(
+    300,
+    Math.min(780, viewportWidth <= 1050 ? viewportWidth - 364 : (viewportWidth - 340) / 2 - 40),
+  );
+  const insights = dashboardInsights(tiles, period);
+  /** Dashboard-local actions retry or narrow the query; navigation is delegated to the shell. */
+  function runAction(action: InsightAction) {
+    if (action.kind === 'custom' && action.id === 'retry') void refresh();
+    else if (action.kind === 'custom') setPeriod(action.id === 'wider-range' ? '7d' : '1h');
+    else onAction?.(action);
+  }
   const charts = tiles.filter((tile) => tile.chart !== '');
   const details = tiles.filter((tile) => tile.chart === '');
 
   return (
-    <section className="dashboard-page" aria-label="Azure dashboard">
-      <div className="dashboard-toolbar surface">
-        <label>
-          Time range
+    <section className="page-stack" aria-label="Azure dashboard">
+      <div className="toolbar">
+        <Field label="Time range">
           <Select
             aria-label="Dashboard time range"
             value={period}
@@ -92,24 +121,37 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
               </option>
             ))}
           </Select>
-        </label>
-        <Button icon={<ArrowClockwiseRegular />} disabled={loading} onClick={() => void refresh()}>
-          Refresh dashboard
-        </Button>
-        {loading && (
-          <div role="status">
-            <Spinner size="tiny" label="Loading Azure dashboard tiles…" />
-          </div>
-        )}
+        </Field>
+        <div className="toolbar-actions">
+          {loading && (
+            <div role="status">
+              <Spinner size="tiny" label="Loading Azure dashboard tiles…" />
+            </div>
+          )}
+          <Button
+            icon={<ArrowClockwiseRegular />}
+            disabled={loading}
+            onClick={() => void refresh()}
+          >
+            Refresh dashboard
+          </Button>
+        </div>
       </div>
       {fixtureMode && (
-        <p className="dashboard-fixture-label">
+        <p className="secondary">
           Local fixture mode — these charts are illustrative fixtures, not live Azure dashboard
           data.
         </p>
       )}
-      <div className="surface">
-        <h2>Gateway enforcement and accounting</h2>
+      {hasLoaded && !error && (
+        <InsightsPanel
+          insights={insights}
+          healthy="Every tile loaded and returned data."
+          onAction={runAction}
+        />
+      )}
+      <details className="surface about">
+        <summary>How to read these charts</summary>
         <p>
           <strong>APIM:</strong> HTTP traffic and throttles. <strong>Function:</strong> budget
           admission, finalized usage, and Table/Redis operations. HTTP success and admission are not
@@ -120,7 +162,7 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
           output. Cache percentage is cached input divided by all input tokens, not APIM response
           caching. Blocked requests have no measured provider tokens.
         </p>
-        <p className="fine-print">
+        <p className="secondary">
           Redis holds live budget counters. Table history is persisted in the background and can
           permanently miss records after a restart or failure; chargeback reports may differ from
           live spend. Redis data loss can reset counters. Telemetry can be sampled or delayed.
@@ -128,7 +170,7 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
           minutes is an investigation signal, not proof of lost billing. Monthly spend and budget
           utilization use the UTC calendar month, independently of the activity time range.
         </p>
-      </div>
+      </details>
       {error && (
         <div role="alert">
           <MessageBar intent="error">
@@ -145,26 +187,43 @@ export function Dashboard({ api, fixtureMode }: { api: PortalApi; fixtureMode: b
           <p>The configured Azure dashboard did not return tiles for this time range.</p>
         </div>
       )}
-      {charts.length > 0 && (
-        <section aria-label="Operational charts">
-          <h2>Traffic, tokens and accounting</h2>
-          <div className="dashboard-grid">
-            {charts.map((tile) => (
-              <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
-            ))}
-          </div>
-        </section>
-      )}
-      {details.length > 0 && (
-        <section aria-label="Supporting detail grids">
-          <h2>Supporting detail grids</h2>
-          <div className="dashboard-grid">
-            {details.map((tile) => (
-              <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
-            ))}
-          </div>
-        </section>
-      )}
+      <TileGrid
+        label="Operational charts"
+        heading="Traffic, tokens and accounting"
+        tiles={charts}
+        chartWidth={chartWidth}
+      />
+      <TileGrid
+        label="Supporting detail grids"
+        heading="Supporting detail grids"
+        tiles={details}
+        chartWidth={chartWidth}
+      />
+    </section>
+  );
+}
+
+/** A titled region of dashboard tiles; renders nothing when the query returned none. */
+function TileGrid({
+  label,
+  heading,
+  tiles,
+  chartWidth,
+}: {
+  label: string;
+  heading: string;
+  tiles: DashboardTile[];
+  chartWidth: number;
+}) {
+  if (!tiles.length) return null;
+  return (
+    <section aria-label={label}>
+      <h2 className="group-heading">{heading}</h2>
+      <div className="dashboard-grid">
+        {tiles.map((tile) => (
+          <DashboardTileView key={tile.id} tile={tile} chartWidth={chartWidth} />
+        ))}
+      </div>
     </section>
   );
 }
@@ -230,7 +289,14 @@ function Chart({
   model: DashboardChartModel;
   width: number;
 }) {
-  const yAxisTickFormat = (value: number) => formatDashboardValue(value, tile.y_axis);
+  const axes = {
+    chartTitle: tile.title,
+    width,
+    height: 330,
+    yAxisTitle: tile.y_axis ?? undefined,
+    xAxisTitle: tile.x_axis ?? undefined,
+    yAxisTickFormat: (value: number) => formatDashboardValue(value, tile.y_axis),
+  };
   if (!model.categories.length || !model.series.length)
     return <p className="dashboard-tile-state">No plottable values for this tile.</p>;
 
@@ -265,25 +331,12 @@ function Chart({
             ];
       }),
     }));
-    return (
-      <VerticalStackedBarChart
-        data={groups}
-        chartTitle={tile.title}
-        width={width}
-        height={330}
-        yAxisTitle={tile.y_axis ?? undefined}
-        xAxisTitle={tile.x_axis ?? undefined}
-        yAxisTickFormat={yAxisTickFormat}
-        hideLabels
-      />
-    );
+    return <VerticalStackedBarChart data={groups} {...axes} hideLabels />;
   }
 
   if (tile.chart === 'Column' && tile.split_by) {
     const grouped = model.categories.map((category) => ({
-      name: model.dateAxis
-        ? new Date(category).toLocaleString(undefined, { timeZone: 'UTC' })
-        : category,
+      name: model.dateAxis ? utcLocale(new Date(category)) : category,
       series: model.series.flatMap((series) => {
         const value = series.values.get(category);
         return value === undefined
@@ -303,13 +356,8 @@ function Chart({
     return (
       <GroupedVerticalBarChart
         data={grouped}
-        chartTitle={tile.title}
-        width={width}
-        height={330}
+        {...axes}
         colors={model.series.map((item) => item.color)}
-        yAxisTitle={tile.y_axis ?? undefined}
-        xAxisTitle={tile.x_axis ?? undefined}
-        yAxisTickFormat={yAxisTickFormat}
         hideLabels
       />
     );
@@ -330,18 +378,7 @@ function Chart({
         yAxisCalloutData: formatDashboardValue(value, tile.y_axis),
       };
     });
-    return (
-      <VerticalBarChart
-        data={bars}
-        chartTitle={tile.title}
-        width={width}
-        height={330}
-        yAxisTitle={tile.y_axis ?? undefined}
-        xAxisTitle={tile.x_axis ?? undefined}
-        yAxisTickFormat={yAxisTickFormat}
-        hideLabels
-      />
-    );
+    return <VerticalBarChart data={bars} {...axes} hideLabels />;
   }
 
   // Fluent lines require numeric/date X values; retain labels through stable categorical indices.
@@ -367,11 +404,11 @@ function Chart({
   return (
     <LineChart
       data={{ chartTitle: tile.title, lineChartData: lines }}
-      width={width}
-      height={330}
-      xAxisTitle={tile.x_axis ?? undefined}
-      yAxisTitle={tile.y_axis ?? undefined}
-      yAxisTickFormat={yAxisTickFormat}
+      width={axes.width}
+      height={axes.height}
+      xAxisTitle={axes.xAxisTitle}
+      yAxisTitle={axes.yAxisTitle}
+      yAxisTickFormat={axes.yAxisTickFormat}
       xAxisTickCount={Math.min(6, model.categories.length)}
       tickValues={tickValues}
       tickFormat={model.dateAxis ? undefined : (value) => model.categories[Number(value)] ?? ''}
@@ -414,8 +451,7 @@ function formatCell(value: DashboardScalar, type: string): string {
   if (value === null) return '—';
   if (/date|time/i.test(type) && typeof value === 'string') {
     const date = new Date(value);
-    if (Number.isFinite(date.getTime()))
-      return `${date.toLocaleString(undefined, { timeZone: 'UTC' })} UTC`;
+    if (Number.isFinite(date.getTime())) return `${utcLocale(date)} UTC`;
   }
   return String(value);
 }

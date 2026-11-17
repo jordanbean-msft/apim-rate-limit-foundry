@@ -29,6 +29,16 @@ const organizations: Collections['organizations'][] = [
     cost_center: 'CC-4100',
     enabled: true,
   },
+  {
+    id: 'research-team',
+    tenant_id: 'demo-tenant',
+    kind: 'team',
+    name: 'Research',
+    department_id: 'engineering',
+    business_unit: 'Product',
+    cost_center: 'CC-4100',
+    enabled: true,
+  },
 ];
 
 /**
@@ -242,12 +252,13 @@ const dashboardFixtures: DashboardTile[] = [
     y_axis: 'Cost (USD)',
     split_by: null,
     columns: [
-      { name: 'Time', type: 'datetime' },
+      { name: 'Time (UTC)', type: 'datetime' },
       { name: 'Cost (USD)', type: 'real' },
     ],
     rows: [
       [`${month}-01T10:00:00Z`, 1.15],
       [`${month}-01T11:00:00Z`, 2.4],
+      [`${month}-01T12:00:00Z`, 1.8],
     ],
     error: null,
     truncated: false,

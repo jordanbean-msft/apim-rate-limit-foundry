@@ -11,24 +11,6 @@ import { initializeTelemetry, track } from './telemetry';
 import { TelemetryBoundary } from './TelemetryBoundary';
 import './styles.css';
 
-const portalTheme = {
-  ...webLightTheme,
-  fontFamilyBase: 'system-ui, sans-serif',
-  fontFamilyNumeric: 'system-ui, sans-serif',
-  fontFamilyMonospace: 'system-ui, sans-serif',
-  borderRadiusSmall: '0',
-  borderRadiusMedium: '0',
-  borderRadiusLarge: '0',
-  borderRadiusXLarge: '0',
-  borderRadiusCircular: '0',
-  shadow2: 'none',
-  shadow4: 'none',
-  shadow8: 'none',
-  shadow16: 'none',
-  shadow28: 'none',
-  shadow64: 'none',
-};
-
 /** Load public runtime settings before enabling either explicit demo mode or Entra sign-in. */
 function Bootstrap() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -135,7 +117,7 @@ function Bootstrap() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <FluentProvider theme={portalTheme}>
+    <FluentProvider theme={webLightTheme}>
       <TelemetryBoundary>
         <Bootstrap />
       </TelemetryBoundary>

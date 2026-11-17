@@ -41,6 +41,40 @@ function wrap(children: React.ReactNode) {
   return render(<FluentProvider theme={webLightTheme}>{children}</FluentProvider>);
 }
 
+describe('recommended actions', () => {
+  it('turns a coverage gap into a prefilled path to create a budget', async () => {
+    const user = userEvent.setup();
+    wrap(
+      <Portal
+        api={createDemoApi()}
+        roles={['RateLimit.Admin']}
+        identity="admin"
+        cloud="commercial"
+      />,
+    );
+    const panel = await screen.findByRole('region', { name: 'Recommended actions' });
+    expect(within(panel).getByText(/1 team without a monthly budget/)).toBeInTheDocument();
+    await user.click(within(panel).getByRole('button', { name: 'Create team budget' }));
+    expect(
+      await screen.findByRole('heading', { name: /Create monthly budget/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('gives readers guidance without administrator-only actions', async () => {
+    wrap(
+      <Portal
+        api={createDemoApi()}
+        roles={['RateLimit.Reader']}
+        identity="reader"
+        cloud="commercial"
+      />,
+    );
+    const panel = await screen.findByRole('region', { name: 'Recommended actions' });
+    expect(within(panel).getByText(/finished without provider usage/)).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: /Create/ })).not.toBeInTheDocument();
+  });
+});
+
 describe('portal telemetry outcomes', () => {
   it('logs page, refresh and failed/successful delete results without identity or record data', async () => {
     const user = userEvent.setup();
@@ -327,10 +361,10 @@ describe('authorization, MTD status and exports', () => {
     const name = await within(table).findByText('Engineering monthly');
     const row = within(name.closest('tr')!);
     expect(screen.getAllByRole('table')).toHaveLength(1);
-    expect(row.getByText('$250.00 / month')).toBeInTheDocument();
+    expect(row.getByText('$250.00')).toBeInTheDocument();
     expect(row.getByText('$0.00318')).toBeInTheDocument();
     expect(row.getByText('$249.99682')).toBeInTheDocument();
-    expect(row.getByText(/UTC calendar month/)).toBeInTheDocument();
+    expect(screen.getByText(/UTC calendar month/)).toBeInTheDocument();
     expect(row.getByText('Enabled')).toBeInTheDocument();
     expect(row.getByRole('button', { name: 'Delete engineering-monthly' })).toBeInTheDocument();
     expect(screen.getByText(/concurrent in-flight requests can overshoot/)).toBeInTheDocument();

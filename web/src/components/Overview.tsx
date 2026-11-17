@@ -1,35 +1,11 @@
-import { Badge, Button } from '@fluentui/react-components';
-import {
-  DataTrendingRegular,
-  ReceiptMoneyRegular,
-  ShieldCheckmarkRegular,
-} from '@fluentui/react-icons';
+import { Button } from '@fluentui/react-components';
 import type { Assignment, BudgetStatus, Collection, Organization, UsageRecord } from '../contracts';
-import { BudgetStatusTable } from './BudgetStatusTable';
+import { BudgetCards } from './BudgetCards';
+import { WARNING_RATIO, budgetRatio } from './budgetMath';
+import { BudgetStatusNote } from './BudgetStatusTable';
+import { StatCard } from './StatCard';
+import { Unavailable } from './Unavailable';
 import { UsageTable } from './UsageTable';
-
-function Stat({
-  label,
-  value,
-  note,
-  icon,
-}: {
-  label: string;
-  value: string | number;
-  note: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <article className="stat-card">
-      <div className="stat-label">
-        {label}
-        <span>{icon}</span>
-      </div>
-      <div className="stat-value">{value}</div>
-      <p>{note}</p>
-    </article>
-  );
-}
 
 /** Summarize authorized loaded records, keeping live status and persisted usage failures separate. */
 export function Overview({
@@ -47,89 +23,64 @@ export function Overview({
   assignments: Assignment[];
   errors: Partial<Record<Collection | 'budgetStatus', string>>;
   loading: boolean;
-  navigate: (page: 'budgets' | 'usage' | 'chargeback') => void;
+  navigate: (page: 'budgets' | 'usage') => void;
 }) {
   // Count event outcomes, not provider requests inferred from HTTP success or budget admission.
   const actualCount = usage.filter((record) => record.status === 'actual').length;
   const unknownCount = usage.filter((record) => record.status === 'usage_unknown').length;
+  const nearLimit = status.filter(
+    (item) => budgetRatio(item.spent_micro_usd, item.limit_micro_usd) >= WARNING_RATIO,
+  ).length;
   return (
     <>
       <section className="stat-grid" aria-label="Monthly usage summary">
-        <Stat
-          label="Applicable monthly budgets"
+        <StatCard
+          label="Budgets in scope"
           value={errors.budgetStatus ? '—' : status.length}
-          note="User, team and department limits"
-          icon={<ShieldCheckmarkRegular />}
+          note="Department, team and user limits"
         />
-        <Stat
-          label="Finalized usage records"
+        <StatCard
+          label="At or above 80% of limit"
+          value={errors.budgetStatus ? '—' : nearLimit}
+          note="Budgets close to denying requests"
+        />
+        <StatCard
+          label="Finalized requests"
           value={errors.usage ? '—' : actualCount}
           note="Actual provider-reported usage"
-          icon={<DataTrendingRegular />}
         />
-        <Stat
-          label="Unknown stream usage"
+        <StatCard
+          label="Unknown usage"
           value={errors.usage ? '—' : unknownCount}
-          note="Never represented as zero-cost"
-          icon={<ReceiptMoneyRegular />}
+          note="Streams without reported usage"
         />
       </section>
-      <section className="surface">
+      <section className="page-section">
         <div className="section-heading">
-          <h2>Month-to-date budget status</h2>
+          <h2>Month-to-date budgets</h2>
           <Button appearance="subtle" size="small" onClick={() => navigate('budgets')}>
-            View budgets
+            View all budgets
           </Button>
         </div>
         {errors.budgetStatus ? (
-          <p className="empty-inline">Budget status is unavailable. Refresh to retry.</p>
+          <Unavailable what="Budget status" />
+        ) : !status.length && !loading ? (
+          <p className="empty-inline">No configured monthly budgets apply to this account.</p>
         ) : (
-          <BudgetStatusTable
-            status={status}
-            organizations={organizations}
-            assignments={assignments}
-            loading={loading}
-          />
+          <BudgetCards status={status} organizations={organizations} assignments={assignments} />
         )}
+        <BudgetStatusNote />
       </section>
-      <section className="surface">
+      <section className="page-section">
         <div className="section-heading">
-          <div>
-            <h2>Enforcement and accounting</h2>
-            <p className="muted">
-              Monthly spend is checked before a request. Provider-reported actual cost is recorded
-              after completion; every configured level is enforced.
-            </p>
-          </div>
-          <Badge appearance="tint" color="warning">
-            Soft cap
-          </Badge>
-        </div>
-        <p>
-          Concurrent in-flight requests may overshoot a budget. Once actual spend reaches the limit,
-          subsequent requests are denied. This is not a strict no-overshoot financial control.
-        </p>
-        <div className="row-actions">
-          <Button appearance="subtle" onClick={() => navigate('usage')}>
-            View usage
-          </Button>
-          <Button appearance="subtle" onClick={() => navigate('chargeback')}>
-            Open chargeback
-          </Button>
-        </div>
-      </section>
-      <section className="surface">
-        <div className="section-heading">
-          <h2>Latest authorized usage</h2>
+          <h2>Latest usage</h2>
           <Button appearance="subtle" size="small" onClick={() => navigate('usage')}>
-            Explore usage
+            View all usage
           </Button>
         </div>
-        {errors.usage ? (
-          <p className="empty-inline">Usage is unavailable. Refresh to retry.</p>
-        ) : (
-          <UsageTable records={usage.slice(0, 5)} />
-        )}
+        <div className="surface">
+          {errors.usage ? <Unavailable what="Usage" /> : <UsageTable records={usage.slice(0, 5)} />}
+        </div>
       </section>
     </>
   );

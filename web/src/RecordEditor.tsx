@@ -3,12 +3,15 @@ import {
   Button,
   Checkbox,
   Dialog,
+  DialogActions,
   DialogBody,
   DialogContent,
   DialogSurface,
   DialogTitle,
   Field,
   Input,
+  MessageBar,
+  MessageBarBody,
   Select,
   Spinner,
 } from '@fluentui/react-components';
@@ -344,21 +347,18 @@ export function RecordEditor({
   );
   const userAssignments = assignments.filter((assignment) => assignment.enabled);
   const aliases = [...new Set(models.map((model) => model.model))].sort();
-  // Preserve a previously saved alias even if it is absent from the current deployment inventory.
-  const modelChoices: [string, string][] = [
-    ['*', 'All registered models (*)'],
-    ...aliases.map((alias): [string, string] => [alias, alias]),
-    ...(draft.model && draft.model !== '*' && !aliases.includes(String(draft.model))
-      ? [[String(draft.model), `${draft.model} (current)`] as [string, string]]
-      : []),
-  ];
-  const priceModelChoices: [string, string][] = [
-    ['', 'Choose a registered model'],
-    ...aliases.map((alias): [string, string] => [alias, alias]),
-    ...(draft.model && !aliases.includes(String(draft.model))
-      ? [[String(draft.model), `${draft.model} (current)`] as [string, string]]
-      : []),
-  ];
+  /** Registered aliases plus a leading option; a saved alias missing from inventory stays selectable. */
+  const aliasChoices = (leading: [string, string], keepsWildcard: boolean): [string, string][] => {
+    const saved = String(draft.model ?? '');
+    const missing = saved && (keepsWildcard ? saved !== '*' : true) && !aliases.includes(saved);
+    return [
+      leading,
+      ...aliases.map((alias): [string, string] => [alias, alias]),
+      ...(missing ? [[saved, `${saved} (current)`] as [string, string]] : []),
+    ];
+  };
+  const modelChoices = aliasChoices(['*', 'All registered models (*)'], true);
+  const priceModelChoices = aliasChoices(['', 'Choose a registered model'], false);
   const currentType = String(draft.subject_type ?? 'user');
 
   return (
@@ -380,11 +380,10 @@ export function RecordEditor({
               {record ? 'Edit' : 'Create'} {titles[collection]}
             </DialogTitle>
             <DialogContent>
-              <p className="muted">Changes are enforced by the API. Review scope before saving.</p>
               {error && (
-                <div role="alert" className="error">
-                  {error}
-                </div>
+                <MessageBar intent="error" role="alert">
+                  <MessageBarBody>{error}</MessageBarBody>
+                </MessageBar>
               )}
               <div className="form-grid">
                 {input(
@@ -475,30 +474,32 @@ export function RecordEditor({
                   </>
                 )}
                 {collection !== 'prices' && (
-                  <Checkbox
-                    label="Enabled"
-                    checked={Boolean(draft.enabled)}
-                    disabled={saving}
-                    onChange={(_, data) => update('enabled', Boolean(data.checked))}
-                  />
+                  <Field className="form-wide">
+                    <Checkbox
+                      label="Enabled"
+                      checked={Boolean(draft.enabled)}
+                      disabled={saving}
+                      onChange={(_, data) => update('enabled', Boolean(data.checked))}
+                    />
+                  </Field>
                 )}
               </div>
               {collection === 'budgets' && (
-                <p className="fine-print">
-                  Monthly limits use UTC calendar months. Every matching user, team, and department
+                <p className="note">
+                  Limits reset each UTC calendar month. Every matching user, team and department
                   budget applies. This is a soft cap: concurrent in-flight requests may overshoot;
-                  subsequent requests are denied.
+                  later requests are denied.
                 </p>
               )}
             </DialogContent>
-            <div className="dialog-actions">
+            <DialogActions>
               <Button disabled={saving} onClick={cancel}>
                 Cancel
               </Button>
               <Button appearance="primary" type="submit" disabled={saving}>
                 {saving ? <Spinner size="tiny" label="Saving…" /> : 'Save changes'}
               </Button>
-            </div>
+            </DialogActions>
           </DialogBody>
         </form>
       </DialogSurface>

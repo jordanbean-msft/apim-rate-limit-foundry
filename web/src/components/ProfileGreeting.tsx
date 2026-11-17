@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Avatar } from '@fluentui/react-components';
 import { beginDependency } from '../telemetry';
-
-/** Derive an avatar fallback entirely in-browser when optional Graph details are unavailable. */
-function initials(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return parts.length > 1
-    ? `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
-    : (parts[0]?.slice(0, 2).toUpperCase() ?? '?');
-}
 
 /** Enrich the signed-in label with optional cloud-specific Graph name/photo calls, not API tokens. */
 export function ProfileGreeting({
@@ -103,13 +96,13 @@ export function ProfileGreeting({
 
   return (
     <div className="profile-greeting" aria-label="Signed-in profile">
-      {photoUrl ? (
-        <img className="profile-photo" src={photoUrl} alt="" />
-      ) : (
-        <span className="profile-initials" aria-hidden="true">
-          {initials(displayName)}
-        </span>
-      )}
+      <Avatar
+        name={displayName}
+        size={28}
+        color="colorful"
+        image={photoUrl ? { src: photoUrl } : undefined}
+        aria-hidden="true"
+      />
       <span>Howdy {displayName}!</span>
     </div>
   );

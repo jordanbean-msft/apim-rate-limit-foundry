@@ -1,5 +1,15 @@
-import { Badge } from '@fluentui/react-components';
+import {
+  Badge,
+  Table,
+  TableBody,
+  TableCell,
+  TableCellLayout,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
+} from '@fluentui/react-components';
 import type { Model, Price } from '../contracts';
+import { Unavailable } from './Unavailable';
 
 /** Show deployment-owned model routes and optional admin-only price-pin readiness diagnostics. */
 export function ModelInventory({
@@ -17,79 +27,78 @@ export function ModelInventory({
   loading: boolean;
   showPrices: boolean;
 }) {
-  if (modelsError)
-    return <p className="empty-inline">Model inventory unavailable. Refresh to retry.</p>;
+  if (modelsError) return <Unavailable what="Model inventory" />;
   if (!models.length && !loading)
     return (
       <p className="empty-inline">No OpenAI models are registered in the gateway inventory.</p>
     );
   return (
-    <section className="surface data-panel">
+    <section className="surface">
       <div className="table-scroll">
-        <table>
-          <caption className="visually-hidden">Registered OpenAI models</caption>
-          <thead>
-            <tr>
-              <th>Protocol / alias</th>
-              <th>Provider deployment</th>
-              <th>Price version / readiness</th>
-              <th>Token limits</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table aria-label="Registered OpenAI models">
+          <TableHeader>
+            <TableRow>
+              <TableHeaderCell>Model alias</TableHeaderCell>
+              <TableHeaderCell>Provider deployment</TableHeaderCell>
+              <TableHeaderCell>Price version</TableHeaderCell>
+              <TableHeaderCell className="num">Max input tokens</TableHeaderCell>
+              <TableHeaderCell className="num">Max output tokens</TableHeaderCell>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {models.map((model) => {
               // Readiness requires exactly one card for alias + pinned version, not just any rate.
               const matches = prices.filter(
                 (price) => price.model === model.model && price.version === model.price_version,
               );
               const price = matches[0];
-              const status = !showPrices
-                ? 'Price pin managed by deployment'
-                : pricesError
-                  ? 'Price catalog unavailable'
-                  : loading
-                    ? 'Checking price'
-                    : matches.length === 0
-                      ? 'Price not configured'
-                      : matches.length > 1
-                        ? 'Ambiguous price'
-                        : 'Price configured';
+              const status = pricesError
+                ? 'Price catalog unavailable'
+                : loading
+                  ? 'Checking price'
+                  : matches.length === 0
+                    ? 'Price not configured'
+                    : matches.length > 1
+                      ? 'Ambiguous price'
+                      : 'Price configured';
               return (
-                <tr key={model.id}>
-                  <td>
-                    <strong>{model.model}</strong>
-                    <div className="fine-print">{model.api_protocol}</div>
-                  </td>
-                  <td>{model.deployment_name}</td>
-                  <td>
-                    <div>{model.price_version}</div>
-                    <Badge
-                      appearance="tint"
-                      color={status === 'Price configured' || !showPrices ? 'success' : 'warning'}
+                <TableRow key={model.id}>
+                  <TableCell>
+                    <TableCellLayout appearance="primary" description={model.api_protocol}>
+                      {model.model}
+                    </TableCellLayout>
+                  </TableCell>
+                  <TableCell>{model.deployment_name}</TableCell>
+                  <TableCell>
+                    <TableCellLayout
+                      description={
+                        showPrices && status === 'Price configured' && price
+                          ? `Input $${price.input_per_million} · Cached $${price.cached_input_per_million} · Output $${price.output_per_million} / million tokens`
+                          : undefined
+                      }
                     >
-                      {status}
-                    </Badge>
-                    {showPrices && status === 'Price configured' && price && (
-                      <div className="fine-print">
-                        Input ${price.input_per_million} · Cached ${price.cached_input_per_million}{' '}
-                        · Output ${price.output_per_million} / million tokens
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    Input {model.max_input_tokens.toLocaleString()}
-                    <br />
-                    Output {model.max_output_tokens.toLocaleString()}
-                  </td>
-                </tr>
+                      {model.price_version}{' '}
+                      {showPrices && (
+                        <Badge
+                          appearance="tint"
+                          color={status === 'Price configured' ? 'success' : 'warning'}
+                        >
+                          {status}
+                        </Badge>
+                      )}
+                    </TableCellLayout>
+                  </TableCell>
+                  <TableCell className="num">{model.max_input_tokens.toLocaleString()}</TableCell>
+                  <TableCell className="num">{model.max_output_tokens.toLocaleString()}</TableCell>
+                </TableRow>
               );
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
-      <p className="fine-print panel-footnote">
-        The gateway supports OpenAI Chat Completions and Responses. Model routing and pinned price
-        versions are deployment-managed; the portal does not configure provider deployment IDs.
+      <p className="note">
+        Model routing and pinned price versions are deployment-managed; the portal does not
+        configure provider deployment IDs.
       </p>
     </section>
   );

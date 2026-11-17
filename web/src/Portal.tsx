@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Avatar,
   Badge,
   Button,
   Dialog,
+  DialogActions,
   DialogBody,
   DialogContent,
   DialogSurface,
@@ -10,22 +12,35 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  NavDrawer,
+  NavDrawerBody,
+  NavItem,
+  NavSectionHeader,
   Spinner,
 } from '@fluentui/react-components';
 import {
   ArrowClockwiseRegular,
   ArrowExitRegular,
+  BrainCircuitRegular,
+  BuildingRegular,
+  ChartMultipleRegular,
   DataTrendingRegular,
-  GridRegular,
+  HomeRegular,
+  PersonAccountsRegular,
   ReceiptMoneyRegular,
+  SearchRegular,
   ShieldCheckmarkRegular,
+  TagRegular,
+  WalletRegular,
 } from '@fluentui/react-icons';
 import { BudgetStatusTable } from './components/BudgetStatusTable';
 import { ChargebackReport } from './components/ChargebackReport';
 import { ConfigurationTable } from './components/ConfigurationTable';
 import { Dashboard } from './components/Dashboard';
+import { InsightsPanel } from './components/InsightsPanel';
 import { ModelInventory } from './components/ModelInventory';
 import { Overview } from './components/Overview';
+import { Unavailable } from './components/Unavailable';
 import { UsageTable } from './components/UsageTable';
 import type {
   BudgetStatus,
@@ -38,19 +53,19 @@ import type {
   Role,
 } from './contracts';
 import { utcTime } from './format';
+import { budgetInsights } from './insights/budgetInsights';
+import {
+  assignmentInsights,
+  modelInsights,
+  organizationInsights,
+  priceInsights,
+} from './insights/catalogInsights';
+import { sortInsights, type Insight, type InsightAction } from './insights/types';
+import { usageInsights } from './insights/usageInsights';
+import type { Page } from './pages';
 import { RecordEditor } from './RecordEditor';
 import { track } from './telemetry';
 
-type Page =
-  | 'overview'
-  | 'budgets'
-  | 'organizations'
-  | 'assignments'
-  | 'prices'
-  | 'models'
-  | 'usage'
-  | 'chargeback'
-  | 'dashboard';
 type Data = { [K in Collection]: Collections[K][] };
 type Errors = Partial<Record<Collection | 'budgetStatus' | 'chargeback', string>>;
 const emptyData: Data = {
@@ -62,30 +77,80 @@ const emptyData: Data = {
   usage: [],
 };
 const editablePages: EditableCollection[] = ['budgets', 'organizations', 'assignments', 'prices'];
-const pages: { id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }[] = [
-  { id: 'overview', label: 'Overview', icon: <GridRegular /> },
-  { id: 'budgets', label: 'Monthly budgets', icon: <ShieldCheckmarkRegular /> },
-  { id: 'chargeback', label: 'Chargeback', icon: <ReceiptMoneyRegular /> },
-  { id: 'usage', label: 'Usage records', icon: <DataTrendingRegular /> },
-  { id: 'organizations', label: 'Organization units', icon: <GridRegular />, adminOnly: true },
-  { id: 'assignments', label: 'User assignments', icon: <GridRegular />, adminOnly: true },
-  { id: 'prices', label: 'OpenAI price cards', icon: <ReceiptMoneyRegular />, adminOnly: true },
-  { id: 'models', label: 'Model inventory', icon: <GridRegular /> },
-  { id: 'dashboard', label: 'Azure dashboard', icon: <DataTrendingRegular />, adminOnly: true },
+type NavSection = 'Monitor' | 'Manage' | 'Reference';
+const pages: {
+  id: Page;
+  label: string;
+  icon: React.ReactElement;
+  section: NavSection;
+  adminOnly?: boolean;
+}[] = [
+  { id: 'overview', label: 'Overview', icon: <HomeRegular />, section: 'Monitor' },
+  { id: 'budgets', label: 'Monthly budgets', icon: <WalletRegular />, section: 'Monitor' },
+  { id: 'usage', label: 'Usage records', icon: <DataTrendingRegular />, section: 'Monitor' },
+  { id: 'chargeback', label: 'Chargeback', icon: <ReceiptMoneyRegular />, section: 'Monitor' },
+  {
+    id: 'dashboard',
+    label: 'Azure dashboard',
+    icon: <ChartMultipleRegular />,
+    section: 'Monitor',
+    adminOnly: true,
+  },
+  {
+    id: 'organizations',
+    label: 'Organization units',
+    icon: <BuildingRegular />,
+    section: 'Manage',
+    adminOnly: true,
+  },
+  {
+    id: 'assignments',
+    label: 'User assignments',
+    icon: <PersonAccountsRegular />,
+    section: 'Manage',
+    adminOnly: true,
+  },
+  {
+    id: 'prices',
+    label: 'OpenAI price cards',
+    icon: <TagRegular />,
+    section: 'Manage',
+    adminOnly: true,
+  },
+  { id: 'models', label: 'Model inventory', icon: <BrainCircuitRegular />, section: 'Reference' },
 ];
+const healthyMessages: Record<Page, string> = {
+  overview: 'Every budget is below 80% of its limit.',
+  budgets: 'Every budget is below 80% of its limit, enabled, and covered at each level.',
+  organizations: 'Every team has an enabled department and assigned users.',
+  assignments: 'Every user is assigned to an enabled team in the right department.',
+  prices: 'Every price card is pinned by a model and has sensible rates.',
+  models: 'Every model has exactly one price card for its pinned version.',
+  usage: 'Every recent request reported usage.',
+  chargeback: 'No unknown requests, estimates or unallocated rows.',
+  dashboard: 'All tiles loaded.',
+};
+const navSections: NavSection[] = ['Monitor', 'Manage', 'Reference'];
+const errorLabels: Record<keyof Errors, string> = {
+  budgets: 'Budgets',
+  organizations: 'Organization units',
+  assignments: 'User assignments',
+  prices: 'Price cards',
+  models: 'Model inventory',
+  usage: 'Usage records',
+  budgetStatus: 'Budget status',
+  chargeback: 'Chargeback',
+};
 const descriptions: Record<Page, string> = {
-  overview: 'Monthly USD budgets, actual spend and authorized OpenAI usage.',
-  budgets: 'Monthly UTC calendar limits apply to all configured user, team and department levels.',
-  organizations:
-    'Manage departments, teams, parent relationships, business units and cost centers.',
-  assignments:
-    'Explicitly assign Entra principals to a team and department; membership is managed here.',
-  prices: 'Versioned OpenAI input, cached-input and output rates as exact decimal USD strings.',
-  models: 'Read-only aliases, OpenAI protocol, provider deployment and pinned price version.',
-  usage: 'Provider-reported actual usage and explicit unknown-stream outcomes.',
-  chargeback:
-    'Authorized monthly chargeback grouped by business unit, cost center and usage dimensions.',
-  dashboard: 'Charts and tables from the deployed Azure dashboard using its shared query catalog.',
+  overview: 'Monthly dollar budgets and actual spend for your departments, teams and users.',
+  budgets: 'Monthly dollar limits for departments, teams and users, resetting each UTC month.',
+  organizations: 'Departments and teams, with their business unit and cost center.',
+  assignments: 'Assign each Entra user to a team; their department follows the team.',
+  prices: 'Versioned input, cached-input and output rates per million tokens.',
+  models: 'Model aliases, provider deployments and pinned price versions.',
+  usage: 'Provider-reported actual usage, including streams with unknown usage.',
+  chargeback: 'Monthly actual spend by department, team and user for cost allocation.',
+  dashboard: 'Gateway traffic, token and accounting charts from the deployed Azure dashboard.',
 };
 
 /** Narrow navigation pages to configuration routes that support portal mutations. */
@@ -127,15 +192,18 @@ function RecordBrowser({
     JSON.stringify(record).toLowerCase().includes(search.toLowerCase()),
   );
   return (
-    <section className="surface data-panel">
+    <section className="surface">
       <div className="table-toolbar">
         <Input
           aria-label={`Search ${collection}`}
           placeholder={`Search ${collection}…`}
+          contentBefore={<SearchRegular />}
           value={search}
           onChange={(_, data) => setSearch(data.value)}
         />
-        <span className="muted">{filtered.length} records</span>
+        <span className="secondary">
+          {filtered.length} {filtered.length === 1 ? 'record' : 'records'}
+        </span>
       </div>
       <ConfigurationTable
         collection={collection}
@@ -148,9 +216,9 @@ function RecordBrowser({
       />
       {!filtered.length && !loading && (
         <div className="empty-state">
-          <DataTrendingRegular />
+          <SearchRegular />
           <h3>No matching records</h3>
-          <p>Refresh or create a new {collectionLabel(collection)}.</p>
+          <p>Clear the search, refresh, or create a new {collectionLabel(collection)}.</p>
         </div>
       )}
     </section>
@@ -313,6 +381,73 @@ export function Portal({
     setDeleting(null);
   }
 
+  const insights = useMemo<Insight[]>(() => {
+    if (!loadedAt) return [];
+    const budgetContext = {
+      status,
+      budgets: admin && !errors.budgets ? data.budgets : undefined,
+      organizations: admin && !errors.organizations ? data.organizations : undefined,
+      assignments: admin && !errors.assignments ? data.assignments : undefined,
+      admin,
+    };
+    const budgets = errors.budgetStatus ? [] : budgetInsights(budgetContext);
+    const usage = errors.usage ? [] : usageInsights(data.usage, admin);
+    switch (page) {
+      case 'overview':
+        return sortInsights([...budgets, ...usage.filter((item) => item.id === 'unknown-usage')]);
+      case 'budgets':
+        return budgets;
+      case 'usage':
+        return usage;
+      case 'models':
+        return errors.models
+          ? []
+          : modelInsights(data.models, errors.prices ? [] : data.prices, admin && !errors.prices);
+      case 'prices':
+        return errors.prices ? [] : priceInsights(data.prices, data.models);
+      case 'organizations':
+        return errors.organizations || errors.assignments
+          ? []
+          : organizationInsights(data.organizations, data.assignments);
+      case 'assignments':
+        return errors.assignments || errors.organizations
+          ? []
+          : assignmentInsights(data.assignments, data.organizations);
+      default:
+        return [];
+    }
+  }, [loadedAt, page, status, data, errors, admin]);
+
+  // An all-clear is only meaningful when there is data it was checked against.
+  const hasSubject: Record<Page, boolean> = {
+    overview: status.length > 0,
+    budgets: status.length > 0 || data.budgets.length > 0,
+    usage: data.usage.length > 0,
+    models: data.models.length > 0,
+    prices: data.prices.length > 0,
+    organizations: data.organizations.length > 0,
+    assignments: data.assignments.length > 0,
+    chargeback: false,
+    dashboard: false,
+  };
+
+  /** Perform a recommended action: edits and creates are administrator-only and API-enforced. */
+  function runInsightAction(action: InsightAction) {
+    setNotice('');
+    if (action.kind === 'navigate') setPage(action.page);
+    else if (!admin) return;
+    else if (action.kind === 'create') setEditor({ collection: action.collection });
+    else if (action.kind === 'edit') {
+      const record = (data[action.collection] as EditableRecord[]).find(
+        (item) => item.id === action.id,
+      );
+      if (record) setEditor({ collection: action.collection, record });
+      else setPage(action.collection);
+    }
+  }
+
+  const current = pages.find((item) => item.id === page);
+  const roleLabel = admin ? 'Administrator' : canRead ? 'Reader' : 'Unassigned';
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main">
@@ -324,46 +459,56 @@ export function Portal({
             <ShieldCheckmarkRegular />
           </span>
           <span>
-            AI Budget<span className="brand-sub">CONTROL PLANE</span>
+            AI Budget Control
+            <span className="brand-sub">Per-dollar rate limits</span>
           </span>
         </a>
-        <div className="workspace-label">WORKSPACE</div>
-        <nav aria-label="Primary navigation">
-          {pages
-            .filter((item) => !item.adminOnly || admin)
-            .map((item) => (
-              <button
-                key={item.id}
-                className={`nav-item ${page === item.id ? 'active' : ''}`}
-                aria-current={page === item.id ? 'page' : undefined}
-                onClick={() => {
-                  setPage(item.id);
-                  setNotice('');
-                }}
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <span className="status-dot" />
-          {cloud === 'government' ? 'Azure Government' : 'Azure Commercial'}
-          <p>
-            {demo ? 'Local fixture mode · no authentication' : 'Tenant-scoped · Entra protected'}
-          </p>
-        </div>
+        <NavDrawer
+          open
+          type="inline"
+          selectedValue={page}
+          onNavItemSelect={(_, data) => {
+            setPage(data.value as Page);
+            setNotice('');
+          }}
+          aria-label="Primary navigation"
+          className="nav-drawer"
+        >
+          <NavDrawerBody>
+            {navSections.map((section) => {
+              const items = pages.filter(
+                (item) => item.section === section && (!item.adminOnly || admin),
+              );
+              if (!items.length) return null;
+              return (
+                <div key={section}>
+                  <NavSectionHeader>{section}</NavSectionHeader>
+                  {items.map((item) => (
+                    <NavItem key={item.id} value={item.id} icon={item.icon} as="button">
+                      {item.label}
+                    </NavItem>
+                  ))}
+                </div>
+              );
+            })}
+          </NavDrawerBody>
+        </NavDrawer>
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <span className="breadcrumb">
-            AI gateway <span>/</span> {pages.find((item) => item.id === page)?.label}
-          </span>
+          <Badge appearance="outline" color="informative">
+            {cloud === 'government' ? 'Azure Government' : 'Azure Commercial'}
+          </Badge>
           <div className="account">
             <Badge appearance="tint" color={admin ? 'brand' : canRead ? 'informative' : 'subtle'}>
-              {admin ? 'Administrator' : canRead ? 'Reader' : 'Unassigned'}
+              {roleLabel}
             </Badge>
-            {profileGreeting ?? <span className="profile-greeting">Howdy {identity}!</span>}
+            {profileGreeting ?? (
+              <div className="profile-greeting">
+                <Avatar name={identity} size={28} color="colorful" aria-hidden="true" />
+                <span className="identity">Howdy {identity}!</span>
+              </div>
+            )}
             {onSignOut && (
               <Button
                 icon={<ArrowExitRegular />}
@@ -378,8 +523,8 @@ export function Portal({
           {demo && (
             <MessageBar intent="warning">
               <MessageBarBody>
-                <strong>LOCAL DEMO — fixture data only.</strong> No authentication or Azure calls.
-                Edits live only in this browser session and reset on reload. Prices are
+                <strong>Local demo — fixture data only.</strong> No authentication or Azure calls.
+                Edits live only in this browser session and reset on reload; prices are
                 illustrative.
               </MessageBarBody>
             </MessageBar>
@@ -397,10 +542,7 @@ export function Portal({
             <>
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow">
-                    {admin ? 'GOVERNANCE & VISIBILITY' : 'YOUR USAGE & LIMITS'}
-                  </div>
-                  <h1>{pages.find((item) => item.id === page)?.label}</h1>
+                  <h1>{current?.label}</h1>
                   <p>{descriptions[page]}</p>
                 </div>
                 {page !== 'dashboard' && (
@@ -425,16 +567,18 @@ export function Portal({
                 )}
               </div>
               {!admin && (
-                <div className="read-only-note">
-                  <ShieldCheckmarkRegular /> Read-only workspace. Budget status, usage and
-                  chargeback are scoped by the API to your user, team and department assignments.
-                </div>
+                <MessageBar intent="info">
+                  <MessageBarBody>
+                    Read-only. Budgets, usage and chargeback are limited to your user, team and
+                    department.
+                  </MessageBarBody>
+                </MessageBar>
               )}
               {Object.entries(errors).map(([collection, message]) => (
                 <MessageBar key={collection} intent="error">
                   <MessageBarBody>
-                    <strong>{collection}:</strong> {message} Use Refresh to retry. No sample data
-                    has been substituted.
+                    <strong>{errorLabels[collection as keyof Errors]}:</strong> {message} Use
+                    Refresh to retry. No sample data has been substituted.
                   </MessageBarBody>
                 </MessageBar>
               ))}
@@ -445,11 +589,21 @@ export function Portal({
               )}
               {loading && (
                 <div role="status" className="loading-line">
-                  <Spinner size="tiny" label="Loading authorized records…" />
+                  <Spinner size="tiny" label="Loading…" />
                 </div>
               )}
+              {loadedAt &&
+                page !== 'dashboard' &&
+                page !== 'chargeback' &&
+                (insights.length > 0 || hasSubject[page]) && (
+                  <InsightsPanel
+                    insights={insights}
+                    healthy={healthyMessages[page]}
+                    onAction={runInsightAction}
+                  />
+                )}
               {page === 'dashboard' ? (
-                <Dashboard api={api} fixtureMode={demo} />
+                <Dashboard api={api} fixtureMode={demo} onAction={runInsightAction} />
               ) : page === 'overview' ? (
                 <Overview
                   status={status}
@@ -461,14 +615,11 @@ export function Portal({
                   navigate={setPage}
                 />
               ) : page === 'budgets' ? (
-                <div className="surface data-panel">
+                <div className="surface">
                   {admin ? (
                     <>
-                      <div className="section-heading">
-                        <h2>Configured monthly budgets</h2>
-                      </div>
                       {errors.budgets ? (
-                        <p className="empty-inline">Budgets unavailable. Refresh to retry.</p>
+                        <Unavailable what="Budgets" />
                       ) : (
                         <RecordBrowser
                           collection="budgets"
@@ -486,21 +637,26 @@ export function Portal({
                       )}
                     </>
                   ) : errors.budgetStatus ? (
-                    <p className="empty-inline">Budget status unavailable. Refresh to retry.</p>
+                    <Unavailable what="Budget status" />
                   ) : (
                     <BudgetStatusTable status={status} loading={loading} />
                   )}
                 </div>
               ) : page === 'usage' ? (
                 errors.usage ? (
-                  <p className="empty-inline">Usage is unavailable. Refresh to retry.</p>
+                  <Unavailable what="Usage" />
                 ) : (
-                  <section className="surface data-panel">
+                  <section className="surface">
                     <UsageTable records={data.usage} />
                   </section>
                 )
               ) : page === 'chargeback' ? (
-                <ChargebackReport api={api} refreshKey={loadedAt} />
+                <ChargebackReport
+                  api={api}
+                  refreshKey={loadedAt}
+                  admin={admin}
+                  onAction={runInsightAction}
+                />
               ) : page === 'models' ? (
                 <ModelInventory
                   models={data.models}
@@ -512,7 +668,7 @@ export function Portal({
                 />
               ) : isEditable(page) ? (
                 errors[page] ? (
-                  <p className="empty-inline">{page} are unavailable. Refresh to retry.</p>
+                  <Unavailable what={errorLabels[page]} />
                 ) : (
                   <RecordBrowser
                     key={page}
@@ -530,12 +686,7 @@ export function Portal({
                 )
               ) : null}
               <footer className="page-footer">
-                <span>
-                  {loadedAt
-                    ? `Last refresh attempt ${utcTime(loadedAt)}`
-                    : 'Awaiting first refresh'}
-                </span>
-                <span>USD · UTC calendar months · OpenAI Chat Completions and Responses</span>
+                {loadedAt ? `Last refreshed ${utcTime(loadedAt)}` : 'Awaiting first refresh'}
               </footer>
             </>
           )}
@@ -568,12 +719,12 @@ export function Portal({
                   Existing usage history is not deleted.
                 </p>
                 {mutationError && (
-                  <p role="alert" className="error">
-                    {mutationError}
-                  </p>
+                  <MessageBar intent="error" role="alert">
+                    <MessageBarBody>{mutationError}</MessageBarBody>
+                  </MessageBar>
                 )}
               </DialogContent>
-              <div className="dialog-actions">
+              <DialogActions>
                 <Button disabled={deleteBusy} onClick={cancelDelete}>
                   Cancel
                 </Button>
@@ -584,7 +735,7 @@ export function Portal({
                 >
                   {deleteBusy ? 'Deleting…' : 'Confirm delete'}
                 </Button>
-              </div>
+              </DialogActions>
             </DialogBody>
           </DialogSurface>
         </Dialog>

@@ -200,6 +200,24 @@ Government model availability. Its demo metadata and local unit tests do not pro
 live cloud access or interactive sign-in. Source navigation and extension boundaries
 are in the [code guide](../docs/code-guide.md).
 
+### Recommended actions
+
+Every screen leads with a **Recommended actions** panel, ordered by
+urgency and limited to findings about the records actually loaded (no forecasts or generic advice), so the portal says what to do and not only what happened. The rules are pure functions in
+[`src/insights/`](src/insights) computed from data the page already loaded; they add no API calls
+and no accounting. Each recommendation names the fact, why it matters and a one-click next step
+(open the budget editor, create a record, or jump to the relevant screen). Readers only see
+guidance and navigation; create and edit actions are administrator-only and remain API-enforced.
+
+| Screen                               | Examples                                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------------------------- |
+| Overview, Monthly budgets            | Limit reached, 80% or more used, missing budgets, child limit above parent               |
+| Usage records                        | Unknown-usage requests, spend concentration by model or team, low prompt-cache hit rate  |
+| Chargeback                           | Open month is provisional, unknown requests, estimated costs, rows without a cost center |
+| Model inventory, OpenAI price cards  | Model without a price card, duplicate or unused cards, `$0` or inverted rates            |
+| Organization units, User assignments | Teams without a department or users, assignments to disabled teams                       |
+| Azure dashboard                      | Failed or empty tiles and truncated results                                              |
+
 ## Privacy-safe observability
 
 The production Node server uses Microsoft's

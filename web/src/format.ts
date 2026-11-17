@@ -17,12 +17,12 @@ export function microUsd(value: unknown): string {
   return `${units < 0n ? '-' : ''}$${whole}.${fraction}`;
 }
 
-/** Display valid timestamps in UTC and retain unparseable source values for diagnosis. */
+/** Display valid timestamps in UTC to the second and retain unparseable source values for diagnosis. */
 export function utcTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.valueOf())
     ? value
-    : `${date.toISOString().replace('T', ' ').replace('.000Z', '')} UTC`;
+    : `${date.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
 }
 
 /** Narrow unknown data to a non-array object without asserting any field-level schema. */
@@ -35,4 +35,9 @@ export function objectValue(value: unknown): Record<string, unknown> {
 /** Render scalar text without stringifying arbitrary response objects. */
 export function text(value: unknown, fallback = 'Not reported'): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback;
+}
+
+/** Locale date-time in UTC, so charts and tables agree regardless of the viewer's time zone. */
+export function utcLocale(date: Date): string {
+  return date.toLocaleString(undefined, { timeZone: 'UTC' });
 }

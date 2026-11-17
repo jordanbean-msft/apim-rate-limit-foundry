@@ -22,3 +22,9 @@ globalThis.ResizeObserver = class {
   unobserve() {}
   disconnect() {}
 };
+// jsdom has no SVG text layout; Fluent charts measure tooltip text with this method.
+if (typeof SVGElement !== 'undefined')
+  Object.defineProperty(SVGElement.prototype, 'getComputedTextLength', {
+    configurable: true,
+    value: () => 0,
+  });
