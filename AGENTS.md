@@ -34,5 +34,5 @@ Use this guide to choose the right Copilot agent type for common development tas
 | Tests | `tests/` |
 | Infrastructure | `infra/` |
 | Copilot instructions | `.github/instructions/` |
-| Copilot prompts | `.github/prompts/` |
+| Copilot skills | `.github/skills/` |
 | Architecture docs | `ARCHITECTURE.md`, `docs/` |

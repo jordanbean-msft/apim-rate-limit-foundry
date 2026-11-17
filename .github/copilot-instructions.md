@@ -87,7 +87,7 @@ infra/                     # Terraform infrastructure-as-code
 - Format Terraform changes with `terraform -chdir=infra fmt -recursive` during development.
 - A Terraform change is complete only after `terraform -chdir=infra fmt -check -recursive` and `terraform -chdir=infra validate` finish with zero errors and zero warnings. Initialize with `terraform -chdir=infra init -backend=false` first when required.
 - Azure Developer CLI (`azd`) orchestrates provisioning and deployment.
-- Remote state is stored in Azure Blob Storage (configured via `provider.conf.json`).
+- Remote state is stored in Azure Blob Storage (configured via `infra/provider.conf.json`).
 - azd environment variables flow into Terraform via `main.tfvars.json` placeholder substitution (`${VAR_NAME}` syntax). Core variables (`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION`, `AZURE_ENV_NAME`, `AZURE_RESOURCE_GROUP`, `AZURE_PRINCIPAL_ID`) are set during `azd init` or `azd env set`.
 - Terraform outputs (SCREAMING_SNAKE_CASE) are captured by azd and become environment variables for deployment and application runtime.
 - Do not use Azure Verified Modules (`Azure/avm-res-*`). Define Azure resources directly with `azurerm_*`, using `azapi_*` only when the required resource or property is not supported by `azurerm`. Look up the latest stable provider versions on the Terraform registry.

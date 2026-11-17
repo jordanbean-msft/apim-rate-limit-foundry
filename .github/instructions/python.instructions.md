@@ -12,7 +12,6 @@ applyTo: "**/*.py"
 * Keep functions small and composable.
 * Use dependency injection for external services.
 * Prefer Microsoft-published and Microsoft-maintained libraries and SDKs whenever they provide the required functionality. Use third-party alternatives only when no suitable Microsoft option exists.
-* **For LLM interactions, use Microsoft Agent Framework** (`microsoft-agents`). Never use `azure-ai-projects` directly if Agent Framework provides the needed functionality.
 
 ## Module organization
 

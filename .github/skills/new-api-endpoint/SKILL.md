@@ -40,8 +40,8 @@ Create request/response models in `src/apim_rate_limit_foundry/` with the owning
 
 ### Step 3: Router
 
-Create a router under `src/apim_rate_limit_foundry/api/`:
-- One `APIRouter` with a descriptive prefix and tag
+Add routes to the existing `APIRouter` in `src/apim_rate_limit_foundry/api.py`:
+- Use the router's existing prefix and a descriptive tag
 - Async route handlers
 - Proper status codes (201 for create, 204 for delete)
 - Dependency injection for services

@@ -44,12 +44,3 @@ applyTo: "**/*.py"
 
 * Install: `uv run pre-commit install && uv run pre-commit install --hook-type pre-push`
 * Run manually: `uv run pre-commit run --all-files`
-
-## LLM and AI Interactions — Always use Microsoft Agent Framework
-
-* **Always use the Microsoft Agent Framework** (`microsoft-agents`) for interactions with LLMs instead of lower-level Azure AI Projects library.
-* Always install the **latest version** of `microsoft-agents` from PyPI.
-* Only use `azure-ai-projects` (lower-level SDK) when there is no Agent Framework abstraction available for your use case.
-* Agent Framework provides a higher-level, more maintainable interface for building agent systems and LLM interactions.
-* Example: `uv add microsoft-agents` — this will pull the latest version.
-* For agent-specific guidance, refer to Agent Framework documentation and examples in the repository's prompt files (`.github/prompts/`).
