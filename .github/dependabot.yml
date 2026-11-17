@@ -21,3 +21,18 @@ updates:
     directory: /infra
     schedule:
       interval: weekly
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
