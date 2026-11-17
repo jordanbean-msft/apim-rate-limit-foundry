@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import Field
 
 from apim_rate_limit_foundry.models.contract import Contract
-from apim_rate_limit_foundry.models.types import Identifier
+from apim_rate_limit_foundry.models.types import SAFE_NAME, Identifier
 
 
 class Budget(Contract):
@@ -22,7 +22,15 @@ class Budget(Contract):
     subject_id: Identifier
     model: str = Field(
         default="*",
-        pattern=r"^(\*|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$",
+        pattern=rf"^(\*|{SAFE_NAME})$",
     )
     limit_micro_usd: int = Field(strict=True, ge=0, le=9_000_000_000_000)
     enabled: bool = True
+
+    def covers(self, principal_id: str, team_id: str, department_id: str) -> bool:
+        """Whether this cap's subject is the user, team or department of an assignment."""
+        return (self.subject_type, self.subject_id) in {
+            ("user", principal_id),
+            ("team", team_id),
+            ("department", department_id),
+        }

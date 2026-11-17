@@ -28,6 +28,10 @@ class ConfigurationService:
         self.reader = reader
         self.validator = validator
 
+    async def list(self, collection: str) -> list[Record]:
+        """List durable records, hiding tombstones and legacy application-scoped schemas."""
+        return await self.reader.configuration(collection)
+
     async def save(
         self, collection: str, record_id: str, record: Record, actor_tenant: str, actor: str
     ) -> Record:
@@ -66,13 +70,12 @@ class ConfigurationService:
         current = await self.repository.get(collection, record_id)
         if current is None or current.get("_deleted"):
             return
-        try:
-            CONFIG_MODELS[collection].model_validate(current)
-        except ValidationError as error:
-            if is_legacy(collection, current):
-                raise Conflict(
-                    "Legacy configuration must be archived, not deleted by the new API"
-                ) from error
+        self._reject_legacy(
+            collection,
+            CONFIG_MODELS[collection],
+            current,
+            "Legacy configuration must be archived, not deleted by the new API",
+        )
         if current.get("tenant_id", actor_tenant) != actor_tenant:
             raise ValueError("Configuration tenant must match the administrator")
         if collection == "organizations":
@@ -88,13 +91,20 @@ class ConfigurationService:
             return
         if existing.get("tenant_id") not in (None, actor_tenant):
             raise Conflict("Configuration record belongs to another tenant")
+        self._reject_legacy(
+            collection, model, existing, "Legacy configuration must be archived before replacement"
+        )
+
+    @staticmethod
+    def _reject_legacy(
+        collection: str, model: type[BaseModel], record: Record, message: str
+    ) -> None:
+        """Raise Conflict when a stored record fails the current schema as archived legacy data."""
         try:
-            model.model_validate(existing)
+            model.model_validate(record)
         except ValidationError as error:
-            if is_legacy(collection, existing):
-                raise Conflict(
-                    "Legacy configuration must be archived before replacement"
-                ) from error
+            if is_legacy(collection, record):
+                raise Conflict(message) from error
 
     async def _validate_hierarchy(self, parsed: BaseModel) -> None:
         """Apply the cross-record rule matching the parsed record's type."""

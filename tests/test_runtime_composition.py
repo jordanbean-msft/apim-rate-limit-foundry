@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -47,8 +48,8 @@ def cloud(**changes: object) -> Settings:
 def test_local_mode_defaults_to_memory_stores(settings: Settings) -> None:
     runtime = Runtime(settings)
 
-    assert isinstance(runtime.engine.repository, MemoryRepository)
-    assert isinstance(runtime.engine.counters, MemoryCounters)
+    assert isinstance(runtime.gateway.repository, MemoryRepository)
+    assert isinstance(runtime.gateway.counters, MemoryCounters)
     assert runtime.credential is None and runtime.dashboard is None
 
 
@@ -68,8 +69,8 @@ def test_local_mode_uses_emulators_only_when_both_endpoints_are_configured(
         conn_str="UseDevelopmentStorage=true", table_name=settings.table_name
     )
     clients.redis_counters.from_url.assert_called_once_with(settings, "redis://localhost:6379")
-    assert isinstance(runtime.engine.repository, TableRepository)
-    assert runtime.engine.counters is clients.redis
+    assert isinstance(runtime.gateway.repository, TableRepository)
+    assert runtime.gateway.counters is clients.redis
 
 
 @pytest.mark.parametrize("missing", ["table_endpoint", "redis_host", "redis_username"])
@@ -123,3 +124,39 @@ async def test_dashboard_is_created_only_with_dashboard_settings_and_everything_
 def test_cloud_mode_without_dashboard_settings_has_no_dashboard(clients: SimpleNamespace) -> None:
     assert Runtime(cloud()).dashboard is None
     clients.dashboard_service.assert_not_called()
+
+
+async def test_runtime_drains_and_closes_when_its_event_loop_cancels_remaining_tasks(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = Runtime(settings)
+    drain = AsyncMock()
+    monkeypatch.setattr(runtime.gateway.background, "close", drain)
+    runtime.close_on_loop_shutdown()
+    guard = runtime._shutdown_guard
+    runtime.close_on_loop_shutdown()
+    assert runtime._shutdown_guard is guard
+
+    assert guard is not None
+    await asyncio.sleep(0)
+    guard.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await guard
+
+    drain.assert_awaited_once()
+
+
+async def test_explicit_close_retires_the_shutdown_guard(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = Runtime(settings)
+    drain = AsyncMock()
+    monkeypatch.setattr(runtime.gateway.background, "close", drain)
+    runtime.close_on_loop_shutdown()
+    guard = runtime._shutdown_guard
+
+    await runtime.close()
+    await asyncio.sleep(0)
+
+    assert guard is not None and guard.cancelled()
+    drain.assert_awaited_once()

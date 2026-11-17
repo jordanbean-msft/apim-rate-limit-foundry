@@ -9,6 +9,10 @@ from fastapi import HTTPException, Request
 
 from apim_rate_limit_foundry.config import Settings
 
+ROLE_ADMIN = "RateLimit.Admin"
+ROLE_READER = "RateLimit.Reader"
+ROLE_GATEWAY = "RateLimit.Gateway"
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -17,6 +21,11 @@ class Identity:
     tenant_id: str
     principal_id: str
     roles: frozenset[str]
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether the actor holds the administrator role."""
+        return ROLE_ADMIN in self.roles
 
     def require(self, *roles: str) -> None:
         """Require any listed role, raising HTTP 403 if none is present."""
@@ -72,7 +81,7 @@ def authenticate(request: Request, settings: Settings) -> Identity:
                 values.get("roles", [])
                 + values.get("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", [])
             )
-            if "RateLimit.Gateway" in roles:
+            if ROLE_GATEWAY in roles:
                 # Reject mixed or unexpected application identities even if a role exists.
                 client_ids = {
                     value.casefold()

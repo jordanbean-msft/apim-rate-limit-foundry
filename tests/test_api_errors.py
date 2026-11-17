@@ -5,7 +5,7 @@ import pytest
 
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 from apim_rate_limit_foundry.stores.contracts import Conflict
 
 ADMIN = {
@@ -32,9 +32,9 @@ def client_for(app) -> httpx.AsyncClient:
 
 
 async def test_admin_configuration_is_saved_listed_and_deleted_through_the_api(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    async with client_for(create_app(settings, engine)) as client:
+    async with client_for(create_app(settings, gateway)) as client:
         saved = await client.put("/api/organizations/team-2", json=TEAM, headers=ADMIN)
         listed = await client.get("/api/organizations", headers=ADMIN)
         deleted = await client.delete("/api/organizations/team-2", headers=ADMIN)
@@ -47,9 +47,9 @@ async def test_admin_configuration_is_saved_listed_and_deleted_through_the_api(
 
 
 async def test_unknown_collections_are_not_found_and_non_admins_are_forbidden(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    async with client_for(create_app(settings, engine)) as client:
+    async with client_for(create_app(settings, gateway)) as client:
         assert (await client.get("/api/secrets", headers=ADMIN)).status_code == 404
         assert (await client.put("/api/secrets/x", json={}, headers=ADMIN)).status_code == 404
         assert (await client.delete("/api/secrets/x", headers=ADMIN)).status_code == 404
@@ -60,11 +60,11 @@ async def test_unknown_collections_are_not_found_and_non_admins_are_forbidden(
 
 
 async def test_domain_errors_map_to_400_and_conflicts_to_409(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    async with client_for(create_app(settings, engine)) as client:
+    async with client_for(create_app(settings, gateway)) as client:
         invalid = await client.put("/api/organizations/other-id", json=TEAM, headers=ADMIN)
-        engine.save_configuration = AsyncMock(side_effect=Conflict("someone else owns this"))
+        gateway.configuration.save = AsyncMock(side_effect=Conflict("someone else owns this"))
         conflicting = await client.put("/api/organizations/team-2", json=TEAM, headers=ADMIN)
 
     assert invalid.status_code == 400 and "Path ID" in invalid.json()["detail"]
@@ -74,34 +74,34 @@ async def test_domain_errors_map_to_400_and_conflicts_to_409(
 
 @pytest.mark.parametrize("month", ["2030-13", "2030-1", "last-month", "2030-00"])
 async def test_chargeback_rejects_malformed_months(
-    settings: Settings, engine: Engine, month: str
+    settings: Settings, gateway: GatewayServices, month: str
 ) -> None:
-    async with client_for(create_app(settings, engine)) as client:
+    async with client_for(create_app(settings, gateway)) as client:
         response = await client.get("/api/chargeback", params={"month": month}, headers=ADMIN)
 
     assert response.status_code == 400
 
 
 async def test_dashboard_is_unavailable_when_telemetry_is_not_configured(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    with patch("apim_rate_limit_foundry.api.Runtime", return_value=Mock(dashboard=None)):
-        async with client_for(create_app(settings, engine)) as client:
+    with patch("apim_rate_limit_foundry.api_services.Runtime", return_value=Mock(dashboard=None)):
+        async with client_for(create_app(settings, gateway)) as client:
             response = await client.get("/api/dashboard", headers=ADMIN)
 
     assert response.status_code == 503
 
 
 async def test_cloud_clients_are_built_once_on_demand_and_closed_with_the_app(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    runtime = Mock(engine=engine, close=AsyncMock())
-    with patch("apim_rate_limit_foundry.api.Runtime", return_value=runtime) as build:
+    runtime = Mock(gateway=gateway, close=AsyncMock())
+    with patch("apim_rate_limit_foundry.api_services.Runtime", return_value=runtime) as build:
         app = create_app(settings)
         build.assert_not_called()
         async with app.router.lifespan_context(app):
-            assert app.state.get_engine() is engine
-            assert app.state.get_engine() is engine
+            assert app.state.services.gateway is gateway
+            assert app.state.services.gateway is gateway
         build.assert_called_once_with(settings)
     runtime.close.assert_awaited_once()
 

@@ -1,9 +1,11 @@
 """Resolve the facts pinned at admission: assignment, hierarchy, price, budgets and bounds."""
 
 from apim_rate_limit_foundry.config import Settings
+from apim_rate_limit_foundry.engine.assignments import enabled_assignments
 from apim_rate_limit_foundry.models import Assignment, Budget, BudgetCheck, Organization, Price
 from apim_rate_limit_foundry.models.model_bounds import ModelBounds
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
+from apim_rate_limit_foundry.models.organization_snapshot import OrganizationSnapshot
 from apim_rate_limit_foundry.stores.contracts import Record
 
 
@@ -17,19 +19,13 @@ class AdmissionResolver:
     @staticmethod
     def assignment(tenant_id: str, principal_id: str, records: list[Record]) -> Assignment | None:
         """Resolve exactly one enabled tenant/user assignment, otherwise return None."""
-        matches = [
-            Assignment.model_validate(record)
-            for record in records
-            if record.get("tenant_id") == tenant_id
-            and record.get("principal_id") == principal_id
-            and record.get("enabled") is True
-        ]
+        matches = enabled_assignments(records, tenant_id, principal_id)
         if len(matches) != 1:
             return None
         return matches[0]
 
     @staticmethod
-    def organization_context(assignment: Assignment, records: list[Record]) -> Record:
+    def organization_context(assignment: Assignment, records: list[Record]) -> OrganizationSnapshot:
         """Validate the enabled parent chain and snapshot team chargeback dimensions."""
         organizations = {record["id"]: Organization.model_validate(record) for record in records}
         team = organizations.get(assignment.team_id)
@@ -46,12 +42,12 @@ class AdmissionResolver:
             or team.department_id != department.id
         ):
             raise ValueError("Assigned organization is unavailable")
-        return {
-            "team_id": team.id,
-            "department_id": department.id,
-            "business_unit": team.business_unit,
-            "cost_center": team.cost_center,
-        }
+        return OrganizationSnapshot(
+            team_id=team.id,
+            department_id=department.id,
+            business_unit=team.business_unit,
+            cost_center=team.cost_center,
+        )
 
     def deployment(self, check: BudgetCheck) -> ModelDeployment | None:
         """Return the registered deployment, or None when no registry is configured."""
@@ -84,26 +80,16 @@ class AdmissionResolver:
             ),
         )
 
-    def pinned_bounds(self, data: Record) -> ModelBounds:
-        """Read admission-pinned ceilings, tolerating contexts saved before they were mandatory."""
-        pinned = data.get("model_bounds")
-        return ModelBounds.model_validate(pinned) if pinned else self.model_bounds(None)
-
     @staticmethod
     def matching_budgets(
         check: BudgetCheck, assignment: Assignment, records: list[Record]
     ) -> list[Budget]:
         """Select enabled same-tenant user/team/department caps for model or wildcard."""
-        subjects = {
-            ("user", check.principal_id),
-            ("team", assignment.team_id),
-            ("department", assignment.department_id),
-        }
         return [
             budget
             for record in records
             if (budget := Budget.model_validate(record)).enabled
             and budget.tenant_id == check.tenant_id
-            and (budget.subject_type, budget.subject_id) in subjects
+            and budget.covers(check.principal_id, assignment.team_id, assignment.department_id)
             and budget.model in ("*", check.model)
         ]

@@ -35,6 +35,11 @@ def test_azure_never_allows_local_bypasses(local: dict) -> None:
         azure(**local)
 
 
+def test_event_hub_namespace_and_name_come_as_a_pair() -> None:
+    with pytest.raises(ValueError, match="EVENT_HUB_FQDN and EVENT_HUB_NAME"):
+        Settings(_env_file=None, local_store_enabled=True, event_hub_fqdn="events.example")
+
+
 def test_local_persistent_endpoints_come_as_a_pair_in_explicit_local_mode() -> None:
     connection = SecretStr("UseDevelopmentStorage=true")
 

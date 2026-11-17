@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from apim_rate_limit_foundry.accounting import usage_partition, utc_month
-from apim_rate_limit_foundry.engine import USAGE_COLLECTION, Engine
+from apim_rate_limit_foundry.engine import USAGE_COLLECTION, GatewayServices
 from apim_rate_limit_foundry.stores.contracts import Record
 
 
@@ -40,8 +40,8 @@ class FakeHttpSession:
         return FakePost(self.handler(url, **kwargs))
 
 
-async def persisted_usage(engine: Engine, tenant_id: str = "tenant-1") -> list[Record]:
+async def persisted_usage(gateway: GatewayServices, tenant_id: str = "tenant-1") -> list[Record]:
     """Read the current month's mirrored usage history for one tenant."""
-    return await engine.repository.list(
+    return await gateway.repository.list(
         USAGE_COLLECTION, usage_partition(tenant_id, utc_month()[0])
     )

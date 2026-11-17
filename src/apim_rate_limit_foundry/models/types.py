@@ -7,6 +7,9 @@ from pydantic import BeforeValidator, Field
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:@*-]+$")]
 ApiProtocol = Literal["openai-chat", "openai-responses"]
+# Registered model aliases, deployment names and price models share this bounded shape.
+SAFE_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+SAFE_NAME_PATTERN = rf"^{SAFE_NAME}$"
 
 
 def _decimal_string(value: object) -> object:

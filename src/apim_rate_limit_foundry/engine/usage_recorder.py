@@ -1,21 +1,21 @@
 """Finalize admitted requests into replay-protected, priced usage events."""
 
 import json
-import logging
 from datetime import UTC, datetime
 
 from apim_rate_limit_foundry.accounting import digest, price_usage, usage_partition
 from apim_rate_limit_foundry.background_writer import BackgroundWriter
-from apim_rate_limit_foundry.engine.admission_resolver import AdmissionResolver
+from apim_rate_limit_foundry.engine.budget_status_reporter import BudgetStatusReporter
 from apim_rate_limit_foundry.engine.catalog import USAGE_COLLECTION
 from apim_rate_limit_foundry.engine.events import event
 from apim_rate_limit_foundry.engine.keys import opaque
-from apim_rate_limit_foundry.models import Price
+from apim_rate_limit_foundry.engine.usage_telemetry import UsageTelemetry
+from apim_rate_limit_foundry.export.usage_event_publisher import UsageEventPublisher
+from apim_rate_limit_foundry.models.admission_context import AdmissionContext
 from apim_rate_limit_foundry.models.budget_check import UsageRecordRequest
 from apim_rate_limit_foundry.models.priced_usage import PricedUsage
-from apim_rate_limit_foundry.rate_limit_metrics import rate_metrics
 from apim_rate_limit_foundry.stores.contracts import Conflict, CounterStore, Record, Repository
-from apim_rate_limit_foundry.telemetry import emit, operation_span
+from apim_rate_limit_foundry.telemetry import operation_span
 
 
 class UsageRecorder:
@@ -26,20 +26,23 @@ class UsageRecorder:
         repository: Repository,
         counters: CounterStore,
         background: BackgroundWriter,
-        resolver: AdmissionResolver,
+        budget_status: BudgetStatusReporter,
+        publisher: UsageEventPublisher | None = None,
     ) -> None:
-        """Bind stores, the best-effort mirror and the bounds resolver."""
+        """Bind stores, the best-effort mirror, budget reporting and the optional export."""
         self.repository = repository
         self.counters = counters
         self.background = background
-        self.resolver = resolver
+        self.budget_status = budget_status
+        self.publisher = publisher
 
     async def record(self, body: UsageRecordRequest) -> Record:
         """Finalize one request and return ``event`` plus its ``replayed`` flag.
 
         Acceptance atomically records usage and applicable spend in Redis; Table
-        export is asynchronous and lossy. Identical retries return the saved event,
-        while conflicting finalizations or missing/denied admission raise Conflict.
+        mirror and export are asynchronous and lossy. Identical retries return the
+        saved event, while conflicting finalizations or missing/denied admission
+        raise Conflict.
         """
         with operation_span("usage.record", request_id=body.request_id):
             return await self._record(body)
@@ -49,34 +52,35 @@ class UsageRecorder:
         fingerprint = self._fingerprint(body)
         prior = await self.counters.usage(body.request_id)
         if prior is not None:
-            self._validate_replay(prior, body.status, fingerprint)
-            return self._replayed(prior["data"]["event"])
+            return self._replayed(prior, body.status, fingerprint)
         request = await self.counters.request(body.request_id)
         if request is None:
             raise Conflict("Budget check not found in operational cache")
-        data = request["data"]
-        priced = self._price(body, data)
-        event_data = self._event_data(body, data, priced)
+        context = AdmissionContext.model_validate(request["data"])
+        priced = self._price(body, context)
+        event_data = self._event_data(body, context, priced)
+        # Reports read the flat fields, while replay reads the nested ``event``.
         record_data = {
             **event_data,
             "submitted_status": body.status,
             "usage_fingerprint": fingerprint,
-            "counter_keys": self._counter_keys(data),
+            "counter_keys": self._counter_keys(context),
             "event": event_data,
         }
-        check = data["check"]
+        check = context.check
         usage_record = event(
-            "usage", request["id"], check["tenant_id"], check["principal_id"], record_data
+            "usage", request["id"], check.tenant_id, check.principal_id, record_data
         )
         # The store owns atomic increment-plus-replay protection; only its winner
-        # schedules a durable mirror. Replay cannot repair a previously lost write.
+        # schedules the durable mirror and export. Replay cannot repair a lost write.
         saved, created = await self.counters.record(body.request_id, usage_record)
         if not created:
-            self._validate_replay(saved, body.status, fingerprint)
-            return self._replayed(saved["data"]["event"])
-        self._mirror(request["id"], saved, check["tenant_id"], data["month"])
-        self._emit_recorded(body, check, priced, event_data)
-        rate_metrics.usage(saved["data"]["event"], False)
+            return self._replayed(saved, body.status, fingerprint)
+        self._mirror(request["id"], saved, check.tenant_id, context.month)
+        self._export(body.request_id, event_data)
+        UsageTelemetry.recorded(body.request_id, check.model, priced, event_data)
+        if priced.cost_micro_usd is not None:
+            await self.budget_status.report(context)
         return {"event": saved["data"]["event"], "replayed": False}
 
     @staticmethod
@@ -90,80 +94,80 @@ class UsageRecorder:
         return digest(body.status, serialized)
 
     @staticmethod
-    def _validate_replay(record: Record, status: str, fingerprint: str) -> None:
-        """Reject retries differing from the original submission, even if both normalize alike."""
-        if record["data"]["submitted_status"] != status:
+    def _replayed(saved: Record, status: str, fingerprint: str) -> Record:
+        """Return the saved event for an identical retry, rejecting any differing one.
+
+        Differences are rejected even if both submissions would normalize alike.
+        """
+        if saved["data"]["submitted_status"] != status:
             raise Conflict("Usage request already finalized differently")
-        if record["data"]["usage_fingerprint"] != fingerprint:
+        if saved["data"]["usage_fingerprint"] != fingerprint:
             raise Conflict("Usage request replayed with different provider usage")
+        UsageTelemetry.replayed(saved["data"]["event"])
+        return {"event": saved["data"]["event"], "replayed": True}
 
     @staticmethod
-    def _replayed(saved_event: Record) -> Record:
-        """Report an identical retry with the originally saved event."""
-        emit("usage_record_replayed", **saved_event, replayed=True)
-        rate_metrics.usage(saved_event, True)
-        return {"event": saved_event, "replayed": True}
-
-    def _price(self, body: UsageRecordRequest, data: Record) -> PricedUsage:
+    def _price(body: UsageRecordRequest, context: AdmissionContext) -> PricedUsage:
         """Price provider usage with the admission snapshot, charging unknown usage its bound.
 
         Invalid/missing usage is never treated as free: it is flagged unknown and
         charged the upper bound pinned at admission so budgets still decrement.
         """
-        if not data["decision"]["allowed"]:
+        if not context.decision.allowed:
             raise Conflict("Denied requests cannot be charged")
         if body.status == "usage_unknown" and body.provider_usage is not None:
             raise ValueError("Unknown usage must not include fabricated provider counters")
         return price_usage(
             body.status,
             body.provider_usage,
-            data["check"]["api_protocol"],
-            Price.model_validate(data["price"]),
-            self.resolver.pinned_bounds(data),
+            context.check.api_protocol,
+            context.price,
+            context.model_bounds,
         )
 
     @staticmethod
-    def _counter_keys(data: Record) -> list[str]:
+    def _counter_keys(context: AdmissionContext) -> list[str]:
         """Name the six subject/model projections updated for every accepted usage.
 
         They are updated even when no matching budget exists yet, so later caps see
         prior operational spend.
         """
-        check = data["check"]
-        snapshot = data["organization"]
+        check = context.check
         return [
-            digest(check["tenant_id"], kind, subject_id, data["month"], model)
+            digest(check.tenant_id, kind, subject_id, context.month, model)
             for kind, subject_id in (
-                ("user", check["principal_id"]),
-                ("team", snapshot["team_id"]),
-                ("department", snapshot["department_id"]),
+                ("user", check.principal_id),
+                ("team", context.organization.team_id),
+                ("department", context.organization.department_id),
             )
-            for model in ("*", check["model"])
+            for model in ("*", check.model)
         ]
 
     @staticmethod
-    def _event_data(body: UsageRecordRequest, data: Record, priced: PricedUsage) -> Record:
+    def _event_data(
+        body: UsageRecordRequest, context: AdmissionContext, priced: PricedUsage
+    ) -> Record:
         """Assemble the finalized usage event from admission snapshots and priced counts."""
-        check = data["check"]
-        snapshot = data["organization"]
+        check = context.check
+        organization = context.organization
         usage = priced.counts
         return {
             "event_version": 2,
             "event_name": "usage_recorded",
-            "event_id": digest("usage-event-v2", check["tenant_id"], body.request_id),
+            "event_id": digest("usage-event-v2", check.tenant_id, body.request_id),
             "request_id": body.request_id,
             "timestamp": datetime.now(UTC).isoformat(),
-            "month": data["month"],
-            "tenant_ref": opaque(check["tenant_id"]),
-            "user_ref": opaque(check["tenant_id"], check["principal_id"]),
-            "team_id": snapshot["team_id"],
-            "department_id": snapshot["department_id"],
-            "business_unit": snapshot["business_unit"],
-            "cost_center": snapshot["cost_center"],
-            "subscription_id": check["subscription_id"],
-            "model": check["model"],
-            "api_protocol": check["api_protocol"],
-            "streaming": check["streaming"],
+            "month": context.month,
+            "tenant_ref": opaque(check.tenant_id),
+            "user_ref": opaque(check.tenant_id, check.principal_id),
+            "team_id": organization.team_id,
+            "department_id": organization.department_id,
+            "business_unit": organization.business_unit,
+            "cost_center": organization.cost_center,
+            "subscription_id": check.subscription_id,
+            "model": check.model,
+            "api_protocol": check.api_protocol,
+            "streaming": check.streaming,
             "status": priced.status,
             "input_tokens": usage.input_tokens if usage else None,
             "cached_input_tokens": usage.cached_input_tokens if usage else None,
@@ -172,7 +176,7 @@ class UsageRecorder:
             "cost_micro_usd": priced.cost_micro_usd,
             "cost_basis": priced.cost_basis,
             "out_of_bounds": priced.out_of_bounds,
-            "price_version": data["price_version"],
+            "price_version": context.price_version,
         }
 
     def _mirror(self, request_key: str, saved: Record, tenant_id: str, month: str) -> None:
@@ -185,28 +189,10 @@ class UsageRecorder:
             ),
         )
 
-    @staticmethod
-    def _emit_recorded(
-        body: UsageRecordRequest, check: Record, priced: PricedUsage, event_data: Record
-    ) -> None:
-        """Emit the accepted-usage event, plus a warning when counts exceeded model bounds."""
-        usage = priced.counts
-        emit(
-            "usage_recorded",
-            **event_data,
-            reason=priced.reason,
-            replayed=False,
-            uncached_input_tokens=usage.uncached_input_tokens if usage else None,
-            total_tokens=usage.input_tokens + usage.output_tokens if usage else None,
-            cache_hit=usage.cached_input_tokens > 0 if usage else None,
-        )
-        if priced.out_of_bounds:
-            emit(
-                "usage_out_of_bounds",
-                level=logging.WARNING,
-                request_id=body.request_id,
-                model=check["model"],
-                input_tokens=usage.input_tokens if usage else None,
-                output_tokens=usage.output_tokens if usage else None,
-                cost_micro_usd=priced.cost_micro_usd,
+    def _export(self, request_id: str, usage_event: Record) -> None:
+        """Schedule the lossy downstream copy; a replayed request never reaches here."""
+        publisher = self.publisher
+        if publisher is not None:
+            self.background.submit(
+                "usage_event", request_id, lambda: publisher.publish(usage_event)
             )

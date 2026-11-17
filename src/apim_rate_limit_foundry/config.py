@@ -8,7 +8,7 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
-from apim_rate_limit_foundry.models.types import ApiProtocol
+from apim_rate_limit_foundry.models.types import SAFE_NAME, ApiProtocol
 
 
 class Settings(BaseSettings):
@@ -49,9 +49,12 @@ class Settings(BaseSettings):
     telemetry_enabled: bool = True
     otel_service_name: str = "rate-limiter"
     otel_traces_sampler_arg: float = Field(default=1.0, ge=0, le=1)
+    # Process CPU/memory/request-rate counters carry no request data; Live Metrics is opt-in.
+    otel_performance_counters_enabled: bool = True
+    otel_live_metrics_enabled: bool = False
     model_registry: dict[str, ModelDeployment] = Field(default_factory=dict)
-    apim_usage_event_url: str = ""
-    api_audience: str = ""
+    event_hub_fqdn: str = ""
+    event_hub_name: str = ""
     gateway_client_id: str = ""
     stream_max_event_bytes: int = Field(default=65536, ge=8192, le=1048576)
     stream_max_body_bytes: int = Field(default=131072, ge=1024, le=1048576)
@@ -64,6 +67,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure_platform(self) -> "Settings":
         """Reject cloud bypasses, partial local stores and inconsistent resource/model IDs."""
+        self._validate_platform()
+        self._validate_dashboard()
+        for key, deployment in self.model_registry.items():
+            self._validate_deployment(key, deployment)
+        return self
+
+    def _validate_platform(self) -> None:
+        """Require platform auth and a registry in Azure, and paired local/export endpoints."""
         has_local_redis = bool(self.local_redis_url)
         has_local_table = bool(
             self.local_table_connection_string
@@ -80,63 +91,69 @@ class Settings(BaseSettings):
             raise ValueError("Platform Easy Auth must be required")
         if self.in_azure and not self.model_registry:
             raise ValueError("MODEL_REGISTRY is required in Azure")
+        if bool(self.event_hub_fqdn) != bool(self.event_hub_name):
+            raise ValueError("EVENT_HUB_FQDN and EVENT_HUB_NAME must be configured together")
         if has_local_redis != has_local_table:
             raise ValueError(
                 "LOCAL_REDIS_URL and LOCAL_TABLE_CONNECTION_STRING are required together"
             )
         if (has_local_redis or has_local_table) and not self.local_store_enabled:
             raise ValueError("Local persistent endpoints require LOCAL_STORE_ENABLED=true")
+
+    def _validate_dashboard(self) -> None:
+        """Fix both the ARM dashboard and query workspace; callers cannot supply targets."""
         dashboard_config = (
             self.azure_dashboard_id,
             self.log_analytics_workspace_id,
             self.log_analytics_workspace_resource_id,
         )
-        if any(dashboard_config):
-            # Fix both the ARM dashboard and query workspace; callers cannot supply targets.
-            if not all(dashboard_config):
-                raise ValueError("Dashboard and both workspace IDs must be configured together")
-            uuid_pattern = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
-            for resource_id, resource_type in (
-                (self.azure_dashboard_id, "Microsoft.Portal/dashboards"),
-                (
-                    self.log_analytics_workspace_resource_id,
-                    "Microsoft.OperationalInsights/workspaces",
-                ),
+        if not any(dashboard_config):
+            return
+        if not all(dashboard_config):
+            raise ValueError("Dashboard and both workspace IDs must be configured together")
+        uuid_pattern = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+        for resource_id, resource_type in (
+            (self.azure_dashboard_id, "Microsoft.Portal/dashboards"),
+            (
+                self.log_analytics_workspace_resource_id,
+                "Microsoft.OperationalInsights/workspaces",
+            ),
+        ):
+            if not re.fullmatch(
+                rf"/subscriptions/{uuid_pattern}/resourceGroups/[^/?#]+"
+                rf"/providers/{re.escape(resource_type)}/[^/?#]+",
+                resource_id,
+                re.IGNORECASE,
             ):
-                if not re.fullmatch(
-                    rf"/subscriptions/{uuid_pattern}/resourceGroups/[^/?#]+"
-                    rf"/providers/{re.escape(resource_type)}/[^/?#]+",
-                    resource_id,
-                    re.IGNORECASE,
-                ):
-                    raise ValueError("Dashboard settings require fixed Azure resource IDs")
-            if not re.fullmatch(uuid_pattern, self.log_analytics_workspace_id, re.IGNORECASE):
-                raise ValueError("The workspace customer ID must be a UUID")
-        for key, deployment in self.model_registry.items():
-            # Keep protocol aliases separate even when they target the same model deployment.
-            protocol, separator, alias = key.partition(":")
-            if (
-                not separator
-                or protocol != deployment.api_protocol
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", alias) is None
-            ):
-                raise ValueError("Model registry keys must be protocol:alias with a safe alias")
-            if (
-                deployment.max_input_tokens > self.max_input_tokens
-                or deployment.max_output_tokens > self.max_output_tokens
-            ):
-                raise ValueError("Registered model limits must not exceed the Function limits")
-            if self.azure_cloud == "government" and (
-                not deployment.endpoint.host
-                or not deployment.endpoint.host.endswith(
-                    (".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us")
-                )
-                or deployment.audience.host != "cognitiveservices.azure.us"
-            ):
-                raise ValueError(
-                    "Government models require sovereign endpoints and Cognitive Services audience"
-                )
-        return self
+                raise ValueError("Dashboard settings require fixed Azure resource IDs")
+        if not re.fullmatch(uuid_pattern, self.log_analytics_workspace_id, re.IGNORECASE):
+            raise ValueError("The workspace customer ID must be a UUID")
+
+    def _validate_deployment(self, key: str, deployment: ModelDeployment) -> None:
+        """Check one registry entry's key shape, limits and sovereign-cloud endpoints."""
+        # Keep protocol aliases separate even when they target the same model deployment.
+        protocol, separator, alias = key.partition(":")
+        if (
+            not separator
+            or protocol != deployment.api_protocol
+            or re.fullmatch(SAFE_NAME, alias) is None
+        ):
+            raise ValueError("Model registry keys must be protocol:alias with a safe alias")
+        if (
+            deployment.max_input_tokens > self.max_input_tokens
+            or deployment.max_output_tokens > self.max_output_tokens
+        ):
+            raise ValueError("Registered model limits must not exceed the Function limits")
+        if self.azure_cloud == "government" and (
+            not deployment.endpoint.host
+            or not deployment.endpoint.host.endswith(
+                (".openai.azure.us", ".cognitiveservices.azure.us", ".services.ai.azure.us")
+            )
+            or deployment.audience.host != "cognitiveservices.azure.us"
+        ):
+            raise ValueError(
+                "Government models require sovereign endpoints and Cognitive Services audience"
+            )
 
     def registered_model(self, protocol: ApiProtocol, alias: str) -> ModelDeployment:
         """Resolve only configured protocol/alias pairs; never accept arbitrary endpoints."""
@@ -164,29 +181,33 @@ class Settings(BaseSettings):
         )
         return local_host is None or not 1 <= int(local_host.group(1)) <= 65535
 
+    def _by_cloud(self, commercial: str, government: str) -> str:
+        """Pick the endpoint for the configured Azure cloud."""
+        return government if self.azure_cloud == "government" else commercial
+
     @property
     def authority(self) -> str:
-        return (
-            "https://login.microsoftonline.us"
-            if self.azure_cloud == "government"
-            else "https://login.microsoftonline.com"
+        """Entra authority host."""
+        return self._by_cloud(
+            "https://login.microsoftonline.com", "https://login.microsoftonline.us"
         )
 
     @property
     def management_endpoint(self) -> str:
-        return (
-            "https://management.usgovcloudapi.net"
-            if self.azure_cloud == "government"
-            else "https://management.azure.com"
+        """Azure Resource Manager endpoint."""
+        return self._by_cloud(
+            "https://management.azure.com", "https://management.usgovcloudapi.net"
         )
 
     @property
     def logs_endpoint(self) -> str:
-        return (
-            "https://api.loganalytics.us"
-            if self.azure_cloud == "government"
-            else "https://api.loganalytics.io"
-        )
+        """Log Analytics query endpoint."""
+        return self._by_cloud("https://api.loganalytics.io", "https://api.loganalytics.us")
+
+    @property
+    def storage_audience(self) -> str:
+        """Entra audience for Azure Table Storage."""
+        return self._by_cloud("https://storage.azure.com", "https://storage.azure.us")
 
     @property
     def redis_scope(self) -> str:

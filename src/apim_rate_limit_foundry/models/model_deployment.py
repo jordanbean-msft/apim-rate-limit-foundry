@@ -3,7 +3,7 @@ import re
 from pydantic import Field, model_validator
 
 from apim_rate_limit_foundry.models.stream_backend import StreamBackend
-from apim_rate_limit_foundry.models.types import ApiProtocol
+from apim_rate_limit_foundry.models.types import SAFE_NAME_PATTERN, ApiProtocol
 
 
 class ModelDeployment(StreamBackend):
@@ -14,7 +14,7 @@ class ModelDeployment(StreamBackend):
     """
 
     api_protocol: ApiProtocol
-    model: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    model: str = Field(pattern=SAFE_NAME_PATTERN)
     price_version: str = Field(pattern=r"^[A-Za-z0-9._-]{1,200}$")
     max_input_tokens: int = Field(strict=True, ge=1)
     max_output_tokens: int = Field(strict=True, ge=1)

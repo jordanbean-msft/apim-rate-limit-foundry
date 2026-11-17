@@ -27,7 +27,7 @@ from starlette.responses import StreamingResponse
 from apim_rate_limit_foundry import monitoring
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 from apim_rate_limit_foundry.models.budget_check import BudgetCheck, UsageRecordRequest
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
 from apim_rate_limit_foundry.observed_credential import ObservedCredential
@@ -69,10 +69,12 @@ def capture(
     meter_provider = MeterProvider(metric_readers=[reader])
     metrics = RateLimitMetrics(meter_provider.get_meter("test"))
     for module in (
-        "engine.admission_service",
-        "engine.usage_recorder",
+        "background_writer",
+        "engine.admission_telemetry",
+        "engine.budget_status_reporter",
+        "engine.usage_telemetry",
         "request_telemetry",
-        "streaming.request_telemetry",
+        "streaming.relay",
     ):
         monkeypatch.setattr(f"apim_rate_limit_foundry.{module}.rate_metrics", metrics)
     exporter = InMemorySpanExporter()
@@ -119,11 +121,11 @@ def _points(capture: SimpleNamespace, name: str) -> list:
 
 
 async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
-    engine: Engine, capture: SimpleNamespace
+    gateway: GatewayServices, capture: SimpleNamespace
 ) -> None:
-    await engine.check(_check("actual"))
-    await engine.check(_check("actual"))
-    await engine.check(_check("unknown"))
+    await gateway.admission.check(_check("actual"))
+    await gateway.admission.check(_check("actual"))
+    await gateway.admission.check(_check("unknown"))
     actual = UsageRecordRequest(
         request_id="actual",
         status="actual",
@@ -133,9 +135,9 @@ async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
             "completion_tokens": 20,
         },
     )
-    await asyncio.gather(engine.record_usage(actual), engine.record_usage(actual))
-    await engine.record_usage(UsageRecordRequest(request_id="unknown", status="usage_unknown"))
-    assert not (await engine.check(_check("denied")))["allowed"]
+    await asyncio.gather(gateway.usage.record(actual), gateway.usage.record(actual))
+    await gateway.usage.record(UsageRecordRequest(request_id="unknown", status="usage_unknown"))
+    assert not (await gateway.admission.check(_check("denied")))["allowed"]
 
     decisions = [r for r in capture.logs if r.msg == "budget_decision"]
     assert len(decisions) == 4
@@ -170,6 +172,36 @@ async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
         )
 
 
+async def test_accepted_usage_reports_balances_and_budget_metrics_without_identifiers(
+    gateway: GatewayServices, capture: SimpleNamespace
+) -> None:
+    await gateway.admission.check(_check("actual"))
+    await gateway.usage.record(
+        UsageRecordRequest(
+            request_id="actual",
+            status="actual",
+            provider_usage={"prompt_tokens": 100, "completion_tokens": 20},
+        )
+    )
+    await gateway.admission.check(_check("denied"))
+    await gateway.background.flush()
+
+    statuses = [r for r in capture.logs if r.msg == "budget_status"]
+    assert {r.subject_type for r in statuses} == {"user", "team", "department"}
+    assert all(r.spent_micro_usd > 0 and r.team_id and r.department_id for r in statuses)
+    assert all(r.user_ref for r in statuses if r.subject_type == "user")
+    stages = {p.attributes["stage"] for p in _points(capture, "limiter.budget.utilization")}
+    assert stages == {"admission", "usage"}
+    assert sum(p.value for p in _points(capture, "limiter.budget.denials")) == 3
+    writes = {p.attributes["outcome"] for p in _points(capture, "limiter.background.writes")}
+    assert writes == {"completed"}
+    for name in ("limiter.budget.utilization", "limiter.budget.denials"):
+        assert all(
+            not ({"budget_id", "user_ref", "request_id"} & p.attributes.keys())
+            for p in _points(capture, name)
+        )
+
+
 @pytest.mark.parametrize(
     ("provider_usage", "reason"),
     [
@@ -178,10 +210,10 @@ async def test_decisions_budget_snapshots_replays_and_disjoint_actual_metrics(
     ],
 )
 async def test_unknown_usage_is_explained_without_fabricated_tokens_or_cost(
-    engine: Engine, capture: SimpleNamespace, provider_usage: dict | None, reason: str
+    gateway: GatewayServices, capture: SimpleNamespace, provider_usage: dict | None, reason: str
 ) -> None:
-    await engine.check(_check("unknown"))
-    await engine.record_usage(
+    await gateway.admission.check(_check("unknown"))
+    await gateway.usage.record(
         UsageRecordRequest(request_id="unknown", status="actual", provider_usage=provider_usage)
     )
     record = next(r for r in capture.logs if r.msg == "usage_recorded")
@@ -194,32 +226,32 @@ async def test_unknown_usage_is_explained_without_fabricated_tokens_or_cost(
 
 
 async def test_conflicts_and_metric_failures_do_not_change_accounting(
-    engine: Engine, capture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    gateway: GatewayServices, capture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await engine.check(_check("duplicate"))
+    await gateway.admission.check(_check("duplicate"))
     other = _check("duplicate").model_copy(update={"model": "other"})
     with pytest.raises(Conflict):
-        await engine.check(other)
+        await gateway.admission.check(other)
     failure = next(r for r in capture.logs if r.msg == "operation_failed")
     assert failure.request_id == "duplicate" and failure.error_type == "Conflict"
     monkeypatch.setattr(
         capture.metrics.records, "add", Mock(side_effect=RuntimeError("private-export-error"))
     )
-    result = await engine.record_usage(
+    result = await gateway.usage.record(
         UsageRecordRequest(request_id="duplicate", status="usage_unknown")
     )
     assert result["replayed"] is False
-    await engine.background.flush()
-    assert len(await persisted_usage(engine)) == 1
+    await gateway.background.flush()
+    assert len(await persisted_usage(gateway)) == 1
     assert any(r.msg == "metric_record_failed" for r in capture.logs)
     assert "private-export-error" not in repr([r.__dict__ for r in capture.logs])
 
 
 async def test_http_and_domain_events_share_remote_trace_and_original_request_id(
-    settings: Settings, engine: Engine, capture: SimpleNamespace
+    settings: Settings, gateway: GatewayServices, capture: SimpleNamespace
 ) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(settings, engine)), base_url="http://test"
+        transport=httpx.ASGITransport(app=create_app(settings, gateway)), base_url="http://test"
     ) as client:
         check = await client.post(
             "/api/budgets/check", json=_check("inference-1").model_dump(), headers=GATEWAY
@@ -260,7 +292,7 @@ async def test_http_and_domain_events_share_remote_trace_and_original_request_id
 )
 async def test_each_http_outcome_is_logged_without_raw_urls_or_bodies(
     settings: Settings,
-    engine: Engine,
+    gateway: GatewayServices,
     capture: SimpleNamespace,
     method: str,
     path: str,
@@ -269,7 +301,7 @@ async def test_each_http_outcome_is_logged_without_raw_urls_or_bodies(
     expected: int,
 ) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(settings, engine)), base_url="http://test"
+        transport=httpx.ASGITransport(app=create_app(settings, gateway)), base_url="http://test"
     ) as client:
         response = await client.request(method, path, headers=headers, json=body)
     assert response.status_code == expected
@@ -286,16 +318,18 @@ async def test_each_http_outcome_is_logged_without_raw_urls_or_bodies(
 )
 async def test_failed_calls_log_safe_error_type_and_correlated_completion(
     settings: Settings,
-    engine: Engine,
+    gateway: GatewayServices,
     capture: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
     status: int,
 ) -> None:
-    monkeypatch.setattr(engine.repository, "list", AsyncMock(side_effect=error))
+    monkeypatch.setattr(gateway.repository, "list", AsyncMock(side_effect=error))
     headers = {**GATEWAY, "X-Local-Roles": "RateLimit.Admin"}
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(settings, engine), raise_app_exceptions=False),
+        transport=httpx.ASGITransport(
+            app=create_app(settings, gateway), raise_app_exceptions=False
+        ),
         base_url="http://test",
     ) as client:
         response = await client.get("/api/usage", headers=headers)
@@ -340,8 +374,9 @@ async def test_stream_keeps_trace_through_iteration_provider_headers_and_finaliz
 
 
 @pytest.mark.parametrize("completion", ["complete", "close", "cancel"])
-async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_disconnect(
-    engine: Engine,
+async def test_real_stream_relay_links_provider_accounting_and_export_even_on_disconnect(
+    gateway: GatewayServices,
+    publisher: AsyncMock,
     settings: Settings,
     capture: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
@@ -360,9 +395,7 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
             max_output_tokens=20,
         )
     }
-    settings.apim_usage_event_url = "https://gateway.example/internal/usage-events"
-    settings.api_audience = "api://gateway"
-    await engine.check(_check("inference-1").model_copy(update={"streaming": True}))
+    await gateway.admission.check(_check("inference-1").model_copy(update={"streaming": True}))
     capture.spans.clear()
     wire = {}
 
@@ -378,16 +411,12 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
     )
 
     def post(url, **kwargs):
-        if url == settings.apim_usage_event_url:
-            wire["callback"] = kwargs["headers"]
-            wire["event"] = kwargs["json"]
-            return SimpleNamespace(status=204)
         wire["provider"] = kwargs["headers"]
         return provider_response
 
     credential = AsyncMock()
     credential.get_token.return_value.token = "not-logged"
-    relay = StreamRelay(engine, credential, settings, FakeHttpSession(post))
+    relay = StreamRelay(gateway, credential, settings, FakeHttpSession(post))
 
     @trace_stream_request
     async def handler(req: Request) -> StreamingResponse:
@@ -420,29 +449,26 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
         with pytest.raises(asyncio.CancelledError):
             await iterator.athrow(asyncio.CancelledError())
 
-    await engine.background.flush()
-    records = await persisted_usage(engine)
+    await gateway.background.flush()
+    records = await persisted_usage(gateway)
     assert len(records) == 1 and records[0]["data"]["status"] == "actual"
-    assert wire["event"]["request_id"] == "inference-1"
-    assert "trace_id" not in wire["event"] and "traceparent" not in wire["event"]
-    assert (
-        wire["provider"]["X-Correlation-ID"]
-        == wire["callback"]["X-Correlation-ID"]
-        == "inference-1"
-    )
+    event = publisher.publish.await_args.args[0]
+    assert event["request_id"] == "inference-1"
+    assert "trace_id" not in event and "traceparent" not in event
+    assert wire["provider"]["X-Correlation-ID"] == "inference-1"
     spans = {span.name: span for span in capture.spans.get_finished_spans()}
     assert {
         "POST /api/stream",
         "provider.stream_open",
         "usage.record",
-        "apim.usage_events",
     } <= spans.keys()
     root = spans["POST /api/stream"]
     assert f"{root.context.trace_id:032x}" == TRACE_ID
-    for service, name in (("provider", "provider.stream_open"), ("callback", "apim.usage_events")):
-        assert spans[name].parent.span_id == root.context.span_id
-        parts = wire[service]["traceparent"].split("-")
-        assert parts[1] == TRACE_ID and parts[2] == f"{spans[name].context.span_id:016x}"
+    assert spans["provider.stream_open"].parent.span_id == root.context.span_id
+    parts = wire["provider"]["traceparent"].split("-")
+    assert (
+        parts[1] == TRACE_ID and parts[2] == f"{spans['provider.stream_open'].context.span_id:016x}"
+    )
     assert spans["usage.record"].parent.span_id == root.context.span_id
     identity_spans = [
         span
@@ -450,14 +476,20 @@ async def test_real_stream_relay_links_provider_accounting_and_callback_even_on_
         if span.name == "managed-identity.get_token"
     ]
     assert {span.parent.span_id for span in identity_spans} == {
-        spans["provider.stream_open"].context.span_id,
-        spans["apim.usage_events"].context.span_id,
+        spans["provider.stream_open"].context.span_id
     }
     terminal = [r for r in capture.logs if r.msg == "request_completed"]
     assert len(terminal) == 1
     assert terminal[0].status == ("ok" if completion == "complete" else "error")
     assert correlation_id.get() == ""
     provider_response.close.assert_called_once()
+    assert {p.attributes["outcome"] for p in _points(capture, "limiter.stream.outcomes")} == {
+        "completed"
+    }
+    assert [p.attributes["http_status"] for p in _points(capture, "limiter.provider.duration")] == [
+        200
+    ]
+    publisher.publish.assert_awaited_once()
 
 
 async def test_concurrent_requests_cannot_leak_trace_or_correlation_context(
@@ -716,7 +748,7 @@ async def test_redis_token_refresh_and_connections_are_correlated_without_creden
     spans = capture.spans.get_finished_spans()
     connections = [span for span in spans if span.name == "redis.connection"]
     tokens = [span for span in spans if span.name == "managed-identity.get_token"]
-    assert len(connections) == 3 and len(tokens) == 2
+    assert len(connections) == 2 and len(tokens) == 2
     assert all(token.parent.span_id in {s.context.span_id for s in connections} for token in tokens)
     assert all(span.attributes["db.system"] == "redis" for span in connections)
     _assert_private_dependencies(capture)
@@ -750,7 +782,7 @@ async def test_table_sdk_identity_is_a_child_of_the_existing_storage_dependency(
     with trace.get_tracer("test").start_as_current_span(
         "request", context=request_trace_context(TRACEPARENT)
     ):
-        assert await runtime.engine.repository.get("organizations", "safe") == {"id": "safe"}
+        assert await runtime.gateway.repository.get("organizations", "safe") == {"id": "safe"}
     await runtime.close()
     credential.close.assert_awaited_once()
     spans = {span.name: span for span in capture.spans.get_finished_spans()}
@@ -785,65 +817,6 @@ async def test_redis_lookup_dependencies_preserve_cancellation_and_errors(
     spans = {span.name: span for span in capture.spans.get_finished_spans()}
     assert spans["redis.request"].status.status_code == StatusCode.ERROR
     client.lock.assert_not_called()
-    _assert_private_dependencies(capture)
-
-
-@pytest.mark.parametrize("outcome", [204, 503, "identity_error", "not_configured"])
-async def test_callback_acceptance_and_failures_keep_immutable_ids_private(
-    outcome: int | str,
-    engine: Engine,
-    settings: Settings,
-    capture: SimpleNamespace,
-) -> None:
-    settings.api_audience = "api://gateway"
-    settings.apim_usage_event_url = (
-        None if outcome == "not_configured" else "https://gateway.example/usage"
-    )
-    credential = AsyncMock()
-    credential.get_token.return_value = AccessToken("private-detail", 9999999999)
-    if outcome == "identity_error":
-        credential.get_token.side_effect = AzureError("private-detail")
-    session = FakeHttpSession(lambda url, **kwargs: SimpleNamespace(status=outcome))
-    event = {
-        "event_id": "immutable-event",
-        "request_id": "original-request",
-        "event_version": 2,
-        "private": "private-detail",
-    }
-    original = dict(event)
-    relay = StreamRelay(engine, credential, settings, session)
-    token = correlation_id.set("different-correlation")
-    try:
-        with trace.get_tracer("test").start_as_current_span(
-            "request", context=request_trace_context(TRACEPARENT)
-        ):
-            await relay._publish(event)
-    finally:
-        correlation_id.reset(token)
-    assert event == original
-    publications = [r for r in capture.logs if str(r.msg).startswith("usage_event_publish_")]
-    assert len(publications) == 1
-    publication = publications[0]
-    assert publication.request_id == "original-request"
-    assert publication.event_id == "immutable-event"
-    assert publication.correlation_id == "different-correlation"
-    assert publication.msg == (
-        "usage_event_publish_accepted" if outcome == 204 else "usage_event_publish_failed"
-    )
-    if isinstance(outcome, int):
-        assert publication.http_status == outcome
-        spans = {span.name: span for span in capture.spans.get_finished_spans()}
-        callback = spans["apim.usage_events"]
-        identity = spans["managed-identity.get_token"]
-        assert identity.parent.span_id == callback.context.span_id
-        assert callback.attributes["http.response.status_code"] == outcome
-        assert callback.status.status_code == (
-            StatusCode.OK if outcome == 204 else StatusCode.ERROR
-        )
-        if outcome == 503:
-            assert callback.attributes["error.type"] == "http_503"
-        assert publication.span_id == f"{callback.context.span_id:016x}"
-        assert session.calls[0][1]["headers"]["X-Correlation-ID"] == "original-request"
     _assert_private_dependencies(capture)
 
 
@@ -926,6 +899,8 @@ def test_monitoring_enables_manual_metrics_and_keeps_logs_independent_of_trace_s
     assert configure.call_count == 1
     assert configure.call_args.kwargs["disable_metrics"] is False
     assert configure.call_args.kwargs["enable_trace_based_sampling_for_logs"] is False
+    assert configure.call_args.kwargs["enable_performance_counters"] is True
+    assert configure.call_args.kwargs["enable_live_metrics"] is False
     assert all(
         not v["enabled"] for v in configure.call_args.kwargs["instrumentation_options"].values()
     )

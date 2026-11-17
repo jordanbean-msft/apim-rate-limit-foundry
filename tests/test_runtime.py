@@ -26,7 +26,7 @@ def test_runtime_uses_function_identity_for_outbound_credentials(
     monkeypatch.setattr(
         "apim_rate_limit_foundry.runtime.RedisCounters", Mock(return_value=object())
     )
-    monkeypatch.setattr("apim_rate_limit_foundry.runtime.Engine", Mock())
+    monkeypatch.setattr("apim_rate_limit_foundry.runtime.GatewayServices", Mock())
 
     Runtime(settings)
 

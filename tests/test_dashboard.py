@@ -1,6 +1,6 @@
 import json
 from contextlib import nullcontext
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 from apim_rate_limit_foundry.reports.dashboard import TIMEOUT_MESSAGE, DashboardService
 
 UUID = "00000000-0000-0000-0000-000000000001"
@@ -173,11 +173,23 @@ async def test_month_to_date_tiles_keep_kql_month_start_instead_of_selected_peri
 
 
 async def test_dashboard_api_requires_admin_and_rejects_client_query_inputs(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
     service = MagicMock(spec=DashboardService)
-    service.fetch = AsyncMock(return_value=[{"id": "native-tile", "rows": []}])
-    app = create_app(settings, engine, service)
+    tile = {
+        "id": "native-tile",
+        "title": "Traffic",
+        "chart": "Line",
+        "x_axis": "TimeGenerated",
+        "y_axis": "Requests",
+        "split_by": None,
+        "columns": [{"name": "TimeGenerated", "type": "datetime"}],
+        "rows": [[datetime(2026, 1, 2, 3, 4, tzinfo=UTC), 7, None]],
+        "error": None,
+        "truncated": False,
+    }
+    service.fetch = AsyncMock(return_value=[tile])
+    app = create_app(settings, gateway, service)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -187,6 +199,7 @@ async def test_dashboard_api_requires_admin_and_rejects_client_query_inputs(
         service.fetch.assert_not_called()
         response = await client.get("/api/dashboard?period=1h", headers=ADMIN)
         assert response.status_code == 200 and response.json()[0]["id"] == "native-tile"
+        assert response.json()[0]["rows"] == [["2026-01-02T03:04:00Z", 7, None]]
         service.fetch.assert_awaited_once_with("1h")
         for query in ("period=30d", "period=1h&period=7d", "query=AppTraces", "workspace=other"):
             assert (await client.get(f"/api/dashboard?{query}", headers=ADMIN)).status_code in (
@@ -200,11 +213,11 @@ async def test_dashboard_api_requires_admin_and_rejects_client_query_inputs(
 
 @pytest.mark.parametrize("error", [TimeoutError("private"), ServiceResponseTimeoutError("private")])
 async def test_dashboard_api_reports_timeouts_as_a_clean_gateway_timeout(
-    settings: Settings, engine: Engine, error: Exception, caplog: pytest.LogCaptureFixture
+    settings: Settings, gateway: GatewayServices, error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
     service = MagicMock(spec=DashboardService)
     service.fetch = AsyncMock(side_effect=error)
-    app = create_app(settings, engine, service)
+    app = create_app(settings, gateway, service)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

@@ -1,5 +1,6 @@
 """Cross-record hierarchy rules enforced before configuration is written."""
 
+from apim_rate_limit_foundry.engine.assignments import enabled_assignments
 from apim_rate_limit_foundry.engine.configuration_reader import ConfigurationReader
 from apim_rate_limit_foundry.models import Assignment, Budget, Organization
 from apim_rate_limit_foundry.stores.contracts import Repository
@@ -15,14 +16,13 @@ class ConfigurationValidator:
 
     async def validate_assignment(self, assignment: Assignment) -> None:
         """Require one active user assignment and an enabled same-tenant parent chain."""
-        for existing in await self.reader.configuration("assignments"):
-            if existing.get("id") != assignment.id and (
-                existing.get("tenant_id") == assignment.tenant_id
-                and existing.get("principal_id") == assignment.principal_id
-                and existing.get("enabled") is True
-                and assignment.enabled
-            ):
-                raise ValueError("An active assignment already exists for this user")
+        existing = enabled_assignments(
+            await self.reader.configuration("assignments"),
+            assignment.tenant_id,
+            assignment.principal_id,
+        )
+        if assignment.enabled and any(item.id != assignment.id for item in existing):
+            raise ValueError("An active assignment already exists for this user")
         organizations = [
             Organization.model_validate(r) for r in await self.reader.configuration("organizations")
         ]
@@ -37,13 +37,8 @@ class ConfigurationValidator:
         """Require a team's parent to be an enabled department in the same tenant."""
         if organization.kind != "team":
             return
-        parent = await self.repository.get("organizations", organization.department_id or "")
-        if (
-            parent is None
-            or parent.get("_deleted")
-            or parent.get("kind") != "department"
-            or parent.get("enabled") is not True
-            or parent.get("tenant_id") != organization.tenant_id
+        if not await self._is_active_unit(
+            organization.department_id or "", "department", organization.tenant_id
         ):
             raise ValueError("Team parent must be an enabled department in the same tenant")
 
@@ -57,21 +52,23 @@ class ConfigurationValidator:
             raise ValueError("Budget subject must be an active user or organization unit")
 
     async def _has_active_user(self, budget: Budget) -> bool:
-        return any(
-            row.get("tenant_id") == budget.tenant_id
-            and row.get("principal_id") == budget.subject_id
-            and row.get("enabled") is True
-            for row in await self.reader.configuration("assignments")
+        return bool(
+            enabled_assignments(
+                await self.reader.configuration("assignments"), budget.tenant_id, budget.subject_id
+            )
         )
 
     async def _has_active_unit(self, budget: Budget) -> bool:
-        organization = await self.repository.get("organizations", budget.subject_id)
-        expected_kind = "team" if budget.subject_type == "team" else "department"
+        return await self._is_active_unit(budget.subject_id, budget.subject_type, budget.tenant_id)
+
+    async def _is_active_unit(self, unit_id: str, kind: str, tenant_id: str) -> bool:
+        """Whether a stored organization is live, of this kind, enabled and in the tenant."""
+        organization = await self.repository.get("organizations", unit_id)
         return bool(
             organization
             and not organization.get("_deleted")
-            and organization.get("kind") == expected_kind
-            and organization.get("tenant_id") == budget.tenant_id
+            and organization.get("kind") == kind
+            and organization.get("tenant_id") == tenant_id
             and organization.get("enabled") is True
         )
 

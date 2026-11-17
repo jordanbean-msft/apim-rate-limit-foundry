@@ -1,9 +1,11 @@
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock
 
 import pytest
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
+from apim_rate_limit_foundry.export.usage_event_publisher import UsageEventPublisher
 from apim_rate_limit_foundry.models import Assignment, Budget, Organization, Price
 from apim_rate_limit_foundry.stores.memory import MemoryCounters, MemoryRepository
 
@@ -20,7 +22,12 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-async def engine(settings: Settings) -> AsyncIterator[Engine]:
+def publisher() -> AsyncMock:
+    return AsyncMock(spec=UsageEventPublisher)
+
+
+@pytest.fixture
+async def gateway(settings: Settings, publisher: AsyncMock) -> AsyncIterator[GatewayServices]:
     repository = MemoryRepository()
     await repository.create(
         "organizations",
@@ -79,6 +86,6 @@ async def engine(settings: Settings) -> AsyncIterator[Engine]:
             limit_micro_usd=100,
         )
         await repository.create("budgets", budget.id, budget.model_dump(mode="json"))
-    instance = Engine(repository, MemoryCounters(settings), settings)
+    instance = GatewayServices.create(repository, MemoryCounters(settings), settings, publisher)
     yield instance
     await instance.background.close()

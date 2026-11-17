@@ -2,7 +2,7 @@ import httpx
 
 from apim_rate_limit_foundry.api import create_app
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 
 ADMIN = {
     "X-Local-Tenant-Id": "tenant-1",
@@ -22,9 +22,9 @@ READER = {
 
 
 async def test_budget_api_records_usage_and_serves_scoped_chargeback(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     body = {
         "request_id": "api-request",
         "tenant_id": "tenant-1",
@@ -58,7 +58,7 @@ async def test_budget_api_records_usage_and_serves_scoped_chargeback(
         assert recorded.json()["event"]["cost_micro_usd"] == 100
         replay = await client.post("/api/usage/record", json=usage_body, headers=GATEWAY)
         assert replay.json()["replayed"] is True
-        await engine.background.flush()
+        await gateway.background.flush()
 
         own_usage = await client.get("/api/usage", headers=READER)
         assert len(own_usage.json()) == 1
@@ -75,9 +75,9 @@ async def test_budget_api_records_usage_and_serves_scoped_chargeback(
 
 
 async def test_unknown_usage_is_visible_and_charged_the_upper_bound(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -106,7 +106,7 @@ async def test_unknown_usage_is_visible_and_charged_the_upper_bound(
         assert event["status"] == "usage_unknown"
         assert event["cost_basis"] == "estimated_upper_bound"
         assert event["cost_micro_usd"] == 131072 * 2 + 32768 * 4
-        await engine.background.flush()
+        await gateway.background.flush()
         rows = await client.get(f"/api/chargeback?month={event['month']}", headers=ADMIN)
         assert rows.json()[0]["unknown_requests"] == 1
         assert rows.json()[0]["cost_micro_usd"] == event["cost_micro_usd"]
@@ -114,9 +114,9 @@ async def test_unknown_usage_is_visible_and_charged_the_upper_bound(
 
 
 async def test_config_crud_hierarchy_validation_and_removed_routes(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -144,9 +144,9 @@ async def test_config_crud_hierarchy_validation_and_removed_routes(
 
 
 async def test_usage_month_parameter_is_validated_and_scopes_history(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -156,9 +156,9 @@ async def test_usage_month_parameter_is_validated_and_scopes_history(
 
 
 async def test_models_listing_requires_an_assignment_for_readers(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     stranger = {**READER, "X-Local-Principal-Id": "stranger"}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -168,9 +168,9 @@ async def test_models_listing_requires_an_assignment_for_readers(
 
 
 async def test_unknown_collections_are_not_found_for_every_verb(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -182,14 +182,14 @@ async def test_unknown_collections_are_not_found_for_every_verb(
 
 
 async def test_invalid_stored_configuration_is_reported_without_its_contents(
-    settings: Settings, engine: Engine
+    settings: Settings, gateway: GatewayServices
 ) -> None:
-    budget = await engine.repository.get("budgets", "budget-team")
+    budget = await gateway.repository.get("budgets", "budget-team")
     assert budget is not None
-    await engine.repository.mutate(
+    await gateway.repository.mutate(
         "budgets", "budget-team", {**budget, "limit_micro_usd": "secret-value"}, {"id": "audit"}
     )
-    app = create_app(settings, engine)
+    app = create_app(settings, gateway)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

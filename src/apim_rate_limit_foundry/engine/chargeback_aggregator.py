@@ -2,7 +2,8 @@
 
 from apim_rate_limit_foundry.stores.contracts import Record
 
-GROUP_FIELDS = (
+# Chargeback dimensions in report order; CSV export and grouping share them.
+DIMENSION_FIELDS = (
     "business_unit",
     "cost_center",
     "department_id",
@@ -11,9 +12,8 @@ GROUP_FIELDS = (
     "subscription_id",
     "model",
     "month",
-    "status",
-    "cost_basis",
 )
+GROUP_FIELDS = (*DIMENSION_FIELDS, "status", "cost_basis")
 TOTAL_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
