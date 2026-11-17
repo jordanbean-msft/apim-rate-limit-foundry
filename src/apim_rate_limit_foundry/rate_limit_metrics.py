@@ -37,6 +37,13 @@ class RateLimitMetrics:
         self.records = meter.create_counter("limiter.usage.records", unit="{record}")
         self.tokens = meter.create_counter("limiter.usage.tokens", unit="{token}")
         self.cost = meter.create_counter("limiter.usage.cost", unit="{microUSD}")
+        self.out_of_bounds = meter.create_counter("limiter.usage.out_of_bounds", unit="{record}")
+        self.denials = meter.create_counter("limiter.budget.denials", unit="{denial}")
+        self.utilization = meter.create_histogram("limiter.budget.utilization", unit="%")
+        self.stream_outcomes = meter.create_counter("limiter.stream.outcomes", unit="{stream}")
+        self.provider_duration = meter.create_histogram("limiter.provider.duration", unit="ms")
+        self.event_publishes = meter.create_counter("limiter.usage.event_publishes", unit="{event}")
+        self.background_writes = meter.create_counter("limiter.background.writes", unit="{write}")
 
     @_best_effort
     def request(
@@ -69,6 +76,49 @@ class RateLimitMetrics:
         )
 
     @_best_effort
+    def budget(
+        self, subject_type: str, model: str, spent: int, limit: int, denied: bool, stage: str
+    ) -> None:
+        """Record one budget's utilization percentage and count each exhausted cap.
+
+        Dimensions are the hierarchy level and wildcard/model alias, never the
+        budget, user or team identifier. ``stage`` is ``admission`` or ``usage``;
+        only admission can deny. Percentages may exceed 100 for soft caps.
+        """
+        attributes = {"subject_type": subject_type, "model": model, "stage": stage}
+        if limit > 0:
+            self.utilization.record(100 * spent / limit, attributes)
+        if denied:
+            self.denials.add(1, {"subject_type": subject_type, "model": model})
+
+    @_best_effort
+    def stream_outcome(self, protocol: str, outcome: str) -> None:
+        """Count how each provider stream ended, including unaccounted provider throttles."""
+        self.stream_outcomes.add(1, {"api_protocol": protocol, "outcome": outcome})
+
+    @_best_effort
+    def provider_response(
+        self, protocol: str, status: int | None, duration_ms: float, error_type: str | None = None
+    ) -> None:
+        """Record provider time-to-headers by HTTP status, or by exception type on failure."""
+        attributes: dict[str, str | int] = {"api_protocol": protocol}
+        if status is not None:
+            attributes["http_status"] = status
+        if error_type is not None:
+            attributes["error_type"] = error_type
+        self.provider_duration.record(duration_ms, attributes)
+
+    @_best_effort
+    def event_publish(self, outcome: str) -> None:
+        """Count Event Hub usage-event sends as accepted or failed (not consumer processing)."""
+        self.event_publishes.add(1, {"outcome": outcome})
+
+    @_best_effort
+    def background_write(self, collection: str, outcome: str) -> None:
+        """Count best-effort mirror/export jobs as completed, failed or dropped."""
+        self.background_writes.add(1, {"collection": collection, "outcome": outcome})
+
+    @_best_effort
     def usage(self, event: dict[str, Any], replayed: bool) -> None:
         """Count all usage observations; add tokens for fresh actual usage and cost for any charge.
 
@@ -80,6 +130,8 @@ class RateLimitMetrics:
         self.records.add(1, {**attributes, "replayed": replayed})
         if replayed:
             return
+        if event.get("out_of_bounds"):
+            self.out_of_bounds.add(1, attributes)
         if event["status"] == "actual":
             cached = event["cached_input_tokens"]
             cache_write = event.get("cache_write_tokens") or 0

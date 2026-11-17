@@ -60,8 +60,8 @@ def configure_monitoring(settings: Settings) -> None:
             resource=Resource.create({"service.name": settings.otel_service_name}),
             sampling_ratio=settings.otel_traces_sampler_arg,
             enable_trace_based_sampling_for_logs=False,
-            enable_live_metrics=False,
-            enable_performance_counters=False,
+            enable_live_metrics=settings.otel_live_metrics_enabled,
+            enable_performance_counters=settings.otel_performance_counters_enabled,
             disable_metrics=False,
             disable_offline_storage=True,
             # Automatic HTTP/SDK spans can capture URLs, query strings and exception text.

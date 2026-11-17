@@ -9,6 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextvars import Context, copy_context
 
+from apim_rate_limit_foundry.rate_limit_metrics import rate_metrics
 from apim_rate_limit_foundry.telemetry import emit
 
 
@@ -40,6 +41,7 @@ class BackgroundWriter:
                 record_id=record_id,
                 reason="closed" if self.closed else "queue_full",
             )
+            rate_metrics.background_write(collection, "dropped")
             return
         self.queue.put_nowait((collection, record_id, operation, copy_context()))
         if self.task is None or self.task.done():
@@ -75,8 +77,10 @@ class BackgroundWriter:
                 record_id=record_id,
                 error_type=type(error).__name__,
             )
+            rate_metrics.background_write(collection, "failed")
         else:
             emit("background_write_completed", collection=collection, record_id=record_id)
+            rate_metrics.background_write(collection, "completed")
 
     @staticmethod
     def _completed(task: asyncio.Task[None]) -> None:

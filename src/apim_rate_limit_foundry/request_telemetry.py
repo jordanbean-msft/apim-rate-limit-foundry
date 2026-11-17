@@ -4,32 +4,47 @@ import logging
 from time import perf_counter
 
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind, StatusCode
+from opentelemetry.trace import Span, SpanKind, StatusCode
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from apim_rate_limit_foundry.rate_limit_metrics import rate_metrics
 from apim_rate_limit_foundry.telemetry import (
     LOGGER_NAME,
     correlation_id,
+    elapsed_ms,
     emit,
     request_correlation,
     request_trace_context,
 )
 
-_ROUTES = frozenset(
-    {
-        "/api/health",
-        "/api/dashboard",
-        "/api/budgets/check",
-        "/api/usage/record",
-        "/api/models",
-        "/api/usage",
-        "/api/budgets/status",
-        "/api/chargeback",
-        "/api/{collection}",
-        "/api/{collection}/{record_id}",
-    }
-)
+
+def finish_request(
+    span: Span, method: str, route: str, status: int, started: float, failed: bool = False
+) -> None:
+    """Record one request's span attributes, outcome metric and completion event.
+
+    Budget/auth rejections (4xx) are client outcomes; only 5xx or an escaped
+    exception is an error. The caller owns span lifetime.
+    """
+    failed = failed or status >= 500
+    outcome = "error" if failed else "rejected" if status >= 400 else "ok"
+    duration_ms = elapsed_ms(started)
+    span.update_name(f"{method} {route}")
+    span.set_attribute("route", route)
+    span.set_attribute("http.route", route)
+    span.set_attribute("http_status", status)
+    span.set_attribute("http.response.status_code", status)
+    span.set_status(StatusCode.ERROR if failed else StatusCode.OK)
+    rate_metrics.request(method, route, status, duration_ms, outcome)
+    emit(
+        "request_completed",
+        level=logging.ERROR if failed else logging.INFO,
+        http_method=method,
+        route=route,
+        http_status=status,
+        duration_ms=duration_ms,
+        status=outcome,
+    )
 
 
 class RequestTelemetryMiddleware:
@@ -106,28 +121,9 @@ class RequestTelemetryMiddleware:
                     emit("request_failed", level=logging.ERROR, error_type=type(error).__name__)
                     raise
                 finally:
-                    route = getattr(scope.get("route"), "path", "")
-                    route = route if route in _ROUTES else "unmatched"
-                    span.update_name(f"{method} {route}")
-                    span.set_attribute("route", route)
-                    span.set_attribute("http.route", route)
-                    span.set_attribute("http_status", status)
-                    span.set_attribute("http.response.status_code", status)
-                    # Budget/auth rejections are client outcomes, not dependency failures.
-                    failed = failed or status >= 500
-                    outcome = "error" if failed else "rejected" if status >= 400 else "ok"
-                    duration_ms = round((perf_counter() - started) * 1000, 3)
-                    span.set_status(StatusCode.ERROR if failed else StatusCode.OK)
-                    rate_metrics.request(method, route, status, duration_ms, outcome)
-                    emit(
-                        "request_completed",
-                        level=logging.ERROR if failed else logging.INFO,
-                        http_method=method,
-                        route=route,
-                        http_status=status,
-                        duration_ms=duration_ms,
-                        status=outcome,
-                    )
+                    # Templates exist only for matched routes, so paths stay low-cardinality.
+                    route = getattr(scope.get("route"), "path", "") or "unmatched"
+                    finish_request(span, method, route, status, started, failed)
         finally:
             # A worker handles concurrent requests; never leak one ID into the next task.
             correlation_id.reset(token)

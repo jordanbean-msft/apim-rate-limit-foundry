@@ -1,6 +1,7 @@
 import logging
 
 from apim_rate_limit_foundry.telemetry import SafeTelemetryFilter, safe_attributes, safe_event
+from apim_rate_limit_foundry.telemetry.dependency import _semantic_attributes
 
 
 def test_budget_and_usage_telemetry_is_structured_without_identity_or_payload() -> None:
@@ -42,3 +43,17 @@ def test_safety_filter_drops_exception_text_and_unknown_fields() -> None:
 def test_new_budget_events_have_stable_names() -> None:
     assert safe_event("budget_decision") == "budget_decision"
     assert safe_event("usage_recorded") == "usage_recorded"
+    assert safe_event("stream_rejected_by_provider") == "stream_rejected_by_provider"
+
+
+def test_structured_values_outside_the_allowlisted_lists_are_dropped() -> None:
+    attributes = safe_attributes(
+        {"model": {"nested": "payload"}, "status": ["ok"], "denied_budget_ids": ["a", {"b": 1}]}
+    )
+
+    assert attributes == {"denied_budget_ids": ["a"]}
+
+
+def test_unrecognized_dependencies_get_only_generic_span_attributes() -> None:
+    assert _semantic_attributes("custom", "call") == {}
+    assert _semantic_attributes("redis", "get")["db.system"] == "redis"
