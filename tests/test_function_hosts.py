@@ -40,17 +40,20 @@ def stream_request(headers: dict[str, str], body: bytes = b"{}") -> Request:
 
 
 @pytest.fixture
-def host(settings: Settings, engine, monkeypatch: pytest.MonkeyPatch):
+def host(settings: Settings, gateway, monkeypatch: pytest.MonkeyPatch):
     settings.stream_max_body_bytes = 1024
     state = SimpleNamespace(credential=AsyncMock())
 
     class RuntimeStub:
         def __init__(self, configured: Settings) -> None:
-            self.engine = engine
+            self.gateway = gateway
             self.credential = state.credential
 
         def http_session(self) -> object:
             return object()
+
+        def close_on_loop_shutdown(self) -> None:
+            state.shutdown_guarded = True
 
     monkeypatch.setattr("apim_rate_limit_foundry.config.Settings", lambda: settings)
     monkeypatch.setattr("apim_rate_limit_foundry.runtime.Runtime", RuntimeStub)

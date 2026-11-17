@@ -1,1 +1,1 @@
-"""Trusted provider stream observation; all budget decisions remain in Engine."""
+"""Trusted provider stream observation; all budget decisions remain in the gateway services."""

@@ -22,7 +22,7 @@ def test_malformed_framing_latches_invalid_and_ignores_later_bytes() -> None:
     observer.feed(b"data: {not json}\n\n")
     observer.feed(CHAT_USAGE)
 
-    assert observer.invalid and not observer.buffer
+    assert observer.invalid and not observer.parser.buffer
     assert_unknown(observer)
 
 

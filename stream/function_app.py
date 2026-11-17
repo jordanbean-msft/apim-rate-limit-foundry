@@ -6,16 +6,16 @@ from functools import cache
 import aiohttp
 import azure.functions as func
 from azure.core.exceptions import AzureError
-from azurefunctions.extensions.http.fastapi import JSONResponse, Request, StreamingResponse
+from azurefunctions.extensions.http.fastapi import Request, StreamingResponse
 from fastapi import HTTPException
 from redis.exceptions import RedisError
 from starlette.responses import Response
 
-from apim_rate_limit_foundry.auth import authenticate
+from apim_rate_limit_foundry.api_errors import detail_response
+from apim_rate_limit_foundry.auth import ROLE_GATEWAY, authenticate
 from apim_rate_limit_foundry.config import Settings
 from apim_rate_limit_foundry.monitoring import configure_monitoring
 from apim_rate_limit_foundry.runtime import Runtime
-from apim_rate_limit_foundry.stores.contracts import Conflict
 from apim_rate_limit_foundry.streaming.relay import StreamRelay
 from apim_rate_limit_foundry.streaming.request_telemetry import trace_stream_request
 from apim_rate_limit_foundry.telemetry import emit, safe_id
@@ -27,8 +27,14 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 @cache
 def get_runtime() -> Runtime:
-    """Build the process-wide runtime once so connections are reused across invocations."""
-    return Runtime(settings)
+    """Build the process-wide runtime once so connections are reused across invocations.
+
+    Must first be called inside the serving event loop: the runtime then drains its
+    best-effort writes and closes its clients when that loop shuts down.
+    """
+    runtime = Runtime(settings)
+    runtime.close_on_loop_shutdown()
+    return runtime
 
 
 @app.route(route="api/stream", methods=[func.HttpMethod.POST])
@@ -48,7 +54,7 @@ async def stream_provider(req: Request) -> Response:
     """
     try:
         actor = authenticate(req, settings)
-        actor.require("RateLimit.Gateway")
+        actor.require(ROLE_GATEWAY)
         request_id = safe_id(req.headers.get("x-usage-request-id"))
         if not request_id:
             raise HTTPException(400, "X-Usage-Request-ID is required")
@@ -60,7 +66,7 @@ async def stream_provider(req: Request) -> Response:
         runtime = get_runtime()
         if runtime.credential is None:
             raise HTTPException(503, "Managed identity is required for provider streams")
-        relay = StreamRelay(runtime.engine, runtime.credential, settings, runtime.http_session())
+        relay = StreamRelay(runtime.gateway, runtime.credential, settings, runtime.http_session())
         status, content_type, chunks, provider_headers = await relay.open(
             actor.tenant_id, request_id, bytes(body)
         )
@@ -76,9 +82,9 @@ async def stream_provider(req: Request) -> Response:
             },
         )
     except HTTPException as error:
-        return JSONResponse({"detail": error.detail}, status_code=error.status_code)
-    except (ValueError, Conflict):
-        return JSONResponse({"detail": "Invalid stream admission"}, status_code=409)
+        return detail_response(error.status_code, str(error.detail))
+    except ValueError:
+        return detail_response(409, "Invalid stream admission")
     except (OSError, aiohttp.ClientError, AzureError, RedisError):
         emit("limiter_dependency_unavailable", level=logging.ERROR, streaming=True)
-        return JSONResponse({"detail": "Streaming relay unavailable"}, status_code=503)
+        return detail_response(503, "Streaming relay unavailable")

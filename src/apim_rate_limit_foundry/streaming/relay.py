@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextvars import Token
+from time import perf_counter
 from typing import Any, Literal
 
 import aiohttp
@@ -13,16 +14,21 @@ from azure.core.exceptions import AzureError
 from redis.exceptions import RedisError
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
+from apim_rate_limit_foundry.models import BudgetCheck
+from apim_rate_limit_foundry.models.admission_context import AdmissionContext
 from apim_rate_limit_foundry.models.budget_check import UsageRecordRequest
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
 from apim_rate_limit_foundry.models.types import ApiProtocol
 from apim_rate_limit_foundry.observed_credential import ObservedCredential
-from apim_rate_limit_foundry.stores.contracts import Conflict, Record
+from apim_rate_limit_foundry.rate_limit_metrics import rate_metrics
+from apim_rate_limit_foundry.stores.contracts import Conflict
+from apim_rate_limit_foundry.streaming.upstream_response import UpstreamResponse
 from apim_rate_limit_foundry.streaming.usage import StreamUsage
 from apim_rate_limit_foundry.telemetry import (
     correlation_id,
     dependency_http_status,
+    elapsed_ms,
     emit,
     http_dependency_span,
     outgoing_trace_headers,
@@ -34,45 +40,28 @@ class StreamRelay:
 
     def __init__(
         self,
-        engine: Engine,
+        gateway: GatewayServices,
         credential: AsyncTokenCredential,
         settings: Settings,
         session: aiohttp.ClientSession,
     ) -> None:
         """Bind collaborators; the caller owns the shared HTTP session's lifetime."""
-        self.engine = engine
+        self.gateway = gateway
         self.credential = ObservedCredential(credential)
         self.settings = settings
         self.session = session
 
-    async def open(
-        self, tenant_id: str, request_id: str, body: bytes
-    ) -> tuple[int, str, AsyncIterator[bytes], dict[str, str]]:
+    async def open(self, tenant_id: str, request_id: str, body: bytes) -> UpstreamResponse:
         """Validate admitted identity/model and open an upstream streaming response.
 
-        Return status, media type, a byte iterator and allowlisted response headers.
         No new budget decision is made here: the tenant/request ID must reference
         an allowed streaming context that has not already been finalized.
         """
-        if len(body) > self.settings.stream_max_body_bytes:
-            raise ValueError("Stream request exceeds bound")
-        try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise ValueError("Invalid streaming request body") from error
-        if not isinstance(payload, dict) or payload.get("stream") is not True:
-            raise ValueError("A streaming OpenAI request is required")
-        admission = await self.engine.counters.request(request_id)
-        if admission is None or admission["tenant_id"] != tenant_id:
-            raise Conflict("An admitted budget check is required")
-        check = admission["data"]["check"]
-        if not admission["data"]["decision"]["allowed"] or not check["streaming"]:
-            raise Conflict("An admitted stream request is required")
-        if await self.engine.counters.usage(request_id) is not None:
-            raise Conflict("Completed request IDs cannot be dispatched again")
-        protocol: ApiProtocol = check["api_protocol"]
+        payload = self._parse_body(body)
+        check = await self._admitted_check(tenant_id, request_id)
+        protocol = check.api_protocol
         # Resolve the saved alias, not a caller-controlled provider URL or model.
-        model = self.settings.registered_model(protocol, check["model"])
+        model = self.settings.registered_model(protocol, check.model)
         if payload.get("model") != model.model:
             raise ValueError("Streaming model does not match the admitted model")
         if protocol == "openai-chat":
@@ -81,13 +70,37 @@ class StreamRelay:
                 raise ValueError("Chat streams require stream_options.include_usage=true")
         return await self._open_upstream(request_id, model, protocol, body)
 
+    def _parse_body(self, body: bytes) -> dict[str, Any]:
+        """Require a bounded JSON object that asks for a stream."""
+        if len(body) > self.settings.stream_max_body_bytes:
+            raise ValueError("Stream request exceeds bound")
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError("Invalid streaming request body") from error
+        if not isinstance(payload, dict) or payload.get("stream") is not True:
+            raise ValueError("A streaming OpenAI request is required")
+        return payload
+
+    async def _admitted_check(self, tenant_id: str, request_id: str) -> BudgetCheck:
+        """Return the saved check of an allowed, unfinalized streaming admission."""
+        admission = await self.gateway.counters.request(request_id)
+        if admission is None or admission["tenant_id"] != tenant_id:
+            raise Conflict("An admitted budget check is required")
+        context = AdmissionContext.model_validate(admission["data"])
+        if not context.decision.allowed or not context.check.streaming:
+            raise Conflict("An admitted stream request is required")
+        if await self.gateway.counters.usage(request_id) is not None:
+            raise Conflict("Completed request IDs cannot be dispatched again")
+        return context.check
+
     async def _open_upstream(
         self,
         request_id: str,
         backend: ModelDeployment,
         protocol: ApiProtocol,
         body: bytes,
-    ) -> tuple[int, str, AsyncIterator[bytes], dict[str, str]]:
+    ) -> UpstreamResponse:
         """Acquire provider credentials and return an owned response-body iterator.
 
         The iterator releases its response after consumption. Open failures
@@ -97,65 +110,78 @@ class StreamRelay:
         Non-SSE/non-200 replies are bounded JSON errors, never
         buffered model output.
         """
+        started = perf_counter()
         try:
-            with http_dependency_span("provider.stream_open", "model-provider") as span:
-                token = await self.credential.get_token(
-                    f"{str(backend.audience).rstrip('/')}/.default"
-                )
-                headers = {
+            response = await self._post_upstream(request_id, backend, body)
+        except BaseException as error:
+            rate_metrics.provider_response(
+                protocol, None, elapsed_ms(started), type(error).__name__
+            )
+            rate_metrics.stream_outcome(protocol, "open_failed")
+            await self._record(request_id, "usage_unknown", None)
+            raise
+        rate_metrics.provider_response(protocol, response.status, elapsed_ms(started))
+        headers = {
+            name: response.headers[name]
+            for name in ("Retry-After", "retry-after-ms", "x-ms-request-id", "request-id")
+            if name in response.headers and len(response.headers[name]) <= 160
+        }
+        content_type = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if response.status == 200 and content_type == "text/event-stream":
+            return UpstreamResponse(
+                200, "text/event-stream", self._stream(request_id, protocol, response), headers
+            )
+        # A successful HTTP status with a non-stream body is not a usable SSE response.
+        error_body = await self._read_error_body(response, content_type)
+        rate_metrics.stream_outcome(
+            protocol, "provider_error" if response.status != 200 else "invalid_response"
+        )
+        if response.status == 200:
+            await self._record(request_id, "usage_unknown", None)
+        status = response.status if response.status != 200 else 502
+        return UpstreamResponse(status, "application/json", self._error(error_body), headers)
+
+    async def _post_upstream(
+        self, request_id: str, backend: ModelDeployment, body: bytes
+    ) -> aiohttp.ClientResponse:
+        """Send the admitted body to the registered deployment with its own identity token."""
+        with http_dependency_span("provider.stream_open", "model-provider") as span:
+            token = await self.credential.get_token(f"{str(backend.audience).rstrip('/')}/.default")
+            response = await self.session.post(
+                f"{str(backend.endpoint).rstrip('/')}{backend.path}",
+                params={"api-version": backend.api_version} if backend.api_version else {},
+                headers={
                     "Authorization": f"Bearer {token.token}",
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream",
                     "Accept-Encoding": "identity",
                     **outgoing_trace_headers(request_id),
-                }
-                response = await self.session.post(
-                    f"{str(backend.endpoint).rstrip('/')}{backend.path}",
-                    params={"api-version": backend.api_version} if backend.api_version else {},
-                    headers=headers,
-                    data=body,
-                    allow_redirects=False,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.settings.stream_timeout_seconds,
-                        connect=10,
-                        sock_read=self.settings.stream_timeout_seconds,
-                    ),
-                )
-                dependency_http_status(span, response.status)
-        except BaseException:
-            await self._record(request_id, "usage_unknown", None)
-            raise
-        content_type = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
-        response_headers = {
-            name: response.headers[name]
-            for name in ("Retry-After", "retry-after-ms", "x-ms-request-id", "request-id")
-            if name in response.headers and len(response.headers[name]) <= 160
-        }
-        if response.status != 200 or content_type != "text/event-stream":
-            # A successful HTTP status with a non-stream body is not a usable SSE response.
-            status = response.status if response.status != 200 else 502
-            try:
-                body_buffer = bytearray()
-                async for chunk in response.content.iter_chunked(8192):
-                    body_buffer.extend(chunk)
-                    if len(body_buffer) > self.settings.stream_max_event_bytes:
-                        break
-                if (
-                    len(body_buffer) > self.settings.stream_max_event_bytes
-                    or content_type != "application/json"
-                ):
-                    body_buffer = bytearray(b'{"error":"provider_stream_unavailable"}')
-            finally:
-                response.close()
-            if response.status == 200:
-                await self._record(request_id, "usage_unknown", None)
-            return status, "application/json", self._error(bytes(body_buffer)), response_headers
-        return (
-            response.status,
-            "text/event-stream",
-            self._stream(request_id, protocol, response),
-            response_headers,
-        )
+                },
+                data=body,
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(
+                    total=self.settings.stream_timeout_seconds,
+                    connect=10,
+                    sock_read=self.settings.stream_timeout_seconds,
+                ),
+            )
+            dependency_http_status(span, response.status)
+            return response
+
+    async def _read_error_body(self, response: aiohttp.ClientResponse, content_type: str) -> bytes:
+        """Read a bounded provider JSON error, replacing anything else with a fixed error."""
+        limit = self.settings.stream_max_event_bytes
+        collected = bytearray()
+        try:
+            async for chunk in response.content.iter_chunked(8192):
+                collected.extend(chunk)
+                if len(collected) > limit:
+                    break
+        finally:
+            response.close()
+        if len(collected) > limit or content_type != "application/json":
+            return b'{"error":"provider_stream_unavailable"}'
+        return bytes(collected)
 
     @staticmethod
     async def _error(body: bytes) -> AsyncIterator[bytes]:
@@ -172,7 +198,7 @@ class StreamRelay:
 
         Observation never changes chunk contents. Normal completion, provider
         errors and client disconnects share one shielded finalization: observed
-        usage is priced, otherwise the engine charges its conservative upper bound.
+        usage is priced, otherwise the usage recorder charges its conservative upper bound.
         A worker crash can lose that attempt and any process-local persistence/export.
         """
         token: Token[str] = correlation_id.set(request_id)
@@ -188,10 +214,12 @@ class StreamRelay:
             emit("stream_usage_unknown", level=logging.WARNING, error_type=type(error).__name__)
         finally:
             response.close()
-            await self._finalize(request_id, observer)
+            await self._finalize(request_id, protocol, observer)
             correlation_id.reset(token)
 
-    async def _finalize(self, request_id: str, observer: StreamUsage) -> None:
+    async def _finalize(
+        self, request_id: str, protocol: ApiProtocol, observer: StreamUsage
+    ) -> None:
         """Record observed terminal usage, or unknown usage, shielded from cancellation."""
         try:
             usage: dict[str, Any] | None = observer.finish()
@@ -199,6 +227,7 @@ class StreamRelay:
             usage = None
         if usage is None and observer.rejected:
             emit("stream_rejected_by_provider", level=logging.WARNING)
+            rate_metrics.stream_outcome(protocol, "provider_throttled")
             return
         status: Literal["actual", "usage_unknown"] = (
             "actual" if usage is not None else "usage_unknown"
@@ -207,6 +236,9 @@ class StreamRelay:
             await asyncio.shield(self._record(request_id, status, usage))
         except (OSError, aiohttp.ClientError, AzureError, RedisError, ValueError):
             emit("usage_record_failed", level=logging.ERROR, status=status)
+            rate_metrics.stream_outcome(protocol, "accounting_failed")
+        else:
+            rate_metrics.stream_outcome(protocol, "completed" if usage else "usage_unknown")
 
     async def _record(
         self,
@@ -214,72 +246,10 @@ class StreamRelay:
         status: Literal["actual", "usage_unknown"],
         provider_usage: dict[str, Any] | None,
     ) -> None:
-        """Accept actual/unknown usage into Redis and enqueue export only once.
+        """Accept actual/unknown usage into Redis; the recorder schedules mirror and export.
 
-        The engine independently schedules the Table mirror. Neither that mirror
-        nor APIM's export callback is awaited as part of this method's completion.
+        Neither the Table mirror nor the Event Hub export is awaited here.
         """
-        result = await self.engine.record_usage(
+        await self.gateway.usage.record(
             UsageRecordRequest(request_id=request_id, provider_usage=provider_usage, status=status)
         )
-        if not result["replayed"]:
-            self.engine.background.submit(
-                "usage_event", request_id, lambda: self._publish(result["event"])
-            )
-
-    async def _publish(self, usage_event: Record) -> None:
-        """POST the versioned usage event to APIM as a best-effort background job.
-
-        Observe HTTP acceptance, not Event Hub delivery or consumer processing.
-        Failures are logged without retrying or undoing Redis-accepted accounting.
-        """
-        identifiers: Record = {
-            "request_id": usage_event.get("request_id"),
-            "event_id": usage_event.get("event_id"),
-        }
-        if not self.settings.apim_usage_event_url or not self.settings.api_audience:
-            emit(
-                "usage_event_publish_failed",
-                level=logging.WARNING,
-                error_type="not_configured",
-                **identifiers,
-            )
-            return
-        try:
-            with http_dependency_span("apim.usage_events", "apim") as span:
-                token = await self.credential.get_token(
-                    f"{self.settings.api_audience.rstrip('/')}/.default"
-                )
-                async with self.session.post(
-                    self.settings.apim_usage_event_url,
-                    json=usage_event,
-                    headers={
-                        "Authorization": f"Bearer {token.token}",
-                        **outgoing_trace_headers(usage_event.get("request_id")),
-                    },
-                    allow_redirects=False,
-                    timeout=aiohttp.ClientTimeout(total=3),
-                ) as response:
-                    dependency_http_status(span, response.status)
-                    if response.status >= 300:
-                        emit(
-                            "usage_event_publish_failed",
-                            level=logging.WARNING,
-                            error_type=f"http_{response.status}",
-                            http_status=response.status,
-                            **identifiers,
-                        )
-                    else:
-                        emit(
-                            "usage_event_publish_accepted",
-                            status="accepted",
-                            http_status=response.status,
-                            **identifiers,
-                        )
-        except (OSError, aiohttp.ClientError, AzureError, TimeoutError, ValueError) as error:
-            emit(
-                "usage_event_publish_failed",
-                level=logging.WARNING,
-                error_type=type(error).__name__,
-                **identifiers,
-            )

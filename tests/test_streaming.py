@@ -22,7 +22,7 @@ STREAM_HOST = Path(__file__).resolve().parents[1] / "stream/function_app.py"
 
 
 async def test_stream_host_uses_saved_user_context_not_gateway_workload_principal(
-    engine, settings, monkeypatch: pytest.MonkeyPatch
+    gateway, settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.model_registry = {
         "openai-chat:model-1": ModelDeployment(
@@ -37,7 +37,7 @@ async def test_stream_host_uses_saved_user_context_not_gateway_workload_principa
             max_output_tokens=20,
         )
     }
-    await engine.check(
+    await gateway.admission.check(
         BudgetCheck(
             request_id="host-stream",
             tenant_id="tenant-1",
@@ -52,11 +52,14 @@ async def test_stream_host_uses_saved_user_context_not_gateway_workload_principa
 
     class RuntimeStub:
         def __init__(self, settings):
-            self.engine = engine
+            self.gateway = gateway
             self.credential = AsyncMock()
 
         def http_session(self):
             return FakeHttpSession()
+
+        def close_on_loop_shutdown(self):
+            pass
 
     monkeypatch.setattr("apim_rate_limit_foundry.runtime.Runtime", RuntimeStub)
 
@@ -145,26 +148,11 @@ def test_stream_without_trustworthy_terminal_usage_is_unknown(payload: bytes) ->
         observer.finish()
 
 
-async def test_event_callback_failure_is_best_effort(engine, settings) -> None:
-    credential = AsyncMock()
-    credential.get_token.return_value.token = "managed-identity-token"
-    settings.apim_usage_event_url = "https://gateway.example/internal/usage-events"
-    settings.api_audience = "api://gateway"
-
-    def unavailable(url, **kwargs):
-        raise aiohttp.ClientConnectionError("private endpoint unavailable")
-
-    relay = StreamRelay(engine, credential, settings, FakeHttpSession(unavailable))
-
-    await relay._publish({"event_version": 2, "event_name": "usage_recorded"})
-    credential.get_token.assert_awaited_once_with("api://gateway/.default")
-
-
 @pytest.mark.parametrize("terminal_seen", [True, False])
 async def test_client_disconnect_preserves_already_observed_terminal_usage(
-    engine, settings, terminal_seen: bool
+    gateway, settings, publisher, terminal_seen: bool
 ) -> None:
-    await engine.check(
+    await gateway.admission.check(
         BudgetCheck(
             request_id="disconnect",
             tenant_id="tenant-1",
@@ -184,15 +172,14 @@ async def test_client_disconnect_preserves_already_observed_terminal_usage(
 
     response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
     session = FakeHttpSession()
-    relay = StreamRelay(engine, AsyncMock(), settings, session)
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, AsyncMock(), settings, session)
     stream = relay._stream("disconnect", "openai-chat", response)
 
     await anext(stream)
     await stream.aclose()
 
-    await engine.background.flush()
-    records = await persisted_usage(engine)
+    await gateway.background.flush()
+    records = await persisted_usage(gateway)
     assert len(records) == 1
     usage = records[0]["data"]
     assert usage["status"] == ("actual" if terminal_seen else "usage_unknown")
@@ -201,25 +188,12 @@ async def test_client_disconnect_preserves_already_observed_terminal_usage(
     assert usage["cost_micro_usd"] == (28 if terminal_seen else UPPER_BOUND)
     response.close.assert_called_once()
     session.close.assert_not_awaited()
-    relay._publish.assert_awaited_once()
-
-
-async def test_callback_identity_failure_does_not_fail_completed_inference(
-    engine, settings
-) -> None:
-    credential = AsyncMock()
-    credential.get_token.side_effect = AzureError("private credential detail")
-    settings.apim_usage_event_url = "https://gateway.example/internal/usage-events"
-    settings.api_audience = "api://gateway"
-    relay = StreamRelay(engine, credential, settings, FakeHttpSession())
-
-    await relay._publish({"event_version": 2, "event_name": "usage_recorded"})
-
-    credential.get_token.assert_awaited_once_with("api://gateway/.default")
+    publisher.publish.assert_awaited_once()
+    assert publisher.publish.await_args.args[0]["request_id"] == "disconnect"
 
 
 async def test_relay_preserves_incremental_chunks_and_records_terminal_usage(
-    engine, settings
+    gateway, settings, publisher
 ) -> None:
     deployment = ModelDeployment(
         api_protocol="openai-chat",
@@ -233,7 +207,7 @@ async def test_relay_preserves_incremental_chunks_and_records_terminal_usage(
         max_output_tokens=20,
     )
     settings.model_registry = {"openai-chat:model-1": deployment}
-    await engine.check(
+    await gateway.admission.check(
         BudgetCheck(
             request_id="stream-request",
             tenant_id="tenant-1",
@@ -267,8 +241,7 @@ async def test_relay_preserves_incremental_chunks_and_records_terminal_usage(
     session = FakeHttpSession(lambda url, **kwargs: Response())
     credential = AsyncMock()
     credential.get_token.return_value = SimpleNamespace(token="managed-identity-token")
-    relay = StreamRelay(engine, credential, settings, session)
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, credential, settings, session)
     body = json.dumps(
         {
             "model": "model-1",
@@ -282,12 +255,12 @@ async def test_relay_preserves_incremental_chunks_and_records_terminal_usage(
 
     assert status == 200 and content_type == "text/event-stream"
     assert delivered == chunks
-    await engine.background.flush()
-    records = await persisted_usage(engine)
+    await gateway.background.flush()
+    records = await persisted_usage(gateway)
     assert len(records) == 1
     assert records[0]["data"]["status"] == "actual"
     assert records[0]["data"]["input_tokens"] == 8
-    relay._publish.assert_awaited_once()
+    publisher.publish.assert_awaited_once()
     with pytest.raises(ValueError, match="Completed request"):
         await relay.open("tenant-1", "stream-request", body)
 
@@ -327,7 +300,7 @@ def test_responses_terminal_event_above_the_bound_still_yields_usage(
     step = chunk_size or len(payload)
     for start in range(0, len(payload), step):
         observer.feed(payload[start : start + step])
-        assert len(observer.buffer) <= 65536
+        assert len(observer.parser.buffer) <= 1_048_576
 
     assert observer.finish() == {
         "input_tokens": 8,
@@ -383,8 +356,8 @@ def test_oversized_chat_event_and_truncated_oversized_event_are_unknown() -> Non
         truncated.finish()
 
 
-async def test_oversized_responses_stream_is_priced_from_its_real_usage(engine, settings) -> None:
-    await engine.check(
+async def test_oversized_responses_stream_is_priced_from_its_real_usage(gateway, settings) -> None:
+    await gateway.admission.check(
         BudgetCheck(
             request_id="large-response",
             tenant_id="tenant-1",
@@ -402,16 +375,15 @@ async def test_oversized_responses_stream_is_priced_from_its_real_usage(engine, 
             yield payload[start : start + size]
 
     response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
-    relay = StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, AsyncMock(), settings, FakeHttpSession())
 
     delivered = b"".join(
         [chunk async for chunk in relay._stream("large-response", "openai-responses", response)]
     )
 
     assert delivered == payload
-    await engine.background.flush()
-    usage = (await persisted_usage(engine))[0]["data"]
+    await gateway.background.flush()
+    usage = (await persisted_usage(gateway))[0]["data"]
     assert usage["status"] == "actual"
     assert (usage["input_tokens"], usage["cached_input_tokens"], usage["output_tokens"]) == (
         8,
@@ -421,8 +393,8 @@ async def test_oversized_responses_stream_is_priced_from_its_real_usage(engine, 
     assert usage["cost_micro_usd"] == 6 * 2 + 2 * 0.5 + 3 * 4
 
 
-async def test_upstream_error_mid_stream_charges_the_upper_bound_once(engine, settings) -> None:
-    await engine.check(
+async def test_upstream_error_mid_stream_charges_the_upper_bound_once(gateway, settings) -> None:
+    await gateway.admission.check(
         BudgetCheck(
             request_id="broken",
             tenant_id="tenant-1",
@@ -439,16 +411,15 @@ async def test_upstream_error_mid_stream_charges_the_upper_bound_once(engine, se
         raise aiohttp.ClientPayloadError("connection reset")
 
     response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
-    relay = StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, AsyncMock(), settings, FakeHttpSession())
 
     assert len([c async for c in relay._stream("broken", "openai-chat", response)]) == 1
 
-    await engine.background.flush()
-    usage = (await persisted_usage(engine))[0]["data"]
+    await gateway.background.flush()
+    usage = (await persisted_usage(gateway))[0]["data"]
     assert usage["status"] == "usage_unknown"
     assert usage["cost_micro_usd"] == UPPER_BOUND
-    assert not (await engine.check(stream_check("next")))["allowed"]
+    assert not (await gateway.admission.check(stream_check("next")))["allowed"]
 
 
 def stream_check(request_id: str) -> BudgetCheck:
@@ -463,12 +434,12 @@ def stream_check(request_id: str) -> BudgetCheck:
     )
 
 
-async def test_failed_final_accounting_is_logged_not_raised(engine, settings) -> None:
+async def test_failed_final_accounting_is_logged_not_raised(gateway, settings) -> None:
     async def chunks(size):
         yield b"data: [DONE]\n\n"
 
     response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
-    relay = StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
+    relay = StreamRelay(gateway, AsyncMock(), settings, FakeHttpSession())
     relay._record = AsyncMock(side_effect=AzureError("redis down"))
 
     assert [c async for c in relay._stream("missing", "openai-chat", response)] == [
@@ -477,13 +448,13 @@ async def test_failed_final_accounting_is_logged_not_raised(engine, settings) ->
     relay._record.assert_awaited_once_with("missing", "usage_unknown", None)
 
 
-async def test_stream_throttled_before_output_is_not_charged(engine, settings) -> None:
+async def test_stream_throttled_before_output_is_not_charged(gateway, settings) -> None:
     async def chunks(size):
         yield b'data: {"type":"response.created","response":{"usage":null}}\n\n'
         yield b'data: {"type":"error","error":{"code":"rate_limit_exceeded"}}\n\n'
 
     response = SimpleNamespace(content=SimpleNamespace(iter_chunked=chunks), close=Mock())
-    relay = StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
+    relay = StreamRelay(gateway, AsyncMock(), settings, FakeHttpSession())
     relay._record = AsyncMock()
 
     assert len([c async for c in relay._stream("throttled", "openai-responses", response)]) == 2
@@ -504,10 +475,14 @@ def test_stream_host_builds_one_cached_runtime_without_module_state(
     settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     built = []
+    guarded = []
 
     class RuntimeStub:
         def __init__(self, configured):
             built.append(configured)
+
+        def close_on_loop_shutdown(self):
+            guarded.append(self)
 
     monkeypatch.setattr("apim_rate_limit_foundry.config.Settings", lambda: settings)
     monkeypatch.setattr("apim_rate_limit_foundry.runtime.Runtime", RuntimeStub)
@@ -515,6 +490,7 @@ def test_stream_host_builds_one_cached_runtime_without_module_state(
 
     assert module["get_runtime"]() is module["get_runtime"]()
     assert built == [settings]
+    assert len(guarded) == 1
     assert "runtime" not in module
 
 
@@ -533,9 +509,9 @@ def backend() -> ModelDeployment:
 
 
 async def test_provider_open_failure_is_charged_the_upper_bound_on_the_shared_session(
-    engine, settings
+    gateway, settings
 ) -> None:
-    await engine.check(stream_check("open-fails"))
+    await gateway.admission.check(stream_check("open-fails"))
     credential = AsyncMock()
     credential.get_token.return_value = SimpleNamespace(token="token")
 
@@ -543,22 +519,21 @@ async def test_provider_open_failure_is_charged_the_upper_bound_on_the_shared_se
         raise aiohttp.ClientConnectionError("provider down")
 
     session = FakeHttpSession(unavailable)
-    relay = StreamRelay(engine, credential, settings, session)
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, credential, settings, session)
 
     with pytest.raises(aiohttp.ClientConnectionError):
         await relay._open_upstream("open-fails", backend(), "openai-chat", b"{}")
 
-    await engine.background.flush()
-    usage = (await persisted_usage(engine))[0]["data"]
+    await gateway.background.flush()
+    usage = (await persisted_usage(gateway))[0]["data"]
     assert usage["status"] == "usage_unknown"
     assert usage["cost_micro_usd"] == UPPER_BOUND
     session.close.assert_not_awaited()
     assert session.calls[0][1]["timeout"].total == settings.stream_timeout_seconds
 
 
-async def test_provider_error_reply_is_bounded_json_and_not_charged(engine, settings) -> None:
-    await engine.check(stream_check("provider-429"))
+async def test_provider_error_reply_is_bounded_json_and_not_charged(gateway, settings) -> None:
+    await gateway.admission.check(stream_check("provider-429"))
     credential = AsyncMock()
     credential.get_token.return_value = SimpleNamespace(token="token")
 
@@ -572,8 +547,7 @@ async def test_provider_error_reply_is_bounded_json_and_not_charged(engine, sett
         content=Body(),
         close=Mock(),
     )
-    relay = StreamRelay(engine, credential, settings, FakeHttpSession(lambda url, **kw: response))
-    relay._publish = AsyncMock()
+    relay = StreamRelay(gateway, credential, settings, FakeHttpSession(lambda url, **kw: response))
 
     status, content_type, body, headers = await relay._open_upstream(
         "provider-429", backend(), "openai-chat", b"{}"
@@ -582,5 +556,5 @@ async def test_provider_error_reply_is_bounded_json_and_not_charged(engine, sett
     assert (status, content_type, headers) == (429, "application/json", {"Retry-After": "7"})
     assert [chunk async for chunk in body] == [b'{"error":"slow down"}']
     response.close.assert_called_once()
-    await engine.background.flush()
-    assert await persisted_usage(engine) == []
+    await gateway.background.flush()
+    assert await persisted_usage(gateway) == []

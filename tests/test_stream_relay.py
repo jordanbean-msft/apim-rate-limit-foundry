@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from apim_rate_limit_foundry.config import Settings
-from apim_rate_limit_foundry.engine import Engine
+from apim_rate_limit_foundry.engine import GatewayServices
 from apim_rate_limit_foundry.models.budget_check import BudgetCheck
 from apim_rate_limit_foundry.models.model_deployment import ModelDeployment
 from apim_rate_limit_foundry.stores.contracts import Conflict
@@ -20,7 +20,7 @@ def encode(**changes: object) -> bytes:
 
 
 @pytest.fixture
-def relay(engine: Engine, settings: Settings) -> StreamRelay:
+def relay(gateway: GatewayServices, settings: Settings) -> StreamRelay:
     settings.model_registry = {
         "openai-chat:model-1": ModelDeployment(
             api_protocol="openai-chat",
@@ -34,11 +34,13 @@ def relay(engine: Engine, settings: Settings) -> StreamRelay:
             max_output_tokens=20,
         )
     }
-    return StreamRelay(engine, AsyncMock(), settings, FakeHttpSession())
+    return StreamRelay(gateway, AsyncMock(), settings, FakeHttpSession())
 
 
-async def admit(engine: Engine, request_id: str = "stream-1", streaming: bool = True) -> None:
-    await engine.check(
+async def admit(
+    gateway: GatewayServices, request_id: str = "stream-1", streaming: bool = True
+) -> None:
+    await gateway.admission.check(
         BudgetCheck(
             request_id=request_id,
             tenant_id="tenant-1",
@@ -69,31 +71,27 @@ async def test_open_rejects_malformed_or_non_streaming_bodies(
 
 
 async def test_open_requires_an_allowed_streaming_admission_for_the_same_tenant(
-    relay: StreamRelay, engine: Engine
+    relay: StreamRelay, gateway: GatewayServices
 ) -> None:
     with pytest.raises(Conflict, match="admitted budget check"):
         await relay.open("tenant-1", "never-admitted", encode())
 
-    await admit(engine, "stream-1")
+    await admit(gateway, "stream-1")
     with pytest.raises(Conflict, match="admitted budget check"):
         await relay.open("tenant-2", "stream-1", encode())
 
-    await admit(engine, "buffered-1", streaming=False)
+    await admit(gateway, "buffered-1", streaming=False)
     with pytest.raises(Conflict, match="admitted stream request"):
         await relay.open("tenant-1", "buffered-1", encode())
 
 
 async def test_open_rejects_admissions_that_were_denied(
-    relay: StreamRelay, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    relay: StreamRelay, gateway: GatewayServices, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    denied = {
-        "tenant_id": "tenant-1",
-        "data": {
-            "check": {"streaming": True, "api_protocol": "openai-chat", "model": "model-1"},
-            "decision": {"allowed": False},
-        },
-    }
-    monkeypatch.setattr(engine.counters, "request", AsyncMock(return_value=denied))
+    await admit(gateway, "stream-1")
+    denied = await gateway.counters.request("stream-1")
+    denied["data"]["decision"]["allowed"] = False
+    monkeypatch.setattr(gateway.counters, "request", AsyncMock(return_value=denied))
 
     with pytest.raises(Conflict, match="admitted stream request"):
         await relay.open("tenant-1", "stream-1", encode())
@@ -109,9 +107,9 @@ async def test_open_rejects_admissions_that_were_denied(
     ],
 )
 async def test_open_pins_the_admitted_model_and_requires_chat_usage(
-    relay: StreamRelay, engine: Engine, body: bytes, message: str
+    relay: StreamRelay, gateway: GatewayServices, body: bytes, message: str
 ) -> None:
-    await admit(engine)
+    await admit(gateway)
 
     with pytest.raises(ValueError, match=message):
         await relay.open("tenant-1", "stream-1", body)
@@ -149,17 +147,17 @@ def upstream_reply(status: int, content_type: str, chunks: list[bytes]) -> Simpl
     ],
 )
 async def test_unusable_provider_replies_become_bounded_errors_charged_only_when_ok(
-    engine: Engine,
+    gateway: GatewayServices,
     settings: Settings,
     reply: SimpleNamespace,
     expected_status: int,
     expected_body: bytes,
     charged: bool,
 ) -> None:
-    await admit(engine)
+    await admit(gateway)
     credential = AsyncMock()
     credential.get_token.return_value = SimpleNamespace(token="token")
-    relay = StreamRelay(engine, credential, settings, FakeHttpSession(lambda url, **kw: reply))
+    relay = StreamRelay(gateway, credential, settings, FakeHttpSession(lambda url, **kw: reply))
     backend = ModelDeployment(
         api_protocol="openai-chat",
         endpoint="https://models.example.com",
@@ -178,5 +176,5 @@ async def test_unusable_provider_replies_become_bounded_errors_charged_only_when
     assert (status, content_type) == (expected_status, "application/json")
     assert expected_body in b"".join([chunk async for chunk in body])
     reply.close.assert_called_once()
-    recorded = await engine.counters.usage("stream-1")
+    recorded = await gateway.counters.usage("stream-1")
     assert (recorded["data"]["status"] == "usage_unknown") if charged else recorded is None
