@@ -162,7 +162,17 @@
       "label": "seed:preview",
       "type": "process",
       "command": "uv",
-      "args": ["run", "python", "scripts/seed.py"],
+      "args": ["run", "python", "-m", "demo.seed", "--tenant-id", "local-tenant"],
+      "problemMatcher": []
+    },
+    {
+      "label": "seed:apply-isolated",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run", "python", "-m", "demo.seed", "--tenant-id", "local-tenant",
+        "--settings-file", "demo/.env", "--apply", "--confirm-isolated-stores"
+      ],
       "problemMatcher": []
     },
     {

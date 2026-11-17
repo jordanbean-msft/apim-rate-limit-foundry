@@ -53,7 +53,7 @@ ignore_missing_imports = true
 addopts = "-q --import-mode=importlib"
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["tests", "scripts/tests", "apim/tests"]
+testpaths = ["tests", "scripts/tests", "apim/tests", "demo/tests"]
 
 [tool.coverage.run]
 include = [

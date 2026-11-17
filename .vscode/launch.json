@@ -45,12 +45,13 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Seed: preview configuration",
+      "name": "Seed: preview isolated demo data",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/seed.py",
+      "module": "demo.seed",
+      "args": ["--tenant-id", "local-tenant"],
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
+      "envFile": "${workspaceFolder}/demo/.env",
       "python": "${workspaceFolder}/.venv/bin/python",
       "preLaunchTask": "sync-venv",
       "justMyCode": true

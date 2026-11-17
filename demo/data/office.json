@@ -1,0 +1,308 @@
+{
+  "identity": "Michael Scott",
+  "collections": {
+    "organizations": [
+      {
+        "id": "sales",
+        "tenant_id": "local-tenant",
+        "kind": "department",
+        "name": "Sales",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4100",
+        "enabled": true
+      },
+      {
+        "id": "scranton-sales",
+        "tenant_id": "local-tenant",
+        "kind": "team",
+        "name": "Scranton Sales",
+        "department_id": "sales",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4100",
+        "enabled": true
+      },
+      {
+        "id": "accounting",
+        "tenant_id": "local-tenant",
+        "kind": "department",
+        "name": "Accounting",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4200",
+        "enabled": true
+      },
+      {
+        "id": "scranton-accounting",
+        "tenant_id": "local-tenant",
+        "kind": "team",
+        "name": "Scranton Accounting",
+        "department_id": "accounting",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4200",
+        "enabled": true
+      }
+    ],
+    "assignments": [
+      {
+        "id": "jim-halpert-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "jim-halpert",
+        "team_id": "scranton-sales",
+        "department_id": "sales",
+        "display_label": "Jim Halpert",
+        "enabled": true
+      },
+      {
+        "id": "dwight-schrute-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "dwight-schrute",
+        "team_id": "scranton-sales",
+        "department_id": "sales",
+        "display_label": "Dwight Schrute",
+        "enabled": true
+      },
+      {
+        "id": "pam-beesly-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "pam-beesly",
+        "team_id": "scranton-sales",
+        "department_id": "sales",
+        "display_label": "Pam Beesly",
+        "enabled": true
+      },
+      {
+        "id": "michael-scott-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "michael-scott",
+        "team_id": "scranton-sales",
+        "department_id": "sales",
+        "display_label": "Michael Scott",
+        "enabled": true
+      },
+      {
+        "id": "angela-martin-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "angela-martin",
+        "team_id": "scranton-accounting",
+        "department_id": "accounting",
+        "display_label": "Angela Martin",
+        "enabled": true
+      },
+      {
+        "id": "oscar-martinez-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "oscar-martinez",
+        "team_id": "scranton-accounting",
+        "department_id": "accounting",
+        "display_label": "Oscar Martinez",
+        "enabled": true
+      },
+      {
+        "id": "kevin-malone-assignment",
+        "tenant_id": "local-tenant",
+        "principal_id": "kevin-malone",
+        "team_id": "scranton-accounting",
+        "department_id": "accounting",
+        "display_label": "Kevin Malone",
+        "enabled": true
+      }
+    ],
+    "budgets": [
+      {
+        "id": "sales-department-monthly",
+        "tenant_id": "local-tenant",
+        "name": "Sales monthly",
+        "subject_type": "department",
+        "subject_id": "sales",
+        "model": "*",
+        "limit_micro_usd": 250000000,
+        "enabled": true
+      },
+      {
+        "id": "scranton-sales-monthly",
+        "tenant_id": "local-tenant",
+        "name": "Scranton Sales monthly",
+        "subject_type": "team",
+        "subject_id": "scranton-sales",
+        "model": "*",
+        "limit_micro_usd": 100000000,
+        "enabled": true
+      },
+      {
+        "id": "jim-halpert-monthly",
+        "tenant_id": "local-tenant",
+        "name": "Jim Halpert monthly",
+        "subject_type": "user",
+        "subject_id": "jim-halpert",
+        "model": "*",
+        "limit_micro_usd": 25000000,
+        "enabled": true
+      }
+    ],
+    "prices": [
+      {
+        "id": "gpt-5.4-v1",
+        "model": "gpt-5.4",
+        "version": "azure-global-text-2026-11-06",
+        "input_per_million": "2.50",
+        "cached_input_per_million": "0.25",
+        "cache_write_per_million": "3.125",
+        "output_per_million": "15"
+      },
+      {
+        "id": "gpt-5.4-mini-v1",
+        "model": "gpt-5.4-mini",
+        "version": "azure-global-text-2026-11-06",
+        "input_per_million": "0.75",
+        "cached_input_per_million": "0.075",
+        "output_per_million": "4.50"
+      },
+      {
+        "id": "gpt-5.4-nano-v1",
+        "model": "gpt-5.4-nano",
+        "version": "azure-global-text-2026-11-06",
+        "input_per_million": "0.20",
+        "cached_input_per_million": "0.02",
+        "output_per_million": "1.25"
+      }
+    ],
+    "models": [
+      {
+        "id": "openai-chat:gpt-5.4",
+        "model": "gpt-5.4",
+        "api_protocol": "openai-chat",
+        "deployment_name": "gpt-5.4",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096
+      },
+      {
+        "id": "openai-responses:gpt-5.4-mini",
+        "model": "gpt-5.4-mini",
+        "api_protocol": "openai-responses",
+        "deployment_name": "gpt-5.4-mini",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 64000,
+        "max_output_tokens": 4096
+      },
+      {
+        "id": "openai-chat:gpt-5.4-nano",
+        "model": "gpt-5.4-nano",
+        "api_protocol": "openai-chat",
+        "deployment_name": "gpt-5.4-nano",
+        "price_version": "azure-global-text-2026-11-06",
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048
+      }
+    ],
+    "usage": [
+      {
+        "event_version": 2,
+        "event_name": "usage_recorded",
+        "event_id": "scranton-sales-usage-001",
+        "request_id": "sales-proposal-001",
+        "principal_id": "jim-halpert",
+        "timestamp": "{{timestamp}}",
+        "month": "{{month}}",
+        "tenant_ref": "tenant-ref-001",
+        "user_ref": "user-ref-001",
+        "team_id": "scranton-sales",
+        "department_id": "sales",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4100",
+        "subscription_id": "paper-sales-assistant",
+        "model": "gpt-5.4",
+        "api_protocol": "openai-chat",
+        "streaming": false,
+        "status": "actual",
+        "input_tokens": 1200,
+        "cached_input_tokens": 256,
+        "output_tokens": 200,
+        "cost_micro_usd": 5424,
+        "price_version": "azure-global-text-2026-11-06"
+      },
+      {
+        "event_version": 2,
+        "event_name": "usage_recorded",
+        "event_id": "scranton-accounting-usage-001",
+        "request_id": "invoice-review-001",
+        "principal_id": "angela-martin",
+        "timestamp": "{{timestamp}}",
+        "month": "{{month}}",
+        "tenant_ref": "tenant-ref-001",
+        "user_ref": "user-ref-002",
+        "team_id": "scranton-accounting",
+        "department_id": "accounting",
+        "business_unit": "dunder-mifflin-paper",
+        "cost_center": "SCR-4200",
+        "subscription_id": "invoice-review-assistant",
+        "model": "gpt-5.4-mini",
+        "api_protocol": "openai-responses",
+        "streaming": true,
+        "status": "usage_unknown",
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "output_tokens": null,
+        "cost_micro_usd": null,
+        "price_version": "azure-global-text-2026-11-06"
+      }
+    ]
+  },
+  "budget_spend_micro_usd": {
+    "sales-department-monthly": 5424,
+    "scranton-sales-monthly": 400000,
+    "jim-halpert-monthly": 900000
+  },
+  "chargeback": [
+    {
+      "business_unit": "dunder-mifflin-paper",
+      "cost_center": "SCR-4100",
+      "department_id": "sales",
+      "team_id": "scranton-sales",
+      "user_ref": "user-ref-001",
+      "subscription_id": "paper-sales-assistant",
+      "model": "gpt-5.4",
+      "month": "{{month}}",
+      "input_tokens": 1200,
+      "cached_input_tokens": 256,
+      "output_tokens": 200,
+      "cost_micro_usd": 5424,
+      "unknown_requests": 0
+    },
+    {
+      "business_unit": "dunder-mifflin-paper",
+      "cost_center": "SCR-4200",
+      "department_id": "accounting",
+      "team_id": "scranton-accounting",
+      "user_ref": "user-ref-002",
+      "subscription_id": "invoice-review-assistant",
+      "model": "gpt-5.4-mini",
+      "month": "{{month}}",
+      "input_tokens": null,
+      "cached_input_tokens": null,
+      "output_tokens": null,
+      "cost_micro_usd": null,
+      "unknown_requests": 1
+    }
+  ],
+  "dashboard": [
+    {
+      "id": "fixture-spend",
+      "title": "Finalized spend over time (fixture)",
+      "chart": "Line",
+      "x_axis": "Time (UTC)",
+      "y_axis": "Cost (USD)",
+      "split_by": null,
+      "columns": [
+        { "name": "Time (UTC)", "type": "datetime" },
+        { "name": "Cost (USD)", "type": "real" }
+      ],
+      "rows": [
+        ["{{month}}-01T10:00:00Z", 1.15],
+        ["{{month}}-01T11:00:00Z", 2.4],
+        ["{{month}}-01T12:00:00Z", 1.8]
+      ],
+      "error": null,
+      "truncated": false
+    }
+  ]
+}

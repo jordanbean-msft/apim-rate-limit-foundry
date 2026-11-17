@@ -1,62 +1,10 @@
 import json
-import sys
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
-import httpx
 import pytest
 
-from scripts import configure_ci, seed
+from scripts import configure_ci
 from scripts.archive_legacy_config import archive
-
-
-def test_seed_dry_run_never_writes(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["seed"])
-    monkeypatch.setenv("SEED_API_URL", "http://127.0.0.1:8000/api")
-    monkeypatch.setenv("SEED_LOCAL_AUTH", "false")
-    client = MagicMock()
-    monkeypatch.setattr(seed.httpx, "Client", Mock(return_value=client))
-
-    seed.main()
-
-    client.__enter__.return_value.put.assert_not_called()
-    assert "Dry run only" in capsys.readouterr().out
-
-
-def test_seed_apply_uses_access_token_and_real_collection_routes(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["seed", "--apply"])
-    monkeypatch.setenv("SEED_API_URL", "https://gateway.example/api")
-    monkeypatch.setenv("SEED_ACCESS_TOKEN", "test-token")
-    monkeypatch.setenv("SEED_LOCAL_AUTH", "false")
-    requests = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={})
-
-    transport = httpx.MockTransport(respond)
-    original_client = httpx.Client
-    monkeypatch.setattr(
-        seed.httpx,
-        "Client",
-        lambda **kwargs: original_client(transport=transport, **kwargs),
-    )
-
-    seed.main()
-
-    saved_price = json.loads(
-        next(
-            request for request in requests if request.url.path == "/api/prices/gpt-5.4-v1"
-        ).content
-    )
-    assert saved_price["cached_input_per_million"] == "0.25"
-    assert {request.url.path.split("/")[2] for request in requests} == {
-        "organizations",
-        "assignments",
-        "prices",
-        "budgets",
-    }
-    assert all(request.headers["Authorization"] == "Bearer test-token" for request in requests)
-    assert str(requests[0].url) == "https://gateway.example/api/organizations/engineering"
 
 
 def test_archive_preserves_legacy_values_and_refuses_overwrite(tmp_path) -> None:
@@ -81,28 +29,6 @@ def test_archive_rejects_non_collection_without_creating_output(tmp_path) -> Non
         archive(source, destination)
 
     assert not destination.exists()
-
-
-def test_seed_cannot_send_local_admin_headers_to_cloud(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["seed", "--apply"])
-    monkeypatch.setenv("SEED_API_URL", "https://gateway.example/api")
-    monkeypatch.setenv("SEED_ACCESS_TOKEN", "test-token")
-    monkeypatch.setenv("SEED_LOCAL_AUTH", "true")
-
-    with pytest.raises(ValueError, match="loopback"):
-        seed.main()
-
-
-@pytest.mark.parametrize(
-    "url",
-    ["http://gateway.example/api", "https://user:password@gateway.example/api"],
-)
-def test_seed_rejects_unsafe_urls(monkeypatch, url: str) -> None:
-    monkeypatch.setattr(sys, "argv", ["seed", "--apply"])
-    monkeypatch.setenv("SEED_API_URL", url)
-
-    with pytest.raises(ValueError):
-        seed.main()
 
 
 def test_ci_cloud_conflict_cannot_mutate_environment(monkeypatch) -> None:

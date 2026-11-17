@@ -15,6 +15,7 @@ coverage.xml
 dist
 scripts
 examples
+demo
 docs
 .vscode
 .img
