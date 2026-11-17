@@ -1,0 +1,17 @@
+<fragment>
+  <!-- Do not forward caller credentials, platform identity or provider override headers.
+       Each backend branch acquires its own correctly scoped managed-identity token. -->
+  <set-header name="Authorization" exists-action="delete" />
+  <set-header name="X-Usage-Request-ID" exists-action="delete" />
+  <set-header name="X-MS-CLIENT-PRINCIPAL" exists-action="delete" />
+  <set-header name="X-MS-CLIENT-PRINCIPAL-ID" exists-action="delete" />
+  <set-header name="X-MS-CLIENT-PRINCIPAL-NAME" exists-action="delete" />
+  <set-header name="X-MS-CLIENT-PRINCIPAL-IDP" exists-action="delete" />
+  <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+  <set-header name="api-key" exists-action="delete" />
+  <set-header name="x-api-key" exists-action="delete" />
+  <set-header name="api-version" exists-action="delete" />
+  <set-header name="OpenAI-Beta" exists-action="delete" />
+  <set-header name="OpenAI-Organization" exists-action="delete" />
+  <set-header name="OpenAI-Project" exists-action="delete" />
+</fragment>

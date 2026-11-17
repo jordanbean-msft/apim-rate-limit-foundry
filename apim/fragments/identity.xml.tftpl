@@ -16,8 +16,12 @@
   <set-variable name="tenant-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("tid", ""))' />
   <set-variable name="principal-id" value='@(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("oid", ""))' />
   <set-variable name="subscription-id" value="@(context.Subscription.Id)" />
+  <!-- tid is already pinned by validate-jwt and the subscription by the check above. -->
   <choose>
-    <when condition='@(String.IsNullOrEmpty((string)context.Variables["principal-id"]) || String.IsNullOrEmpty(((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("scp", "")) || ((Jwt)context.Variables["validated-jwt"]).Claims.GetValueOrDefault("idtyp", "") == "app" || String.IsNullOrEmpty((string)context.Variables["tenant-id"]) || String.IsNullOrEmpty((string)context.Variables["subscription-id"]))'>
+    <when condition='@{
+      var jwt = (Jwt)context.Variables["validated-jwt"];
+      return String.IsNullOrEmpty((string)context.Variables["principal-id"]) || String.IsNullOrEmpty(jwt.Claims.GetValueOrDefault("scp", "")) || jwt.Claims.GetValueOrDefault("idtyp", "") == "app";
+    }'>
       <return-response><set-status code="401" reason="Delegated person identity required" /></return-response>
     </when>
   </choose>

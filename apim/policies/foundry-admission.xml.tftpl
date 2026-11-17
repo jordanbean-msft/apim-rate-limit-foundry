@@ -1,101 +1,34 @@
-<!-- Chat contract: bounded inline text/client tools, exactly one output-token cap,
-     no stored history or provider-executed tools. A rejected body never reaches the provider.
-     The input bound is a conservative byte/envelope estimate, not a tokenizer or cost reservation. -->
+<!-- Chat contract: bounded inline text and client function tools, exactly one output-token cap,
+     no stored history. Only what changes cost or the input bound is checked here; the provider
+     still validates its own schema. The input bound is the request's UTF-8 size, which is an upper
+     bound on tokens without a tokenizer, not a cost reservation. -->
 <set-variable name="admission-error" value='@{
   try {
-  var body = JObject.Parse((string)context.Variables["request-body"]);
-  var fields = new [] {"model","messages","max_tokens","max_completion_tokens","n","stream","temperature","top_p","stop",
-    "presence_penalty","frequency_penalty","seed","tools","tool_choice","parallel_tool_calls","reasoning_effort","store","stream_options"};
-  foreach (var field in body.Properties()) {
-    if (!fields.Contains(field.Name)) { return "unsupported chat field: " + field.Name; }
-  }
-  if ((body["max_tokens"] == null) == (body["max_completion_tokens"] == null)) { return "supply exactly one output-token cap"; }
-  var max = body["max_tokens"] ?? body["max_completion_tokens"];
-  if (max.Type != JTokenType.Integer || !System.Text.RegularExpressions.Regex.IsMatch(max.ToString(), "^[1-9][0-9]{0,5}$") ||
-      (int)max &gt; (int)context.Variables["model-max-output-tokens"]) { return "output-token cap exceeds the configured bound"; }
-  if (body["n"] != null &amp;&amp; (body["n"].Type != JTokenType.Integer || body["n"].ToString() != "1")) { return "n must be 1"; }
-  foreach (var name in new [] {"stream","parallel_tool_calls","store"}) {
-    if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Boolean) { return name + " must be boolean"; }
-  }
-  if ((bool?)body["store"] == true) { return "stored chat history is unsupported"; }
-  if (body["stream_options"] != null) {
-    var options = body["stream_options"] as JObject;
-    if (options == null || options.Properties().Any(field =&gt; field.Name != "include_usage") ||
-        (options["include_usage"] != null &amp;&amp; options["include_usage"].Type != JTokenType.Boolean)) { return "stream_options supports only boolean include_usage"; }
-  }
-  foreach (var name in new [] {"temperature","top_p","presence_penalty","frequency_penalty"}) {
-    if (body[name] != null &amp;&amp; body[name].Type != JTokenType.Integer &amp;&amp; body[name].Type != JTokenType.Float) { return name + " must be numeric"; }
-  }
-  if (body["seed"] != null &amp;&amp; body["seed"].Type != JTokenType.Integer) { return "seed must be integer"; }
-  if (body["reasoning_effort"] != null &amp;&amp; (body["reasoning_effort"].Type != JTokenType.String ||
-      !new [] {"none","minimal","low","medium","high","xhigh"}.Contains((string)body["reasoning_effort"]))) { return "unsupported reasoning effort"; }
-  if (body["stop"] != null &amp;&amp; body["stop"].Type != JTokenType.String) {
-    var stops = body["stop"] as JArray;
-    if (stops == null || stops.Count &gt; 4 || stops.Any(value =&gt; value.Type != JTokenType.String)) { return "stop must be text or up to four text values"; }
-  }
-  var messages = body["messages"] as JArray;
-  if (messages == null || messages.Count == 0 || messages.Count &gt; 128) { return "send 1-128 inline messages"; }
-  foreach (var entry in messages) {
-    var message = entry as JObject;
-    if (message == null || message.Properties().Any(field =&gt; !new [] {"role","content","name","tool_calls","tool_call_id"}.Contains(field.Name))) { return "unsupported message properties"; }
-    if (message["role"] == null || message["role"].Type != JTokenType.String ||
-        !new [] {"system","developer","user","assistant","tool"}.Contains((string)message["role"])) { return "unsupported message role"; }
-    if (message["name"] != null &amp;&amp; message["name"].Type != JTokenType.String) { return "message name must be text"; }
-    var content = message["content"];
-    if (content == null || content.Type == JTokenType.Null) {
-      if ((string)message["role"] != "assistant" || !(message["tool_calls"] is JArray) || ((JArray)message["tool_calls"]).Count == 0) { return "message content is required"; }
-    } else if (content.Type != JTokenType.String) {
+    var body = (JObject)context.Variables["request-json"];
+    var fields = new [] {"model","messages","max_tokens","max_completion_tokens","n","stream","temperature","top_p","stop",
+      "presence_penalty","frequency_penalty","seed","tools","tool_choice","parallel_tool_calls","reasoning_effort","store","stream_options"};
+    foreach (var field in body.Properties()) {
+      if (!fields.Contains(field.Name)) { return "unsupported chat field: " + field.Name; }
+    }
+    if ((body["max_tokens"] == null) == (body["max_completion_tokens"] == null)) { return "supply exactly one output-token cap"; }
+    var max = body["max_tokens"] ?? body["max_completion_tokens"];
+    if (max.Type != JTokenType.Integer || (long)max &lt; 1 || (long)max &gt; (int)context.Variables["model-max-output-tokens"]) { return "output-token cap exceeds the configured bound"; }
+    if (body["n"] != null &amp;&amp; (body["n"].Type != JTokenType.Integer || (int)body["n"] != 1)) { return "n must be 1"; }
+    if (body["stream"] != null &amp;&amp; body["stream"].Type != JTokenType.Boolean) { return "stream must be boolean"; }
+    if ((bool?)body["store"] == true) { return "stored chat history is unsupported"; }
+    var messages = body["messages"] as JArray;
+    if (messages == null || messages.Count == 0 || messages.Count &gt; 128) { return "send 1-128 inline messages"; }
+    foreach (var message in messages) {
+      var content = message["content"];
+      if (content == null || content.Type == JTokenType.Null || content.Type == JTokenType.String) { continue; }
       var blocks = content as JArray;
-      if (blocks == null || blocks.Count == 0 || blocks.Count &gt; 128) { return "only bounded inline text blocks are supported"; }
-      foreach (var token in blocks) {
-        var block = token as JObject;
-        if (block == null || block.Properties().Any(field =&gt; !new [] {"type","text"}.Contains(field.Name)) ||
-            (string)block["type"] != "text" || block["text"] == null || block["text"].Type != JTokenType.String) { return "media and opaque content are unsupported"; }
-      }
+      if (blocks == null || blocks.Count == 0 || blocks.Count &gt; 128 ||
+          blocks.Any(block =&gt; (string)block["type"] != "text" || block["text"] == null || block["text"].Type != JTokenType.String)) { return "media and opaque content are unsupported"; }
     }
-    if ((string)message["role"] == "tool" &amp;&amp; (message["tool_call_id"] == null || message["tool_call_id"].Type != JTokenType.String)) { return "tool results require tool_call_id"; }
-    if (message["tool_calls"] != null) {
-      var calls = message["tool_calls"] as JArray;
-      if ((string)message["role"] != "assistant" || calls == null || calls.Count == 0 || calls.Count &gt; 128) { return "tool_calls require an assistant and bounded calls"; }
-      foreach (var token in calls) {
-        var call = token as JObject;
-        if (call == null || call.Properties().Any(field =&gt; !new [] {"id","type","function"}.Contains(field.Name)) ||
-            (string)call["type"] != "function" || call["id"] == null || call["id"].Type != JTokenType.String) { return "only inline function calls are supported"; }
-        var function = call["function"] as JObject;
-        if (function == null || function.Properties().Any(field =&gt; !new [] {"name","arguments"}.Contains(field.Name)) ||
-            function["name"] == null || function["name"].Type != JTokenType.String ||
-            function["arguments"] == null || function["arguments"].Type != JTokenType.String) { return "function call requires name and inline arguments"; }
-      }
-    }
-  }
-  if (body["tools"] != null) {
     var tools = body["tools"] as JArray;
-    if (tools == null || tools.Count &gt; 128) { return "tools must be a bounded array"; }
-    foreach (var token in tools) {
-      var tool = token as JObject;
-      if (tool == null || tool.Properties().Any(field =&gt; !new [] {"type","function"}.Contains(field.Name)) || (string)tool["type"] != "function") { return "provider-executed tools are unsupported"; }
-      var function = tool["function"] as JObject;
-      if (function == null || function.Properties().Any(field =&gt; !new [] {"name","description","parameters","strict"}.Contains(field.Name)) ||
-          function["name"] == null || function["name"].Type != JTokenType.String ||
-          (function["parameters"] != null &amp;&amp; !(function["parameters"] is JObject)) ||
-          (function["description"] != null &amp;&amp; function["description"].Type != JTokenType.String) ||
-          (function["strict"] != null &amp;&amp; function["strict"].Type != JTokenType.Boolean)) { return "invalid inline function definition"; }
-    }
-  }
-  if (body["tool_choice"] != null) {
-    var choice = body["tool_choice"];
-    if (choice.Type == JTokenType.String) {
-      if (!new [] {"auto","none","required"}.Contains((string)choice)) { return "unsupported tool_choice"; }
-    } else {
-      var selected = choice as JObject;
-      var function = selected == null ? null : selected["function"] as JObject;
-      if (selected == null || selected.Properties().Any(field =&gt; !new [] {"type","function"}.Contains(field.Name)) || (string)selected["type"] != "function" ||
-          function == null || function.Properties().Any(field =&gt; field.Name != "name") || function["name"] == null || function["name"].Type != JTokenType.String) { return "tool_choice must select a client function"; }
-    }
-  }
-  var inputBound = System.Text.Encoding.UTF8.GetByteCount(body.ToString()) + messages.Count * 32 + 128 * 32 + 128;
-  if (inputBound &gt; (int)context.Variables["model-max-input-tokens"]) { return "input exceeds the selected model bound"; }
-  return "";
+    if (body["tools"] != null &amp;&amp; (tools == null || tools.Count &gt; 128 || tools.Any(tool =&gt; (string)tool["type"] != "function"))) { return "only bounded client function tools are supported"; }
+    if (System.Text.Encoding.UTF8.GetByteCount((string)context.Variables["request-body"]) &gt; (int)context.Variables["model-max-input-tokens"]) { return "input exceeds the selected model bound"; }
+    return "";
   } catch { return "malformed chat request fields"; }
 }' />
 <choose>
@@ -103,4 +36,3 @@
     <return-response><set-status code="400" reason="Unsupported request" /><set-body>@((string)context.Variables["admission-error"])</set-body></return-response>
   </when>
 </choose>
-<set-variable name="streaming" value='@((bool?)JObject.Parse((string)context.Variables["request-body"])["stream"] ?? false)' />

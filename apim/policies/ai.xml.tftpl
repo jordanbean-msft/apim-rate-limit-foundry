@@ -17,28 +17,33 @@
         <return-response><set-status code="413" reason="Request too large" /></return-response>
       </when>
     </choose>
-    <set-variable name="valid-json" value='@{
-      try { JObject.Parse((string)context.Variables["request-body"]); return true; }
-      catch { return false; }
+    <!-- Parse once; every later step reads this object, which is JSON null when the body is invalid. -->
+    <set-variable name="request-json" value='@{
+      try { return JToken.Parse((string)context.Variables["request-body"]); }
+      catch { return JValue.CreateNull(); }
     }' />
     <choose>
-      <when condition='@(!(bool)context.Variables["valid-json"])'>
+      <when condition='@(!(context.Variables["request-json"] is JObject))'>
         <return-response><set-status code="400" reason="JSON object required" /></return-response>
       </when>
     </choose>
     <include-fragment fragment-id="limiter-model-lookup" />
     ${admission}
+    <set-variable name="streaming" value='@((bool?)((JObject)context.Variables["request-json"])["stream"] ?? false)' />
     <choose>
       <when condition='@((bool)context.Variables["streaming"] &amp;&amp; !${streaming_enabled})'>
         <return-response><set-status code="400" reason="Streaming is unavailable" /></return-response>
       </when>
     </choose>
-    <!-- Replace the public alias with the registered provider deployment. Chat SSE
-         must request terminal usage so the separate relay can price actual tokens. -->
+    <!-- Replace the public alias with the registered provider deployment. Responses must stay
+         stateless; Chat SSE must request terminal usage so the relay can price actual tokens. -->
     <set-body>@{
-      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+      var body = (JObject)context.Variables["request-json"];
       body["model"] = (string)context.Variables["model-provider"];
-      if ((string)context.Variables["api-protocol"] == "openai-chat" &amp;&amp; (bool)context.Variables["streaming"]) {
+      if ((string)context.Variables["api-protocol"] == "openai-responses") {
+        body["store"] = false;
+        body["background"] = false;
+      } else if ((bool)context.Variables["streaming"]) {
         body["stream_options"] = new JObject(new JProperty("include_usage", true));
       }
       return body.ToString(Newtonsoft.Json.Formatting.None);
@@ -46,21 +51,7 @@
     ${llm_policy}
     <include-fragment fragment-id="limiter-budget-check" />
     <set-variable name="budget-checked" value="@(true)" />
-    <!-- Do not forward caller credentials, platform identity or provider override headers.
-         Each branch below acquires its own correctly scoped managed-identity token. -->
-    <set-header name="Authorization" exists-action="delete" />
-    <set-header name="X-Usage-Request-ID" exists-action="delete" />
-    <set-header name="X-MS-CLIENT-PRINCIPAL" exists-action="delete" />
-    <set-header name="X-MS-CLIENT-PRINCIPAL-ID" exists-action="delete" />
-    <set-header name="X-MS-CLIENT-PRINCIPAL-NAME" exists-action="delete" />
-    <set-header name="X-MS-CLIENT-PRINCIPAL-IDP" exists-action="delete" />
-    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
-    <set-header name="api-key" exists-action="delete" />
-    <set-header name="x-api-key" exists-action="delete" />
-    <set-header name="api-version" exists-action="delete" />
-    <set-header name="OpenAI-Beta" exists-action="delete" />
-    <set-header name="OpenAI-Organization" exists-action="delete" />
-    <set-header name="OpenAI-Project" exists-action="delete" />
+    <include-fragment fragment-id="limiter-strip-caller-headers" />
     <choose>
       <when condition='@((bool)context.Variables["streaming"])'>
         <set-backend-service base-url="${stream_url}" />
@@ -86,7 +77,7 @@
        budget checks and usage recording run once, outside this retry. -->
   <backend>
     <choose>
-      <when condition='@(!context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool&gt;("model-pooled", false))'>
+      <when condition='@(!(bool)context.Variables["streaming"] &amp;&amp; (bool)context.Variables["model-pooled"])'>
         <retry condition='@(context.Response != null &amp;&amp; (context.Response.StatusCode == 429 || context.Response.StatusCode &gt;= 500))' count="2" interval="1" first-fast-retry="true">
           <forward-request buffer-request-body="true" />
         </retry>
@@ -101,18 +92,11 @@
     <set-header name="X-Correlation-ID" exists-action="override"><value>@((string)context.Variables["request-id"])</value></set-header>
     <set-header name="X-RateLimit-Persistence" exists-action="override"><value>best-effort</value></set-header>
     <choose>
-      <when condition='@(!(bool)context.Variables["streaming"])'>
-        <!-- Preserve the ordinary provider body before post-response accounting/export. -->
+      <!-- A provider 4xx/5xx (including throttling) generated no tokens, so it is not charged.
+           Gateway-side failures after admission may have consumed tokens and stay in on-error. -->
+      <when condition='@(!(bool)context.Variables["streaming"] &amp;&amp; context.Response.StatusCode &lt; 400)'>
         <set-variable name="provider-body" value="@(context.Response.Body.As&lt;string&gt;(preserveContent: true))" />
-        <set-variable name="provider-status" value="@(context.Response.StatusCode)" />
-        <set-variable name="provider-content-type" value='@(context.Response.Headers.GetValueOrDefault("Content-Type", "application/json"))' />
-        <choose>
-          <!-- A provider 4xx/5xx (including throttling) generated no tokens, so it is not charged.
-               Gateway-side failures after admission may have consumed tokens and stay in on-error. -->
-          <when condition='@((int)context.Variables["provider-status"] &lt; 400)'>
-            <include-fragment fragment-id="limiter-usage-record" />
-          </when>
-        </choose>
+        <include-fragment fragment-id="limiter-usage-record" />
       </when>
     </choose>
   </outbound>
@@ -124,25 +108,9 @@
       <metadata name="error_type" value="@(context.LastError.Source)" />
     </trace>
     <choose>
-      <!-- An export failure cannot undo an already accepted Redis charge or replace
-           a completed provider response with an unrelated gateway error. -->
-      <when condition='@(context.Variables.ContainsKey("provider-body"))'>
-        <trace source="usage-accounting" severity="error">
-          <message>usage_event_publish_failed</message>
-          <metadata name="error_type" value="@(context.LastError.Source)" />
-          <metadata name="request_id" value="@(context.RequestId.ToString())" />
-          <metadata name="event_id" value='@(context.Variables.ContainsKey("usage-event") ? (string)JObject.Parse((string)context.Variables["usage-event"])["event_id"] : "")' />
-        </trace>
-        <return-response>
-          <set-status code='@((int)context.Variables["provider-status"])' reason="Provider response" />
-          <set-header name="Content-Type" exists-action="override"><value>@((string)context.Variables["provider-content-type"])</value></set-header>
-          <set-header name="X-Correlation-ID" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header>
-          <set-header name="X-RateLimit-Persistence" exists-action="override"><value>best-effort</value></set-header>
-          <set-header name="X-RateLimit-Accounting" exists-action="override"><value>@(context.Variables.GetValueOrDefault&lt;IResponse&gt;("usage-response") != null &amp;&amp; ((IResponse)context.Variables["usage-response"]).StatusCode == 200 ? "redis-accepted" : "unavailable")</value></set-header>
-          <set-body>@((string)context.Variables["provider-body"])</set-body>
-        </return-response>
-      </when>
-      <when condition='@(context.Variables.GetValueOrDefault&lt;bool&gt;("budget-checked", false) &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false))'>
+      <!-- An admitted request that failed before a provider response may still have consumed
+           tokens, so record it as unknown usage; the recorder charges its pinned upper bound. -->
+      <when condition='@(context.Variables.GetValueOrDefault&lt;bool&gt;("budget-checked", false) &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool&gt;("streaming", false) &amp;&amp; !context.Variables.ContainsKey("provider-body"))'>
         <set-variable name="provider-body" value="{}" />
         <include-fragment fragment-id="limiter-usage-record" />
       </when>

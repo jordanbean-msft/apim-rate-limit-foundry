@@ -13,8 +13,6 @@ PARAMETERS = {
     "api_audience": "api://00000000-0000-0000-0000-000000000002",
     "api_client_id": "00000000-0000-0000-0000-000000000002",
     "gateway_client_id": "00000000-0000-0000-0000-000000000003",
-    "function_client_id": "00000000-0000-0000-0000-000000000004",
-    "function_principal_id": "00000000-0000-0000-0000-000000000005",
     "function_url": "https://limiter.azurewebsites.us",
     "stream_url": "https://stream.azurewebsites.us",
     "streaming_enabled": "true",
@@ -33,6 +31,7 @@ PARAMETERS = {
         {
             "openai-chat:sample-model": {
                 "api_protocol": "openai-chat",
+                "backend_id": "ai-model-0123456789ab",
                 "endpoint": "https://sample.openai.azure.us",
                 "path": "/openai/deployments/provider-chat/chat/completions",
                 "model": "provider-chat",
@@ -161,21 +160,21 @@ class GatewayPolicyTests(unittest.TestCase):
         backend = root.find(".//set-backend-service[@backend-id]")
         self.assertIn('"model-backend-id"', backend.get("backend-id"))
         lookup = render("fragments/model-lookup.xml.tftpl")
-        self.assertIn('"ai-pool-" : "ai-model-"', lookup)
-        self.assertIn("hash.Substring(0, 12)", lookup)
+        self.assertIn('["backend_id"]', lookup)
+        self.assertNotIn("SHA256", lookup)
         self.assertIsNotNone(root.find(".//authentication-managed-identity"))
 
-    def test_pooled_alias_routes_to_pool_id_and_single_alias_keeps_model_id(self) -> None:
+    def test_request_and_registry_are_parsed_once(self) -> None:
+        body = render("policies/ai.xml.tftpl")
+        lookup = render("fragments/model-lookup.xml.tftpl")
+        self.assertEqual(body.count("JToken.Parse"), 1)
+        self.assertEqual(lookup.count("JObject.Parse"), 1)
+        self.assertNotIn("JObject.Parse((string)context.Variables[", lookup)
+
+    def test_pooled_alias_is_a_flag_on_the_registry_entry(self) -> None:
         lookup = ET.fromstring(render("fragments/model-lookup.xml.tftpl"))
         pooled = lookup.find("./set-variable[@name='model-pooled']").get("value")
         self.assertIn('["pool"]', pooled)
-        self.assertIn("pool != null", pooled)
-        backend_id = lookup.find("./set-variable[@name='model-backend-id']").get("value")
-        self.assertIn(
-            '(bool)context.Variables["model-pooled"] ? "ai-pool-" : "ai-model-"', backend_id
-        )
-        names = [node.get("name") for node in lookup.findall("./set-variable")]
-        self.assertLess(names.index("model-pooled"), names.index("model-backend-id"))
 
     def test_only_nonstreaming_pooled_requests_retry_on_throttle_or_server_error(self) -> None:
         root = inference()
@@ -201,9 +200,9 @@ class GatewayPolicyTests(unittest.TestCase):
 
     def test_provider_error_responses_are_not_charged(self) -> None:
         outbound = inference().find("outbound")
-        gate = outbound.find(".//choose/when/choose/when")
-        self.assertIn('"provider-status"', gate.get("condition"))
-        self.assertIn("&lt; 400".replace("&lt;", "<"), gate.get("condition"))
+        gate = outbound.find("./choose/when")
+        self.assertIn("context.Response.StatusCode", gate.get("condition"))
+        self.assertIn("< 400", gate.get("condition"))
         self.assertIsNotNone(gate.find("include-fragment"))
 
     def test_record_uses_provider_object_unknown_is_explicit_and_no_cost_math(self) -> None:
@@ -221,49 +220,50 @@ class GatewayPolicyTests(unittest.TestCase):
         for forbidden in ("cost_micro_usd", "cached_input_tokens", "input_per_million"):
             self.assertNotIn(forbidden, body)
 
-    def test_only_new_redis_accepted_events_are_logged_with_stable_private_partition(self) -> None:
+    def test_apim_reports_redis_acceptance_but_never_publishes_events(self) -> None:
         root = ET.fromstring(render("fragments/usage-record.xml.tftpl"))
         success = root.find("./choose/when")
         self.assertIn("StatusCode == 200", success.get("condition"))
-        new_record = success.find("./choose/when")
-        self.assertIn('["replayed"] == false', new_record.get("condition"))
-        event = new_record.find("set-variable")
-        self.assertIn('["event"]', event.get("value"))
-        logger = new_record.find(".//log-to-eventhub")
-        self.assertIn('["tenant_ref"]', logger.get("partition-key"))
-        self.assertIn('["user_ref"]', logger.get("partition-key"))
-        enqueued = new_record.find(".//trace[message='usage_event_enqueued']")
-        self.assertIsNotNone(enqueued)
-        metadata = {item.get("name") for item in enqueued.findall("metadata")}
-        self.assertEqual(metadata, {"request_id", "event_id"})
         self.assertEqual(
             success.findtext("./set-header[@name='X-RateLimit-Accounting']/value"),
             "redis-accepted",
         )
         self.assertEqual(
+            root.findtext("./choose/otherwise/set-header[@name='X-RateLimit-Accounting']/value"),
+            "unavailable",
+        )
+        self.assertIsNone(root.find(".//log-to-eventhub"))
+        self.assertEqual(
             inference().findtext("./outbound/set-header[@name='X-RateLimit-Persistence']/value"),
             "best-effort",
         )
 
-    def test_accounting_or_publish_failure_preserves_provider_response(self) -> None:
+    def test_gateway_failure_after_admission_is_recorded_as_unknown_usage(self) -> None:
         root = inference()
-        fallback = root.find("./on-error/choose/when/return-response")
-        self.assertIn('"provider-status"', fallback.find("set-status").get("code"))
-        self.assertIn('"provider-body"', fallback.findtext("set-body"))
-        failed = root.find("./on-error/choose/when/trace")
-        self.assertIn("RequestId", failed.find("metadata[@name='request_id']").get("value"))
-        self.assertIn('"usage-event"', failed.find("metadata[@name='event_id']").get("value"))
+        recovery = root.find("./on-error/choose/when")
+        self.assertIn('"budget-checked"', recovery.get("condition"))
+        self.assertIn('"provider-body"', recovery.get("condition"))
+        self.assertEqual(recovery.find("set-variable").get("value"), "{}")
+        self.assertIsNotNone(recovery.find("include-fragment[@fragment-id='limiter-usage-record']"))
+        self.assertIsNone(root.find("./on-error//return-response"))
         call = ET.fromstring(render("fragments/usage-record.xml.tftpl")).find("send-request")
         self.assertEqual(call.get("ignore-error"), "true")
-        failed_accounting = ET.fromstring(render("fragments/usage-record.xml.tftpl")).find(
-            "./choose/otherwise"
-        )
-        self.assertEqual(
-            failed_accounting.findtext("./set-header[@name='X-RateLimit-Accounting']/value"),
-            "unavailable",
-        )
         for section in ("inbound", "outbound", "on-error"):
             self.assertNotIn("retry", ET.tostring(root.find(section), encoding="unicode"))
+
+    def test_caller_credentials_are_stripped_after_the_budget_check(self) -> None:
+        root = inference()
+        inbound = list(root.find("inbound"))
+        check = root.find("./inbound/include-fragment[@fragment-id='limiter-budget-check']")
+        strip = root.find("./inbound/include-fragment[@fragment-id='limiter-strip-caller-headers']")
+        self.assertLess(inbound.index(check), inbound.index(strip))
+        deleted = {
+            node.get("name")
+            for node in ET.fromstring(render("fragments/strip-caller-headers.xml.tftpl")).findall(
+                "set-header[@exists-action='delete']"
+            )
+        }
+        self.assertTrue({"Authorization", "Ocp-Apim-Subscription-Key", "api-key"} <= deleted)
 
     def test_portal_browser_preflight_allows_w3c_correlation(self) -> None:
         root = ET.fromstring(render("policies/portal.xml.tftpl"))
@@ -273,37 +273,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertTrue({"traceparent", "tracestate", "x-correlation-id"} <= headers)
         self.assertNotIn("*", headers)
 
-    def test_internal_callback_is_function_workload_only_and_does_not_forward(self) -> None:
-        root = ET.fromstring(render("policies/usage-events.xml.tftpl"))
-        claims = {
-            claim.get("name"): claim.findtext("value")
-            for claim in root.findall("./inbound/validate-jwt/required-claims/claim")
-        }
-        self.assertEqual(claims["oid"], PARAMETERS["function_principal_id"])
-        self.assertEqual(claims["azp"], PARAMETERS["function_client_id"])
-        self.assertEqual(claims["roles"], "RateLimit.Gateway")
-        self.assertIn('"scp"', root.find("./inbound/choose/when").get("condition"))
-        self.assertIsNotNone(root.find("./inbound/log-to-eventhub"))
-        self.assertIsNone(root.find(".//forward-request"))
-        self.assertEqual(root.find("./inbound/return-response/set-status").get("code"), "204")
-        self.assertIn(
-            "16384", root.find("./inbound/set-variable[@name='valid-event']").get("value")
-        )
-        published = root.find("./inbound/trace")
-        self.assertEqual(published.findtext("message"), "usage_event_enqueued")
-        metadata = {item.get("name"): item.get("value") for item in published.findall("metadata")}
-        self.assertIn('["request_id"]', metadata["request_id"])
-        self.assertIn('"X-Correlation-ID"', metadata["request_id"])
-        self.assertIn('["event_id"]', metadata["event_id"])
-        self.assertIn(
-            '"X-Correlation-ID"',
-            root.find("./on-error/trace/metadata[@name='request_id']").get("value"),
-        )
-        self.assertIn(
-            "Regex.IsMatch", root.find("./on-error/trace/metadata[@name='request_id']").get("value")
-        )
-
     def test_obsolete_policy_artifacts_are_removed(self) -> None:
         names = {path.name for path in ROOT.glob("*/*.xml.tftpl")}
-        for removed in ("reserve", "settle", "anthropic", "document", "language"):
+        for removed in ("reserve", "settle", "anthropic", "document", "language", "usage-events"):
             self.assertFalse(any(removed in name for name in names), removed)
