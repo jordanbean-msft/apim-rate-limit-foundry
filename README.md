@@ -1,4 +1,9 @@
-# APIM monthly AI dollar budgets
+---
+title: APIM monthly AI dollar budgets
+description: Enforce approximate monthly AI spending budgets through an APIM gateway.
+---
+
+## Overview
 
 An **Azure API Management + Azure OpenAI + Python Azure Functions** sample with
 a Microsoft Fluent UI React administration portal. It accounts for actual tokens
@@ -132,14 +137,11 @@ the network and private DNS pre-created, and a storage account for Terraform sta
    azd up
    ```
 
-3. Seed organizations, assignments, prices and budgets through the portal API
-   (`API_BASE_URL`). The tool previews by default; see
-   [local development](docs/local-development.md) for its settings.
-
-   ```bash
-   uv run python scripts/seed.py
-   uv run python scripts/seed.py --apply
-   ```
+3. Configure organizations, assignments, prices and budgets through the portal
+   or administration API. Application deployment never loads sample records.
+   Optional fictional data has a separate, explicit
+   [demo deployment workflow](demo/README.md) for empty, isolated Table Storage
+   and Redis stores. Do not seed shared or production stores.
 
 4. Call the gateway. Open [`examples/gateway.http`](examples/gateway.http) in
    VS Code (REST Client) or another HTTP client and set `gateway` to

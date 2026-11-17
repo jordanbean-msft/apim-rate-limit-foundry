@@ -1,4 +1,9 @@
-# Local development
+---
+title: Local development
+description: Run and validate the gateway locally using explicit authentication and storage settings.
+---
+
+## Setup
 
 Use Python 3.12+, `uv`, Node.js 24 LTS, Terraform 1.9+ and
 Azure Functions Core Tools v4 (`func`, used by the Function host tasks). Do not use global pip
@@ -14,24 +19,25 @@ Local mode must explicitly enable authentication/storage bypasses. On loopback,
 send `X-Local-Tenant-Id`, `X-Local-Principal-Id` and `X-Local-Roles` for test actors.
 These are not supported deployment credentials and are prohibited in Azure.
 
-```bash
-uv run python scripts/seed.py
-uv run python scripts/seed.py --apply
-```
+Optional fictional data and its deployment command live entirely under
+[`demo/`](../demo/README.md). Preview with
+`uv run python -m demo.seed --tenant-id local-tenant`; follow that guide for
+explicit deployment into empty, isolated Table Storage and Redis stores.
+Application startup and deployment never seed data. The portal has no demo mode,
+bundled fixture data or alternate authentication path.
 
-The first invocation previews illustrative records. The second explicitly writes
-organizations, assignments, prices and budgets. The sample prices target the
-`gpt-5.4`, `gpt-5.4-mini` and `gpt-5.4-nano` aliases and the
-`azure-global-text-2026-11-06` price version, matching
-[`infra/managed-models.example.json`](../infra/managed-models.example.json) and
-the [example registry](../examples/model-registry.json). Prices are illustrative.
-Configure a model registry that matches those aliases before inference; the
-example endpoint is a placeholder, not a callable model. Try the aliases with
+Configure a model registry before inference. The
+[example registry](../examples/model-registry.json) and
+[`infra/managed-models.example.json`](../infra/managed-models.example.json)
+describe matching model aliases and pinned price versions. Example endpoints
+are placeholders, not callable models. Try configured aliases with
 [`examples/gateway.http`](../examples/gateway.http).
 
 For persistent local stores, `docker compose up -d` starts Redis/Azurite on
-loopback. Set both local endpoint settings in `.env`, create the configured Table,
-and seed configuration. The first cold check loads the shared configuration
+loopback. Set both local endpoint settings in `.env` and create the configured Table.
+Configure real organizations and budgets through the administration API or use
+the separate optional demo workflow before starting application writers.
+The first cold check loads the shared configuration
 snapshot; warm checks use Redis only. Do not use shared production Redis databases.
 Clearing local Redis resets approximate spend and can lose admitted context;
 there is no automatic rebuild from Table history.

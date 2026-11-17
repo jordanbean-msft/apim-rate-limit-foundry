@@ -1,4 +1,9 @@
-# Cutover from application-scoped accounting
+---
+title: Cutover from application-scoped accounting
+description: Migrate accounting contracts without relabeling historical financial data.
+---
+
+## Cutover
 
 The new ledger is not compatible with monetary holds or application budgets.
 **Do not relabel old records as user/team/department spend.**
@@ -45,8 +50,9 @@ Usage history is keyed by Table partition `usage:<tenant>:<YYYY-MM>` so reports
 query one month directly. Records written under the earlier single `ledger`
 partition are not read or migrated by this sample.
 
-Current configuration can be seeded from `examples/` with `scripts/seed.py`;
-the script defaults to dry run and never migrates old financial history.
+Configure real records through the administration API or portal. Optional
+fictional records have a separate [demo loader](../demo/README.md), which
+requires empty, isolated stores and never migrates old financial history.
 
 Historical `.github/plans/` files remain historical evidence only. They are not
 instructions to restore the removed system.
