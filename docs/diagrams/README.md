@@ -124,7 +124,7 @@ The logical view follows an application through the gateway to a model and back,
 with streaming on a separate route and budget services below the main flow.
 Both routes pass the gateway's initial budget check. The streaming relay reads
 the saved Redis admission before calling the model, forwards chunks immediately,
-and records actual usage directly in Redis through the shared accounting engine
+and records actual usage directly in Redis through the shared gateway services
 at stream termination. It does not re-evaluate budgets per chunk or stop an active
 stream when a monthly budget is crossed. The native token-rate policy is optional.
 The portal page follows signed-in requests for settings and reports. Writer
@@ -163,7 +163,12 @@ guarantee exists. Live budgets and persisted history/chargeback may differ
 permanently.
 
 Streaming relays chunks incrementally, does Redis accounting in process at
-terminal usage and schedules the APIM callback in the background. Nonstream
-usage still waits briefly for Redis acceptance, not Table persistence. APIM alone
-publishes best-effort Event Hub events: an event means Redis accepted usage, not
-that Table persisted it. Preserve these distinctions when editing the diagrams.
+terminal usage and schedules the Event Hub publication in the background. Nonstream
+usage still waits briefly for Redis acceptance, not Table persistence. The
+Functions publish best-effort Event Hub events directly; APIM does not: an event
+means Redis accepted usage, not that Table persisted it. Preserve these
+distinctions when editing the diagrams.
+
+On the identity page the Event Hub sender grant belongs to the shared Function
+identity, not the gateway identity, and the diagrams no longer show an APIM usage
+callback.

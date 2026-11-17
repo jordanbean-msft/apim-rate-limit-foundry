@@ -68,11 +68,12 @@ deletes it, because dropping a budget would remove its cap.
 
 ## Event Hub export gaps
 
-APIM uses its native logger with managed identity. Check Sender RBAC,
-identity propagation, private DNS/egress, logger configuration and Event Hub
-incoming/throttled/error metrics. No Python producer or retry worker exists.
+The budget and streaming Functions publish with their managed identity. Check
+Sender RBAC on the hub, `EVENT_HUB_FQDN`/`EVENT_HUB_NAME`, private DNS/egress,
+`usage_event_publish_failed` logs and Event Hub incoming/throttled/error metrics.
+No retry worker exists.
 
-Native logging is best effort. A logger invocation or incoming-message count is
+Publication is best effort. An accepted send or incoming-message count is
 not end-to-end downstream processing confirmation. Compare stable event IDs
 against retained Table history and other evidence; an event indicates Redis
 acceptance, not Table persistence, so either side can have gaps. Downstream

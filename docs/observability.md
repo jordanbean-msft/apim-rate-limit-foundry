@@ -9,7 +9,7 @@ lose data. None establishes financial completeness.
 
 ```mermaid
 flowchart LR
-    A[APIM] -->|Native log-to-eventhub| E[Event Hub]
+    F2[Budget and stream Functions] -->|Usage events| E[Event Hub]
     A -->|Gateway diagnostics| W[Log Analytics]
     A -->|Requests, dependencies and traces| I[Workspace Application Insights]
     F[Budget and stream Functions] --> I[Workspace Application Insights]
@@ -40,42 +40,37 @@ an incoming `traceparent`; otherwise those subrequests start unrelated traces
 even while native APIM dependency telemetry is enabled. Instrumented clients
 (including the portal) should send a valid W3C parent for one operation-wide
 trace. Plain clients still receive the gateway's financial request UUID, which
-joins check/usage/callback records via `request_id`/`correlation_id`. APIM does not
+joins check/usage records via `request_id`/`correlation_id`. APIM does not
 expose its internally generated W3C parent to policy expressions when the client
 omits it; inventing a second trace ID would not repair that platform boundary.
 
-## Native Event Hub publication
+## Event Hub publication
 
-APIM's configured user-assigned managed identity has **Azure Event Hubs Data
-Sender** on the destination hub. `log-to-eventhub` emits compact versioned JSON
-from Redis-accepted usage; Python does not publish to Event Hubs. A successful
-nonstream usage call still waits briefly for Redis acceptance, not Table writes,
-and returns the event on `200`. The streaming relay forwards chunks incrementally,
-does Redis accounting in process at terminal usage, then schedules a background
-callback to a protected internal APIM logging operation. Neither path promises
-Table persistence before the event.
+The Function's managed identity has **Azure Event Hubs Data Sender** scoped to the
+destination hub; APIM has no Event Hub role. The Function publishes compact
+versioned JSON with the `azure-eventhub` SDK from Redis-accepted usage. A
+successful nonstream usage call still waits briefly for Redis acceptance, not
+Table writes or publication. The streaming relay forwards chunks incrementally and
+does Redis accounting in process at terminal usage. In both cases the Function
+schedules a background publish after Redis accepts the first record; replays are
+never published. Neither path promises Table persistence before the event.
 
 Request/usage Table writes run in a process-local async queue/task with 256
 pending writes and a best-effort two-second graceful-close drain. Monitor logged
 drops/failures and abandoned work: saturation, restart and failures can lose
 writes. There is no durable queue, outbox, retry or exactly-once guarantee.
 
-The policy is unaffected by Application Insights sampling and truncates messages
-larger than **200 KB**. Keep schema-bounded events well below that threshold.
-Delivery is best effort with no application retry queue or exactly-once claim.
+Delivery is best effort with no retries, application retry queue or exactly-once
+claim. Keep schema-bounded events well below Event Hub's message size limit.
 Unknown usage has null counts/cost and a distinct status.
 
-Both streaming callbacks and non-streaming accounting emit
-`usage_event_enqueued` from APIM with the original request/event identifiers.
-This means the native logging policy ran after Redis acceptance, not that Table
-persisted the record or a downstream consumer processed the event. Confirm broker
-ingress with Event Hub's `IncomingMessages`
-metric. Consumer checkpoints, transformations and finance ingestion are outside
-this sample; absence of those application spans is not evidence that publication
+Both streaming and non-streaming accounting emit `usage_event_publish_accepted`
+or `usage_event_publish_failed` from the Function with the original request/event
+identifiers. Accepted means Event Hubs accepted the send after Redis acceptance,
+not that Table persisted the record or a downstream consumer processed the event.
+Confirm broker ingress with Event Hub's `IncomingMessages` metric. Consumer
+checkpoints, transformations and finance ingestion are outside this sample; absence of those application spans is not evidence that publication
 failed. Do not deploy a duplicate accounting consumer just to produce telemetry.
-
-See [policy reference](https://learn.microsoft.com/azure/api-management/log-to-eventhub-policy)
-and [managed identity logger setup](https://learn.microsoft.com/azure/api-management/api-management-howto-log-event-hubs).
 
 ## Azure dashboard
 
@@ -136,6 +131,9 @@ span was not sampled. Export remains asynchronous and best effort.
 | `budget_decision` | Model/protocol, streaming flag, original request ID, allow/deny reason, denied budget IDs, pinned month/price and replay flag. Fresh decisions also include matching budget IDs/counts. Replays return the original decision without reevaluating budgets. |
 | `budget_evaluated` | One snapshot per applicable budget on a fresh decision: scope, wildcard/model, limit, spent, remaining, allow/deny and reset time. Opaque user and assigned hierarchy references permit investigation without raw Entra identities. |
 | `usage_recorded` | Newly Redis-accepted actual/unknown usage, immutable usage-v2 identifiers and pinned attribution. Actual logs add uncached input, total tokens and cache-hit flag. Acceptance is not confirmation of a Table write. |
+| `budget_status` | Live Redis balance of every cap pinned at admission, emitted after each newly accepted charge, and when `/budgets/status` is read (caps and hierarchy come from the cached configuration snapshot, so that read does not touch Table). Includes limit, spent, remaining, opaque user reference and assigned hierarchy. The Azure dashboard's utilization chart uses the latest event, so it no longer depends on someone polling the portal. A Redis read failure here is logged and does not fail accounting. |
+| `stream_usage_unknown`, `stream_rejected_by_provider`, `usage_record_failed` | A provider stream ended without complete terminal usage (charged at the pinned upper bound), ended with a provider throttle before any output (not charged), or final Redis accounting failed. |
+| `runtime_closed` | The Function host's runtime drained best-effort writes and closed its clients at shutdown. The streaming host closes when its event loop cancels remaining tasks; its absence at a restart, together with `background_writes_abandoned`, shows pending history may have been lost. |
 | `usage_out_of_bounds` | Provider-reported tokens exceeded the pinned model bounds. The real counts are still priced and the record is flagged `out_of_bounds`. |
 | `configuration_record_invalid` | A current-schema configuration record failed validation; the request fails closed instead of silently dropping the record. |
 | `dashboard_timeout` | A Log Analytics dashboard query exceeded `DASHBOARD_QUERY_TIMEOUT_SECONDS`; tiles show a timeout message. |
@@ -161,7 +159,19 @@ spend must not be added together.
 | `limiter.budget.decisions` | Decision attempts by configured model, protocol, streaming, allowed and replayed. Filter out replayed attempts for unique admissions/blocks. |
 | `limiter.usage.records` | Accounting attempts by configured model, protocol, streaming, actual/unknown and replayed. |
 | `limiter.usage.tokens` | Only newly Redis-accepted actual tokens, split into disjoint `uncached_input`, `cached_input` and `output`. |
+| `limiter.usage.out_of_bounds` | Newly accepted records whose provider-reported tokens exceeded the pinned model bounds. |
+| `limiter.budget.denials` | Exhausted caps on fresh decisions by `subject_type` (user/team/department) and budget model or `*`. One request can deny several caps. |
+| `limiter.budget.utilization` | Histogram of spent/limit percent per cap at `stage` `admission` or `usage`; can exceed 100 for soft caps. Use `budget_status` logs for per-budget detail. |
+| `limiter.stream.outcomes` | Stream endings by protocol and `outcome`: `completed`, `usage_unknown`, `provider_throttled`, `provider_error`, `invalid_response`, `open_failed`, `accounting_failed`. |
+| `limiter.provider.duration` | Milliseconds until provider response headers by protocol and `http_status` (or `error_type` on failure); surfaces provider 429s and latency. |
+| `limiter.usage.event_publishes` | Function usage-event sends to Event Hubs (streaming and non-streaming), `accepted` or `failed`; counts send acceptance, not consumer processing. |
+| `limiter.background.writes` | Best-effort Table mirror/export jobs by `collection` and `outcome` (`completed`, `failed`, `dropped`); any `dropped` or `failed` means history may be incomplete. |
+| `limiter.dependency.duration` | Milliseconds per Redis, Table and managed-identity operation by `dependency`, `operation` and `status`. |
 | `limiter.usage.cost` | Only newly Redis-accepted cost, in **micro-USD**, not USD, split by a `cost_basis` attribute (actual or `estimated_upper_bound`); not proof of Table persistence. |
+
+The distro's performance counters (process CPU/memory and request rate) are on
+by default (`OTEL_PERFORMANCE_COUNTERS_ENABLED`); Live Metrics is opt-in
+(`OTEL_LIVE_METRICS_ENABLED`). Neither carries request payloads or identities.
 
 Usage token/cost dimensions are model, protocol, streaming and status, plus token
 type on the token counter. No request, correlation, user, tenant, subscription or
@@ -183,11 +193,9 @@ with a safe generated ID.
 
 The stream Function keeps its server span active through body iteration,
 disconnect cleanup and final accounting. Manual HTTP child spans propagate
-`traceparent` and the original `X-Correlation-ID` to the model provider and
-internal APIM usage-event callback. The provider span measures connection/header
-latency; the server span covers the complete stream. Callbacks also trace the
-original financial `request_id` and `event_id`, separate from APIM's callback
-transport request ID. Event Hub messages retain the existing immutable usage-v2
+`traceparent` and the original `X-Correlation-ID` to the model provider. The
+provider span measures connection/header latency; the server span covers the
+complete stream. Event Hub messages retain the existing immutable usage-v2
 schema and request/event identifiers; no trace fields are added to that contract.
 Provider-side telemetry is visible only if the provider exposes it; propagation
 alone does not make an external service's internal spans available.
@@ -205,7 +213,7 @@ AppTraces
 ```
 
 Expand into the distributed trace, including native APIM and Function requests
-and Table/Redis/provider/callback dependencies:
+and Table/Redis/provider dependencies:
 
 ```kusto
 let Correlation = "<X-Correlation-ID>";
@@ -257,7 +265,7 @@ tokens, queries, Redis keys or exception messages. There is no global distribute
 ledger lock or per-request ledger rebuild. A dashboard HTTP 200 can still
 contain failed tiles; `dashboard_query_failed` distinguishes an unavailable
 batch from incomplete individual tiles. Correlated
-`usage_event_publish_accepted` records the stream callback's transport
+`usage_event_publish_accepted` records the Function's Event Hub send
 acceptance with immutable request/event IDs, not downstream processing.
 
 ### Portal application telemetry

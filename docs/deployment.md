@@ -8,7 +8,7 @@ Do not provision directly from an unconfigured environment.
 2. Set azd remote-state coordinates (`RS_RESOURCE_GROUP`, `RS_STORAGE_ACCOUNT`,
    `RS_CONTAINER_NAME`) and explicit infrastructure inputs.
 3. Configure OpenAI deployment aliases, price versions, Event Hub sizing/retention,
-   APIM logger identity, private connectivity and portal identity.
+   Function Event Hub sender identity, private connectivity and portal identity.
 4. Follow [migration](migration.md) for existing deployments. Use a new accounting
    Table/namespace rather than reading historical data with the new schema.
 5. Run local validation and review the Terraform plan, especially resource
@@ -35,11 +35,10 @@ between single and pooled creates new backends and deletes the old one; plan to 
 this. Streaming still uses the primary endpoint through the relay (no failover).
 Tune `gateway.backend_circuit_breaker` in `main.tfvars.json`.
 
-APIM native Event Hub logging uses managed identity, not a connection string
-secret. Verify Sender RBAC, logger identity settings and network reachability.
-The retained streaming host schedules a background call to the internal APIM
-logging operation after terminal Redis accounting; this path must work in private
-networking too. Acceptance/export does not prove Table persistence.
+The budget and streaming Functions publish usage events to Event Hubs with their
+managed identity, not a connection string secret. Verify the Function's Sender
+RBAC, `EVENT_HUB_FQDN`/`EVENT_HUB_NAME` and network reachability, including
+private networking. Acceptance/export does not prove Table persistence.
 
 Review the Redis-first loss contract before allowing traffic: Redis loss can
 reset spend or lose admitted context; Redis unavailability fails closed with

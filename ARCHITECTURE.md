@@ -6,22 +6,51 @@ Completions and Responses, with incremental streaming and non-streaming requests
 
 ## Responsibilities
 
-| Component | Owns |
-| --- | --- |
-| APIM | Entra/product-key validation, native RPM/TPM protection, model alias/backend routing, budget-check and usage-record callouts, native Event Hub publication |
-| Budget Function | Cached membership/configuration, all-level budget decisions, price snapshots, Redis accounting, background history writes, scoped reports and dashboard query API |
-| Streaming Function | Bounded incremental OpenAI SSE relay, in-process terminal Redis accounting and background internal APIM event callback |
-| Table Storage | Durable configuration/audit and best-effort eventual request/usage history for reports and chargeback; not admission authority |
-| Redis | Shared configuration cache, admitted context, replay protection and live approximate monthly spend |
-| React/Node portal | Authenticated administration, operational spend, persisted chargeback and shared Azure dashboard |
-| Event Hubs | Best-effort downstream usage transport; not budget enforcement |
-| Application Insights/Log Analytics | Operational traces and the Azure dashboard, not canonical billing |
+| Component | Owns | Code |
+| --- | --- | --- |
+| APIM | Entra/product-key validation, native RPM/TPM protection, model alias/backend routing, budget-check and usage-record callouts | [`apim/`](apim), [`infra/modules/apim`](infra/modules/apim) |
+| Budget Function | Cached membership/configuration, all-level budget decisions, price snapshots, Redis accounting, background history writes, scoped reports and dashboard query API | [`function_app.py`](function_app.py), [`api.py`](src/apim_rate_limit_foundry/api.py), [`engine/`](src/apim_rate_limit_foundry/engine) |
+| Streaming Function | Bounded incremental OpenAI SSE relay, in-process terminal Redis accounting and background Event Hub publication | [`stream/function_app.py`](stream/function_app.py), [`streaming/`](src/apim_rate_limit_foundry/streaming) |
+| Table Storage | Durable configuration/audit and best-effort eventual request/usage history for reports and chargeback; not admission authority | [`stores/table.py`](src/apim_rate_limit_foundry/stores/table.py) |
+| Redis | Shared configuration cache, admitted context, replay protection and live approximate monthly spend | [`stores/redis.py`](src/apim_rate_limit_foundry/stores/redis.py), [`stores/scripts.py`](src/apim_rate_limit_foundry/stores/scripts.py) |
+| React/Node portal | Authenticated administration, operational spend, persisted chargeback and shared Azure dashboard | [`web/`](web) |
+| Event Hubs | Best-effort downstream usage transport, published by the Functions; not budget enforcement | [`export/`](src/apim_rate_limit_foundry/export), [`infra/modules/event_hubs`](infra/modules/event_hubs) |
+| Application Insights/Log Analytics | Operational traces and the Azure dashboard, not canonical billing | [`telemetry/`](src/apim_rate_limit_foundry/telemetry), [`reports/dashboard.py`](src/apim_rate_limit_foundry/reports/dashboard.py) |
+
+## System context
+
+```mermaid
+flowchart LR
+    Client["User application"] -->|"Entra token + product key"| APIM
+    Portal["React / Node portal"] -->|"/portal, user token"| APIM
+    APIM -->|"budgets/check, usage/record"| Budget["Budget Function"]
+    APIM -->|"stream=true"| Stream["Streaming Function"]
+    APIM -->|"non-streaming"| Model["Azure OpenAI / Foundry"]
+    Stream -->|"managed identity"| Model
+    Stream -->|"usage event"| Hub
+    Budget --> Redis[("Redis: live spend, context, cache")]
+    Stream --> Redis
+    Budget -.->|"best-effort mirror"| Table[("Table Storage: config, audit, history")]
+    Stream -.->|"best-effort mirror"| Table
+    Budget -->|"cold config miss"| Table
+    Budget -->|"usage event"| Hub["Event Hubs"]
+    Budget --> Monitor["Application Insights / Log Analytics"]
+    Stream --> Monitor
+    Portal -.->|"Admin dashboard"| Budget
+```
+
+Solid arrows are on the request path; dashed arrows are best-effort or
+off-path. The editable [logical and physical diagrams](docs/diagrams/README.md)
+add the network, identity and portal detail. The [code guide](docs/code-guide.md)
+walks each flow through the code.
 
 The portal's same-origin Node proxy preserves the user's delegated API token and
 adds a server-only APIM product key resolved through managed identity and Key
 Vault. Readers do not gain workspace-wide Azure Monitor access.
 
 ## Request and accounting flow
+
+The call chain behind each step is in the [code guide walkthroughs](docs/code-guide.md#request-walkthroughs).
 
 ```mermaid
 sequenceDiagram
@@ -53,18 +82,20 @@ sequenceDiagram
         A->>F: Record trusted actual usage
         F->>R: Atomic six-counter increment + replay marker (24h)
         F-->>W: Schedule usage mirror (no Table wait)
+        F-->>E: Publish event in background (best effort)
         F-->>A: 200 with Redis-accepted event
-        A->>E: Native log-to-eventhub (best effort)
         A-->>C: Provider response
         W-->>T: Best-effort background request / usage writes
     end
 ```
 
 The relay forwards chunks incrementally, performs Redis accounting in process at
-terminal usage and schedules the APIM event callback in the background. It does
-not wait for Table persistence, buffer the complete response, parse prompts into
-estimated charges, or publish directly to Event Hubs. The nonstreaming APIM usage
-call still waits briefly for Redis acceptance, but not for Table writes.
+terminal usage and schedules the Event Hub publication in the background. It does
+not wait for Table persistence, buffer the complete response, or parse prompts
+into estimated charges. The nonstreaming APIM usage call still waits briefly for
+Redis acceptance, but not for Table writes or Event Hub publication. Both Functions
+publish each finalized event themselves with their managed identity; APIM has no
+Event Hub access.
 
 Warm admission never reads Table. A cold configuration miss may read it; Admin
 configuration CRUD is synchronous durable-first with shared-cache invalidation.

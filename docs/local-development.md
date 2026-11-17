@@ -1,6 +1,7 @@
 # Local development
 
-Use Python 3.12+, `uv`, Node.js 24 LTS and Terraform 1.9+. Do not use global pip
+Use Python 3.12+, `uv`, Node.js 24 LTS, Terraform 1.9+ and
+Azure Functions Core Tools v4 (`func`, used by the Function host tasks). Do not use global pip
 or install package versions outside the repository manifests.
 
 ```bash

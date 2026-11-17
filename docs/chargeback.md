@@ -28,7 +28,7 @@ micro-USD cost and stable event ID. Downstream consumers should deduplicate by
 event ID and tolerate schema evolution. An event means Redis accepted accounting,
 not that Table persisted it. Compare retained history and downstream events to
 investigate gaps, but either side can be missing data permanently.
-Native Event Hub publication is best effort; its absence is not evidence that
+Event Hub publication is best effort; its absence is not evidence that
 the user consumed nothing.
 
 This is configured internal showback/chargeback, not an Azure invoice. Shared

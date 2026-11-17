@@ -87,14 +87,18 @@ APIM event-logging operation accepts only the configured Function identity.
 | `AZURE_CLOUD`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | Cloud/tenant and workload identity |
 | `TABLE_ENDPOINT`, `TABLE_NAME` | Durable configuration/usage destination |
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_TOKEN_SCOPE` | Live operational configuration, request context, replay markers and spend |
-| `CONFIGURATION_CACHE_SECONDS` | Shared configuration snapshot TTL; `configuration_cache_seconds=60` by default |
-| `REQUEST_CACHE_SECONDS` | Admitted context and usage replay window; `request_cache_seconds=86400` (24h) by default |
+| `CONFIGURATION_CACHE_SECONDS` | Shared configuration snapshot TTL; `configuration_cache_seconds=60` by default (1-3600) |
+| `REQUEST_CACHE_SECONDS` | Admitted context and usage replay window; `request_cache_seconds=86400` (24h) by default (300-604800) |
 | `MODEL_REGISTRY` | Protocol/alias allowlist with provider path, model and price version |
-| `APIM_USAGE_EVENT_URL`, `API_AUDIENCE` | Streaming callback to native APIM Event Hub logger |
-| `STREAM_MAX_EVENT_BYTES`, `STREAM_MAX_BODY_BYTES`, `STREAM_TIMEOUT_SECONDS` | Bounded streaming transport; the event bound limits *retained* bytes, larger Responses terminal events are scanned for usage only |
+| `EVENT_HUB_FQDN`, `EVENT_HUB_NAME` | Event Hub the Function publishes usage events to with its managed identity; set both or neither (unset publishes nothing, as in local mode) |
+| `STREAM_MAX_EVENT_BYTES`, `STREAM_MAX_BODY_BYTES`, `STREAM_TIMEOUT_SECONDS` | Bounded streaming transport (defaults 65536, 131072 and 180; bounds 8192-1048576, 1024-1048576 and 10-210); the event bound limits *retained* bytes; for Responses only, an oversized `response.completed`/`response.incomplete` data line is kept in full up to 1 MiB, other oversized lines are discarded |
 | `DASHBOARD_QUERY_TIMEOUT_SECONDS` | Log Analytics server timeout per dashboard query batch (default 20, 5-120); the client read timeout is this plus 5 s and the overall fetch deadline plus 15 s |
 | `AZURE_DASHBOARD_ID`, `LOG_ANALYTICS_WORKSPACE_ID`, `LOG_ANALYTICS_WORKSPACE_RESOURCE_ID` | Fixed Admin dashboard query destinations |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING`, `TELEMETRY_ENABLED`, `OTEL_SERVICE_NAME` | Operational telemetry |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING`, `TELEMETRY_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER_ARG` (0-1), `OTEL_PERFORMANCE_COUNTERS_ENABLED` (default on), `OTEL_LIVE_METRICS_ENABLED` (default off) | Operational telemetry |
+| `PORT` | Local API port (default 8000, 1-65535) |
+| `MAX_INPUT_TOKENS`, `MAX_OUTPUT_TOKENS` | Function admission limits (defaults 131072 and 32768) |
+| `GATEWAY_CLIENT_ID` | Gateway workload identity client ID |
+| `WEBSITE_SITE_NAME`, `WEBSITE_HOSTNAME`, `WEBSITE_INSTANCE_ID`, `WEBSITE_AUTH_ENABLED` | Azure hosting markers set by App Service/Functions; they make the settings validator reject local bypass flags |
 | `LOCAL_AUTH_ENABLED`, `LOCAL_STORE_ENABLED` | Explicit local-only test mode |
 | `LOCAL_REDIS_URL`, `LOCAL_TABLE_CONNECTION_STRING` | Optional real local stores, supplied together |
 

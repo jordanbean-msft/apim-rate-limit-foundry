@@ -16,12 +16,14 @@ empty `choices` array and must not blindly access `choices[0]`.
 
 `STREAM_MAX_EVENT_BYTES` (64 KB by default) bounds the bytes the observer
 *retains*, not the size of the stream. Responses `response.completed` embeds the
-whole generated output, so it routinely exceeds that bound. A larger Responses
-`data:` line is scanned as it streams past: only its `type`, `response.status`
-and `response.usage` (itself capped at the same bound) are kept and the `output`
-is discarded, so large generations are priced from their real usage. An oversized
-Chat event, an oversized usage object, or malformed JSON still makes the stream's
-usage unknown (see below). Client bytes are never modified.
+whole generated output, so it routinely exceeds that bound. For Responses only, a
+single oversized `data:` line is kept in full (up to a hard 1 MiB cap) when its
+JSON starts with `"type":"response.completed"` or `"response.incomplete"`, the key
+order providers use; other oversized Responses lines, such as
+`response.output_text.done` carrying the full text, are discarded. Large
+generations are therefore priced from their real usage. An oversized Chat event,
+a terminal event over 1 MiB, malformed framing, or a usage object over 8192 bytes
+makes the stream's usage unknown (see below). Client bytes are never modified.
 
 ## Price calculation
 
@@ -128,28 +130,27 @@ zero-cost actual. Redis loss can reset spend or lose the context needed to recor
 usage; there is no ledger rebuild.
 
 Nonstreaming APIM accounting waits briefly for Redis acceptance and receives the
-event on `200`, not for Table persistence. Request/usage Table writes use a
+accepted result on `200`, not for Table persistence. Request/usage Table writes use a
 256-pending process-local async writer, with logged drops/failures and a
 best-effort two-second graceful-close drain. Lost writes are accepted; no durable
 queue, outbox, retry or exactly-once guarantee exists. Live budgets and persisted
 history/chargeback can differ permanently.
 
-## Native APIM export
+## Event Hub export
 
-`log-to-eventhub` is an outbound integration policy, not an SSE token accumulator.
-Do not read/buffer an SSE response body merely to produce an event. The retained
-OpenAI relay forwards chunks incrementally, does terminal Redis accounting in
-process, and schedules a best-effort background callback to a protected internal
-APIM operation which invokes the native Event Hub logger. APIM is the sole Event
-Hub producer. An event means Redis accepted the usage, not that Table persisted
-it, and callback scheduling does not guarantee publication.
+APIM policies are not an SSE token accumulator, and the response body is not
+buffered to produce an event. The retained OpenAI relay forwards chunks
+incrementally and does terminal Redis accounting in process. For streaming and
+nonstreaming requests alike, the Function then schedules a best-effort background
+publish of the finalized event with the `azure-eventhub` SDK, once Redis accepts the
+first usage record (never for replays). An event means Redis accepted the usage,
+not that Table persisted it, and scheduling does not guarantee publication.
 
 ## Research references
 
 - [OpenAI Chat stream options](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - [OpenAI streaming responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 - [APIM token metrics](https://learn.microsoft.com/azure/api-management/llm-emit-token-metric-policy)
-- [APIM Event Hub policy](https://learn.microsoft.com/azure/api-management/log-to-eventhub-policy)
 
 APIM token metrics themselves warn that interrupted streams can produce
 inaccurate counts. Native operational token metrics do not make incomplete

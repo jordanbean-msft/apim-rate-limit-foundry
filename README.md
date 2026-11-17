@@ -20,8 +20,9 @@ application for attribution. Organizational membership is explicitly configured.
 Completed provider usage updates Redis at a pinned price version. Request/usage
 Table writes run in a bounded in-process background queue and can be lost.
 Live spend and persisted history/chargeback can therefore differ permanently.
-APIM publishes the Redis-accepted event with native **`log-to-eventhub`** and
-managed identity; neither acceptance nor export proves Table persistence.
+The Function publishes the Redis-accepted event to Event Hubs in the background
+with the Microsoft `azure-eventhub` SDK and its managed identity; neither
+acceptance nor export proves Table persistence.
 The Azure dashboard and the portal share the deployed dashboard's KQL definitions.
 
 ## Architecture
@@ -37,8 +38,7 @@ flowchart LR
     A --> S[Incremental streaming relay]
     S --> O
     O -->|Provider token totals| F
-    F -->|Redis-accepted usage event| A
-    A -->|Native log-to-eventhub| E[Event Hub]
+    F -->|Redis-accepted usage event| E[Event Hub]
     P[Authenticated Fluent portal] --> A
     D[Azure dashboard + shared KQL] --> L[Log Analytics]
 ```
@@ -66,8 +66,8 @@ uncached ones. The sample therefore keeps native APIM protection for bursts
 monthly USD budgets. Everything else uses native Azure features:
 
 * APIM `validate-jwt`, subscription keys, managed identity to the model account,
-  native backends for approved model aliases, and `log-to-eventhub`.
-* Event Hubs for usage events, Azure Managed Redis for live spend, and Table
+  and native backends for approved model aliases.
+* Event Hubs for usage events (published by the Function), Azure Managed Redis for live spend, and Table
   Storage for configuration and eventual history.
 * Application Insights, Log Analytics and the shared Azure dashboard.
 

@@ -38,9 +38,8 @@ application attribution; primary/secondary keys do not create new users or budge
 
 APIM's user-assigned identity calls the budget/stream Functions and Azure OpenAI.
 Function Easy Auth validates platform tokens and application code independently
-requires Gateway/Admin/Reader roles. The stream-to-APIM logging callback is limited
-to the configured Function identity, not any user with a delegated API token.
-APIM alone has Sender permission to the Event Hub.
+requires Gateway/Admin/Reader roles. Only the Function identity has Sender
+permission to the Event Hub, scoped to the hub; APIM has no Event Hub role.
 
 The portal proxy keeps its product key server-side through Key Vault and
 forwards each user's delegated token. Admin CRUD and Reader scoping remain
@@ -55,11 +54,10 @@ VNets/subnets/resource groups already exist. Private endpoint DNS zone groups
 and virtual network links are owned by Azure policy, not this Terraform.
 Every private endpoint ignores `private_dns_zone_group` drift.
 
-Private deployments need APIM-to-Function, Function-to-model/storage/Redis and
-APIM-to-Event-Hub connectivity, including DNS. APIM also needs private
-connectivity to every additional pool member account. The streaming callback also needs
-Function-to-APIM connectivity. Validate that path explicitly; do not bypass the
-gateway by adding a direct Python Event Hub publisher when callback egress fails.
+Private deployments need APIM-to-Function and Function-to-model/storage/Redis/
+Event-Hub connectivity, including DNS. The budget and streaming Functions publish
+usage events directly to the Event Hub namespace, so both need private connectivity
+to it. APIM also needs private connectivity to every additional pool member account.
 
 ## Cloud boundaries
 
