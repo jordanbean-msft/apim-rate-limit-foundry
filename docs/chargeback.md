@@ -45,3 +45,27 @@ the sample. No external finance adapter or accounting platform is deployed.
 See [configuration](configuration-reference.md) for organization and price
 records, [token accounting](token-accounting.md) for cost calculations and
 [observability](observability.md) for the separate operational dashboard.
+
+## Portal reports
+
+These captures show the running portal with fictional demonstration history and
+gateway test activity. Signed-in profiles and identifying fields are hidden.
+
+### Usage records
+
+Open **Usage records** to inspect each persisted request's protocol, streaming
+flag, input/cached/output tokens and charge. The example includes an unknown-usage
+request: its row shows an estimated upper-bound charge rather than invented
+token counts or a zero cost.
+
+![Usage records with streaming and nonstreaming calls, token counts and an unknown-usage estimate](screenshots/portal-usage.png)
+
+### Chargeback exports
+
+Open **Chargeback**, select a UTC month and review department and team allocation
+before exporting CSV or JSON. The warnings identify an open reporting month and
+estimated charges. Totals can include those estimates, even where the interface
+labels a summary "Actual spend"; they are not exclusively provider-reported
+actuals or an Azure invoice.
+
+![Chargeback report with department and team totals, export controls and estimate warnings](screenshots/portal-chargeback.png)

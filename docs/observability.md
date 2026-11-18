@@ -91,6 +91,12 @@ the supporting detail grids; every chart also has an expandable data table.
 Terraform persists `AnalyticsChart`, `SpecificChart` and axis/split dimensions.
 Defining only `AnalyticsGrid` produces a table, even when the portal supports charts.
 
+The running portal below shows gateway test traffic and budget admissions for
+the selected time range. Account details are hidden. These operational charts
+are separate from the retained-history [usage and chargeback views](chargeback.md#portal-reports).
+
+![Populated Azure dashboard showing gateway HTTP outcomes and admissions by model](screenshots/portal-dashboard.png)
+
 | Chart                                             | Source and interpretation                                                                                                                                                                                                                                                                                                        |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | APIM inference traffic and HTTP outcomes          | Gateway diagnostics, deduplicated by correlation ID. Separates observed monthly-budget denials, backend/provider 429s, other/unclassified 429s, auth failures and HTTP outcomes over five-minute bins. HTTP 2xx is not proof of completed accounting, especially for SSE.                                                        |
