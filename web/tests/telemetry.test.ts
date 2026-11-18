@@ -83,7 +83,7 @@ describe('private manual browser telemetry', () => {
       expect.objectContaining({
         id: '01'.repeat(8),
         name: 'budgets',
-        target: 'ai-gateway',
+        target: window.location.origin,
         success: true,
         responseCode: 200,
         properties: { traceId: '01'.repeat(16), method: 'DELETE' },
@@ -189,7 +189,7 @@ describe('private manual browser telemetry', () => {
       duration: 12,
       responseCode: 200,
       success: true,
-      target: 'microsoft-graph',
+      target: 'https://graph.microsoft.com',
       type: 'Fetch',
       data: '',
       properties: { method: 'GET' },
@@ -236,7 +236,7 @@ describe('private manual browser telemetry', () => {
         extensionConfig: { AppInsightsCfgSyncPlugin: { syncMode: 0, blkCdnCfg: true } },
       }),
     });
-    expect(mocks.initialize).toHaveBeenCalledWith(privacyInitializer);
+    expect(mocks.initialize).toHaveBeenCalledWith(expect.any(Function));
   });
 
   it('does not load an SDK or choose a commercial default without a valid explicit endpoint', () => {

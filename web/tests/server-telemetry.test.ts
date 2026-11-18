@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { EventEmitter } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { AzureMonitorTraceExporter } from '@azure/monitor-opentelemetry-exporter';
 import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { ReadableLogRecord } from '@opentelemetry/sdk-logs';
@@ -26,7 +27,7 @@ const correlationId = '12345678-1234-4123-8123-123456789012';
 const instances: NonNullable<ReturnType<typeof createServerTelemetry>>[] = [];
 const servers: ReturnType<typeof createPortalServer>[] = [];
 
-function telemetryFixture() {
+function telemetryFixture(realTraceExporter?: AzureMonitorTraceExporter) {
   const spans: ReadableSpan[] = [];
   const logs: ReadableLogRecord[] = [];
   const traceExporter = {
@@ -43,7 +44,10 @@ function telemetryFixture() {
     }),
     shutdown: vi.fn(async () => {}),
   };
-  const telemetry = createServerTelemetry(config, { traceExporter, logExporter })!;
+  const telemetry = createServerTelemetry(config, {
+    traceExporter: realTraceExporter ?? traceExporter,
+    logExporter,
+  })!;
   expect(telemetry).toBeDefined();
   instances.push(telemetry);
   return { telemetry, spans, logs, traceExporter, logExporter };
@@ -63,6 +67,33 @@ afterEach(async () => {
 });
 
 describe('manual private server export', () => {
+  it('serializes the resource-specific APIM host through the real Azure exporter without a URL', async () => {
+    const payloads: string[] = [];
+    process.env.APPLICATION_INSIGHTS_NO_STATSBEAT = 'true';
+    process.env.APPLICATIONINSIGHTS_STATSBEAT_DISABLED = 'true';
+    process.env.APPLICATIONINSIGHTS_SDKSTATS_DISABLED = 'true';
+    process.env.APPLICATIONINSIGHTS_OPENTELEMETRY_RESOURCE_METRIC_DISABLED = 'true';
+    const exporter = new AzureMonitorTraceExporter({
+      connectionString: config.appInsights.connectionString,
+      disableOfflineStorage: true,
+      httpClient: {
+        async sendRequest(request) {
+          payloads.push(String(request.body));
+          return { request, status: 200, headers: request.headers, bodyAsText: '' };
+        },
+      },
+    });
+    const { telemetry } = telemetryFixture(exporter);
+    telemetry.dependency(undefined, 'GET', 'https://resource.azure-api.us:8443')!.end(200, 'none');
+    await telemetry.flush();
+    expect(payloads).toHaveLength(1);
+    const envelopes = JSON.parse(payloads[0]);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].data.baseType).toBe('RemoteDependencyData');
+    expect(envelopes[0].data.baseData.target).toBe('resource.azure-api.us:8443');
+    expect(payloads[0]).not.toMatch(/https?:|Authorization|Bearer|token|ai-gateway|\/portal/);
+  });
+
   it('initializes the real Microsoft exporters with all auxiliary telemetry disabled', async () => {
     const telemetry = createServerTelemetry(config);
     expect(telemetry).toBeDefined();
@@ -138,7 +169,7 @@ describe('manual private server export', () => {
       });
       const logger = vi.fn();
       const server = createPortalServer(config, '.', logger, {
-        upstreamUrl: 'https://private-gateway.example/portal',
+        upstreamUrl: 'https://resource.azure-api.us/portal',
         subscriptionKey: 'private-subscription-key',
         fetchImpl,
         telemetry,
@@ -171,6 +202,7 @@ describe('manual private server export', () => {
       expect(request.spanContext().traceId).toBe(browserTrace);
       expect(dependency.parentSpanContext?.spanId).toBe(request.spanContext().spanId);
       expect(dependency.spanContext().traceId).toBe(browserTrace);
+      expect(dependency.attributes['peer.service']).toBe('resource.azure-api.us');
       const headers = fetchImpl.mock.calls[0] as unknown as [
         URL,
         { headers: Record<string, string> },

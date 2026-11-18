@@ -245,7 +245,7 @@ export function createApiProxy({ upstreamUrl, subscriptionKey, fetchImpl = fetch
     let dependency;
     let upstreamStatus = 0;
     try {
-      dependency = telemetry?.dependency(outcome.request, req.method);
+      dependency = telemetry?.dependency(outcome.request, req.method, endpoint.origin);
     } catch {
       // Exporters must not change forwarding behavior.
     }

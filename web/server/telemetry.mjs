@@ -153,14 +153,30 @@ export function createServerTelemetry(config, exporters = {}) {
           },
         };
       },
-      /** Create a child APIM span and outgoing traceparent without exposing the upstream URL/key. */
-      dependency(request, method) {
+      /** Create a child APIM span and outgoing traceparent without capturing request paths or keys. */
+      dependency(request, method, upstreamOrigin) {
         if (stopped) return undefined;
+        const attributes = { 'http.method': method };
+        try {
+          const endpoint = new URL(upstreamOrigin);
+          if (
+            endpoint.protocol === 'https:' &&
+            !endpoint.username &&
+            !endpoint.password &&
+            !endpoint.search &&
+            !endpoint.hash &&
+            endpoint.pathname === '/'
+          ) {
+            attributes['peer.service'] = endpoint.host;
+          }
+        } catch {
+          // Invalid optional topology context must not affect forwarding.
+        }
         const span = tracer.startSpan(
           `${method} portal_api`,
           {
             kind: SpanKind.CLIENT,
-            attributes: { 'http.method': method, 'peer.service': 'ai-gateway' },
+            attributes,
           },
           request?.context ?? ROOT_CONTEXT,
         );

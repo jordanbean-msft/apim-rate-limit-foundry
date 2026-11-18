@@ -72,6 +72,7 @@ const spanIdPattern = /^(?!0{16}$)[0-9a-f]{16}$/;
 const dependencyOperations = [...collections, 'graph_profile', 'graph_photo'] as const;
 type DependencyOperation = (typeof dependencyOperations)[number];
 type DependencyOutcome = 'success' | 'failure';
+type DependencyOrigins = { api: string | undefined; graph: string };
 type DependencyRecord = {
   operation: DependencyOperation;
   method: 'GET' | 'PUT' | 'DELETE';
@@ -82,8 +83,27 @@ type DependencyRecord = {
   outcome: DependencyOutcome;
 };
 
+/** Retain only configured endpoint origins, never credentials, paths, or query strings. */
+function safeOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value, window.location.origin);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if (
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
+    )
+      return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Rebuild manual dependency envelopes without request URLs, headers, or SDK-added context. */
-function safeDependency(data: Record<string, unknown> | undefined) {
+function safeDependency(data: Record<string, unknown> | undefined, origins: DependencyOrigins) {
   const properties = data?.properties as Record<string, unknown> | undefined;
   const spanId = typeof data?.id === 'string' ? data.id.replace(/\.$/, '') : '';
   if (
@@ -103,11 +123,14 @@ function safeDependency(data: Record<string, unknown> | undefined) {
     typeof data.success !== 'boolean'
   )
     return undefined;
+  const target = data.name.startsWith('graph_') ? origins.graph : origins.api;
+  if (!target) return undefined;
   return {
     ver: 2,
     id: spanId,
     name: data.name,
-    target: data.name.startsWith('graph_') ? 'microsoft-graph' : 'ai-gateway',
+    // The SDK channel parses target as a URL; bare labels resolve to the portal hostname.
+    target,
     type: 'Fetch',
     data: '',
     duration: data.duration,
@@ -145,9 +168,15 @@ function sanitize(
 }
 
 /** Final allowlist runs after SDK context enrichment and before the channel sends it. */
-export function privacyInitializer(item: ITelemetryItem): boolean {
+export function privacyInitializer(
+  item: ITelemetryItem,
+  origins: DependencyOrigins = {
+    api: safeOrigin(window.location.origin),
+    graph: 'https://graph.microsoft.com',
+  },
+): boolean {
   if (item.baseType === 'RemoteDependencyData') {
-    const dependency = safeDependency(item.baseData);
+    const dependency = safeDependency(item.baseData, origins);
     if (!dependency) return false;
     const traceId = item.baseData?.properties.traceId as string;
     item.baseData = dependency;
@@ -201,7 +230,13 @@ export function stopTelemetry(): void {
 /** Enable opt-in browser telemetry only for a validated cloud-specific ingestion endpoint. */
 export function initializeTelemetry(config: RuntimeConfig): void {
   const validated = publicAppInsights(config.appInsights?.connectionString, config.cloud);
-  if (validated?.connectionString === configured) return;
+  const origins: DependencyOrigins = {
+    api: safeOrigin(config.apiProxyEnabled ? '/api' : config.apiBaseUrl),
+    graph:
+      config.cloud === 'government' ? 'https://graph.microsoft.us' : 'https://graph.microsoft.com',
+  };
+  const configurationKey = validated ? JSON.stringify([validated.connectionString, origins]) : '';
+  if (configurationKey === configured) return;
   stopTelemetry();
   if (!validated) return;
   try {
@@ -237,7 +272,7 @@ export function initializeTelemetry(config: RuntimeConfig): void {
     dispose = () => {
       sdk.unload(false);
     };
-    sdk.addTelemetryInitializer(privacyInitializer);
+    sdk.addTelemetryInitializer((item) => privacyInitializer(item, origins));
     sdk.loadAppInsights();
     sink = (name, properties, measurements) =>
       sdk.trackEvent(sanitize(name, properties, measurements));
@@ -245,14 +280,14 @@ export function initializeTelemetry(config: RuntimeConfig): void {
       sdk.trackDependencyData({
         id: record.spanId,
         name: record.operation,
-        target: record.operation.startsWith('graph_') ? 'microsoft-graph' : 'ai-gateway',
+        target: record.operation.startsWith('graph_') ? origins.graph : origins.api,
         type: 'Fetch',
         duration: record.durationMs,
         responseCode: record.status,
         success: record.outcome === 'success',
         properties: { traceId: record.traceId, method: record.method },
       });
-    configured = validated.connectionString;
+    configured = configurationKey;
     // Report categories rather than exception messages/stacks, which may contain private data.
     const onError = () => track('portal_browser_error', { errorCategory: 'script' });
     const onRejection = () =>
