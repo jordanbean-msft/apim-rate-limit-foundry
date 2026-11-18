@@ -6,7 +6,7 @@ LINE_TERMINATOR = re.compile(rb"\r\n|\r|\n")
 
 
 class SseParser:
-    """Turn arbitrary byte chunks into event payloads without retaining generated content.
+    """Turn arbitrary byte chunks into event payloads with bounded content retention.
 
     One event is held at a time. An event over ``max_event_bytes`` is a framing error,
     except for a single oversized ``data:`` line: when it matches ``terminal`` it is kept

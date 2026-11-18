@@ -11,6 +11,7 @@ or install package versions outside the repository manifests.
 
 ```bash
 uv sync --extra dev
+npm --prefix web ci
 cp .env.example .env
 uv run apim-rate-limit-foundry
 ```
@@ -18,6 +19,8 @@ uv run apim-rate-limit-foundry
 Local mode must explicitly enable authentication/storage bypasses. On loopback,
 send `X-Local-Tenant-Id`, `X-Local-Principal-Id` and `X-Local-Roles` for test actors.
 These are not supported deployment credentials and are prohibited in Azure.
+The loopback API does not validate delegated bearer JWTs itself; local API tests
+must use those explicit test headers.
 
 Optional fictional data and its deployment command live entirely under
 [`demo/`](../demo/README.md). Preview with
@@ -36,16 +39,26 @@ are placeholders, not callable models. Try configured aliases with
 For persistent local stores, `docker compose up -d` starts Redis/Azurite on
 loopback. Set both local endpoint settings in `.env` and create the configured Table.
 Configure real organizations and budgets through the administration API or use
-the separate optional demo workflow before starting application writers.
+the separate optional demo loader before starting application writers.
 The first cold check loads the shared configuration
 snapshot; warm checks use Redis only. Do not use shared production Redis databases.
 Clearing local Redis resets approximate spend and can lose admitted context;
 there is no automatic rebuild from Table history.
 
 The API and streaming Functions have separate entry points/hosting modes:
-`function_app.py` and `stream/function_app.py`. VS Code's `run-api`,
+[`function_app.py`](../function_app.py) and
+[`stream/function_app.py`](../stream/function_app.py). VS Code's `run-api`,
 `run-functions`, `run-stream`, and corresponding debug configurations preserve
-that separation.
+that separation. Functions debugger configurations attach to an already
+debug-enabled Python worker; running a host task alone does not open the debug
+port. Start the appropriate worker with debugging enabled before attaching.
+
+For browser work, follow the [portal setup](../web/README.md) and its
+[runtime settings](../web/README.md#required-production-runtime-settings).
+The browser sends delegated tokens, not `X-Local-*` headers: setting
+`API_BASE_URL` to the loopback API is not enough for authenticated end-to-end
+development. Use a reachable backend with the supported authentication boundary
+and registered local SPA redirect origin; do not add a browser auth bypass.
 
 ## Validation
 
@@ -77,10 +90,12 @@ TEST_REDIS_URL=redis://127.0.0.1:<port>/0 uv run pytest -W error tests/test_redi
 
 Replace `<port>` with that instance's local port. Never point these tests at
 shared, persistent or deployed Redis: they may change/delete test state.
-Stop and discard the isolated instance after testing. Optional Table integration
-tests require their separately documented local test settings.
+Stop and discard the isolated instance after testing. Table repository tests
+currently use mocked SDK clients; there is no checked-in Azurite integration-test
+switch.
 
-See `.vscode/tasks.json` for grouped validation and `.vscode/launch.json` for
+See [tasks.json](../.vscode/tasks.json) for grouped validation and
+[launch.json](../.vscode/launch.json) for
 debuggers. Deployment and live acceptance are separate from local fixture tests.
 
 ## Calling the deployed gateway
@@ -89,3 +104,7 @@ Inference calls (`/foundry/...`) need an inference-product subscription key plus
 Entra token for the gateway audience. Portal API calls (`/portal/...`) need the
 separate portal-product subscription key plus a token for the portal API scope;
 an inference key is rejected there with `401`.
+
+Return to the [code guide](code-guide.md) for implementation walkthroughs,
+[deployment](deployment.md) for provisioning and
+[operations](operations.md#acceptance-checklist) for live acceptance.

@@ -86,11 +86,11 @@ output "APPLICATION_SUBSCRIPTIONS" {
   value       = jsonencode(local.application_registry)
 }
 output "EVENT_HUB_NAMESPACE_NAME" {
-  description = "Native APIM usage telemetry namespace."
+  description = "Function-published usage telemetry namespace."
   value       = module.event_hubs.namespace_name
 }
 output "EVENT_HUB_NAME" {
-  description = "Native APIM finalized usage export hub."
+  description = "Function-published finalized usage export hub."
   value       = module.event_hubs.name
 }
 output "EVENT_HUB_RESOURCE_ID" {

@@ -1,4 +1,9 @@
-# Business-unit chargeback
+---
+title: Business-unit chargeback
+description: Interpret scoped usage exports, snapshotted organization dimensions and estimated charges.
+---
+
+## Reporting contract
 
 Administrators configure departments, their business-unit and cost-center codes,
 teams within departments, and users assigned to those teams. The accounting
@@ -22,6 +27,8 @@ spend. Redis loss can also reset spend without changing retained Table history.
 There is no automatic rebuild or financial-completeness guarantee. Investigate
 unknown records and missing history against independent provider evidence before
 using an export for finance; the export alone cannot establish completeness.
+See [operations](operations.md#redis-availability-and-accepted-loss) for the
+shared Table/export queue and its loss behavior.
 
 Event Hub events carry the same dimensions, token counts, price version,
 micro-USD cost and stable event ID. Downstream consumers should deduplicate by
@@ -34,3 +41,7 @@ the user consumed nothing.
 This is configured internal showback/chargeback, not an Azure invoice. Shared
 platform hosting costs, taxes, discounts and currency conversion are outside
 the sample. No external finance adapter or accounting platform is deployed.
+
+See [configuration](configuration-reference.md) for organization and price
+records, [token accounting](token-accounting.md) for cost calculations and
+[observability](observability.md) for the separate operational dashboard.

@@ -20,9 +20,10 @@ npm run build
 npm start
 ```
 
-`npm start` serves `dist/` on `0.0.0.0:${PORT:-8080}`. Deploy `dist/`,
-`server/`, and `package.json` together with `web/` as the working directory.
-The production server needs only Node's built-in modules, not `node_modules`.
+Run these commands from [`web/`](.). `npm start` serves `dist/` on
+`0.0.0.0:${PORT:-8080}`. Deploy `dist/`, `server/`, `package.json`,
+`package-lock.json` and locked production `node_modules/` together; see
+[packaging](#privacy-safe-observability) below.
 `npm run dev` uses Vite on loopback; the same runtime configuration is served
 by its `/config.json` development middleware. Create `web/.env.local` for Vite,
 or export settings in the shell for both servers. Never place secrets in Vite variables.
@@ -92,6 +93,11 @@ The App Service sign-in cookie does not grant API roles or replace these tokens.
 Sign-out clears MSAL/Entra and then the native App Service session. Local Vite
 development does not depend on App Service middleware.
 
+The browser does not send local test-identity headers. Pointing `API_BASE_URL`
+at the loopback Python API alone will not authenticate it. Follow
+[local development](../docs/local-development.md) for the distinction between
+header-based API testing and an authenticated browser/backend setup.
+
 ### Remembered sign-in and SSO
 
 The website's encrypted, Secure/HttpOnly App Service session cookie remains
@@ -125,7 +131,6 @@ telemetry or persisted by the portal.
 The portal always uses authenticated API access. There is no browser-only demo
 mode or bundled fixture dataset. Optional fictional records are deployed to
 isolated backend stores with the separate [demo loader](../demo/README.md).
-The retired `WEB_DEMO_MODE` setting no longer bypasses identity configuration.
 
 ## Screens and server contracts
 
@@ -134,25 +139,20 @@ owns API routes, payloads, units and selection semantics. The browser types in
 [`src/contracts.ts`](src/contracts.ts) mirror the server; do not treat them as an
 independent accounting implementation.
 
-| Screen                               | Purpose                                                                                         |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| Overview, Monthly budgets            | Show scoped actual month-to-date spend and remaining monthly USD budgets by hierarchy level     |
-| Usage records                        | Display normalized OpenAI token usage and explicit unknown-stream outcomes                      |
-| Chargeback                           | View and export authorized monthly JSON/CSV grouped by organization and request dimensions      |
-| Organization units, User assignments | Admin-only management of departments, teams, cost centers, and explicit Entra principal mapping |
-| Monthly budgets, OpenAI price cards  | Admin-only CRUD for user/team/department monthly limits and versioned decimal USD price cards   |
-| Model inventory                      | Read-only OpenAI protocol/alias, provider deployment, pinned price and token bounds             |
-| Azure dashboard (Admin only)         | Render deployed Azure dashboard tiles and shared KQL results                                    |
+| Screen                               | Purpose                                                                                                                |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Overview, Monthly budgets            | Show scoped operational month-to-date spend (including estimates) and remaining monthly USD budgets by hierarchy level |
+| Usage records                        | Display normalized OpenAI token usage and explicit unknown-stream outcomes                                             |
+| Chargeback                           | View and export authorized monthly JSON/CSV grouped by organization and request dimensions                             |
+| Organization units, User assignments | Admin-only management of departments, teams, cost centers, and explicit Entra principal mapping                        |
+| Monthly budgets, OpenAI price cards  | Admin-only CRUD for user/team/department monthly limits and versioned decimal USD price cards                          |
+| Model inventory                      | Read-only OpenAI protocol/alias, provider deployment, pinned price and token bounds                                    |
+| Azure dashboard (Admin only)         | Render deployed Azure dashboard tiles and shared KQL results                                                           |
 
-The portal uses these `/api` routes: `GET /budgets`, `/organizations`,
-`/assignments`, `/prices`, `/models`, and `/usage` return arrays;
-`GET /budgets/status` returns scoped monthly spend/remaining records;
-`GET /chargeback?month=YYYY-MM&format=json|csv` returns grouped monthly
-chargeback; and Admin-only `GET /dashboard?period=1h|24h|7d` returns the
-deployed dashboard. Admin-only configuration mutations use `PUT
-/{budgets|organizations|assignments|prices}/{id}` and
-`DELETE /{budgets|organizations|assignments|prices}/{id}`. Reader sessions do
-not load management collections or send writes.
+Reader sessions load only authorized model/status/report routes; they do not
+load management collections or send writes. See the
+[route reference](../docs/configuration-reference.md#routes) for methods,
+payloads and query parameters.
 
 The Azure dashboard is visible only to RateLimit.Admin because it contains workspace-wide telemetry. It requests `/dashboard?period=1h|24h|7d`; production maps this through the same-origin proxy, while direct local development uses the configured API root. The browser never sends KQL or workspace identifiers. The tile titles, axes, chart definitions and tabular values come from the deployed Azure dashboard. Per-tile query failures, empty results and server truncation are shown independently; request-level failures remain retryable. Each chart exposes a detail table. Loading fictional backend records does not fabricate dashboard telemetry.
 
@@ -167,23 +167,11 @@ displayed as a zero-cost completed request. The browser does not reprice provide
 payloads: it sends USD values as decimal strings for price cards and displays
 budget amounts through exact integer micro-USD conversion.
 
-The monthly budget is an approximate soft cap. Warm gateway checks read recorded
-Redis spend only, without reservations or Table reads, and actual provider cost
-updates Redis afterward. Cold configuration misses may load Table; Admin saves
-remain synchronous durable-first and invalidate the shared 60-second-default
-configuration cache. Concurrent
-in-flight requests can overshoot a configured limit; after actual spend reaches
-the limit, later requests are denied. This is not a strict no-overshoot financial
-control or an invoice guarantee. Redis unavailability returns `503` without
-Table fallback; data loss can reset spend and lose admitted context. There is no
-automatic ledger rebuild. Admitted context/replay protection lasts 24 hours and
-monthly hierarchy wildcard/model counters last about 62 days.
-
-Request/usage Table writes are not awaited by APIM: a bounded process-local async
-writer allows 256 pending writes, logs drops/failures and attempts a best-effort
-two-second graceful-close drain. Restart, failure or saturation can lose writes.
-There is no durable queue/outbox, retry or exactly-once guarantee. An exported
-usage event means Redis acceptance, not Table persistence or financial completeness.
+Monthly budgets are approximate soft caps, not invoice guarantees. The
+[architecture](../ARCHITECTURE.md#key-design-decisions) owns these design
+choices; [operations](../docs/operations.md) owns Redis retention and the shared,
+lossy Table/export queue contract. The UI must not imply that a successful
+accounting operation proves durable history or downstream event delivery.
 
 GET failures remain visible and retryable. Failed saves retain the editor; failed
 deletes retain confirmation. Search filters are local display operations. Model
@@ -201,14 +189,15 @@ are in the [code guide](../docs/code-guide.md).
 Every screen leads with a **Recommended actions** panel, ordered by
 urgency and limited to findings about the records actually loaded (no forecasts or generic advice), so the portal says what to do and not only what happened. The rules are pure functions in
 [`src/insights/`](src/insights) computed from data the page already loaded; they add no API calls
-and no accounting. Each recommendation names the fact, why it matters and a one-click next step
-(open the budget editor, create a record, or jump to the relevant screen). Readers only see
+and no accounting. Each recommendation names the fact and why it matters;
+recommendations may include a next-step action (open the budget editor, create a
+record, or jump to the relevant screen). Readers only see
 guidance and navigation; create and edit actions are administrator-only and remain API-enforced.
 
 | Screen                               | Examples                                                                                 |
 | ------------------------------------ | ---------------------------------------------------------------------------------------- |
 | Overview, Monthly budgets            | Limit reached, 80% or more used, missing budgets, child limit above parent               |
-| Usage records                        | Unknown-usage requests, spend concentration by model or team, low prompt-cache hit rate  |
+| Usage records                        | Unknown-usage requests and provider-reported usage exceeding model bounds                |
 | Chargeback                           | Open month is provisional, unknown requests, estimated costs, rows without a cost center |
 | Model inventory, OpenAI price cards  | Model without a price card, duplicate or unused cards, `$0` or inverted rates            |
 | Organization units, User assignments | Teams without a department or users, assignments to disabled teams                       |
@@ -218,10 +207,10 @@ guidance and navigation; create and edit actions are administrator-only and rema
 
 The production Node server uses Microsoft's
 `@azure/monitor-opentelemetry-exporter` with private OpenTelemetry trace/log
-providers. The Microsoft exporter is currently published as a beta; beta.43
-is pinned with patched OpenTelemetry dependencies. Later exporter versions
-introduce remote configuration polling without a supported opt-out; do not
-upgrade until that can be disabled or re-reviewed for this privacy boundary.
+providers. The exact exporter and supporting OpenTelemetry versions are pinned
+in [`package.json`](package.json) and [`package-lock.json`](package-lock.json).
+Re-review remote configuration polling and auxiliary export behavior before
+upgrading the exporter; those features are part of the privacy boundary.
 Statsbeat, SDK statistics and resource-metric auxiliary export are explicitly
 disabled using the SDK's supported environment switches before initialization.
 The supporting OpenTelemetry packages are the exporter's required
@@ -231,11 +220,11 @@ metrics, exception capture or offline disk buffering is enabled.
 The server role is `apim-rate-limit-foundry.ai-budget-portal`.
 The browser role for manual dependencies is `ai-budget-portal-browser`.
 
-**Deployment migration:** disable/remove the App Service native Node agent
-(`ApplicationInsightsAgent_EXTENSION_VERSION=disabled`, not `~3`) and any
-agent preload in `NODE_OPTIONS`, retaining `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+Disable the App Service native Node agent
+(`ApplicationInsightsAgent_EXTENSION_VERSION=disabled`) and any agent preload
+in `NODE_OPTIONS`, retaining `APPLICATIONINSIGHTS_CONNECTION_STRING`.
 Do not run native and explicit exporters together: that duplicates request
-records and bypasses this manual privacy policy. The server now needs production
+records and bypasses this manual privacy policy. The server needs production
 npm dependencies. Packaging must stage `package.json`, `package-lock.json`,
 `dist/`, `server/`, and production `node_modules/` (run `npm ci --omit=dev` in
 the staging directory with Node 24). A static-only artifact cannot run this server.
@@ -342,72 +331,22 @@ navigation, not audit-authoritative writes. Configuration events and API events
 are separate results, not additive mutation counts. Loading fictional backend
 records does not bypass authentication or change the portal's telemetry handling.
 
-## Authenticated GUI verification (operator harness only)
+## Validation
 
-Use an isolated browser context and a separate ephemeral bundle of the **same
-installed MSAL browser version**. Never add an auth bypass, test token endpoint,
-fake JWT or token fixture to production code. The portal uses `sessionStorage`,
-tenant-specific authority, `knownAuthorities` for its cloud, the configured
-`WEB_CLIENT_ID`, origin redirect URI and delegated `API_SCOPE` from `/config.json`.
-An existing approved operator delegated CLI token may be loaded using MSAL's
-supported `getTokenCache().loadExternalTokens` API, then the real portal reloaded
-in the **same tab/origin**:
-
-1. Construct `PublicClientApplication` with the same configuration as
-   `src/auth.ts`; call `await instance.initialize()`.
-2. Use a genuine `AccountInfo` for the operator (`homeAccountId`, `environment`,
-   `tenantId`, `localAccountId`, `username` from its actual account/client-info
-   data). Do not manufacture an ID token; `id_token` is optional when an account
-   is supplied. `client_info` may be supplied from the genuine token response.
-3. Call `await instance.getTokenCache().loadExternalTokens(
-{account, scopes: [config.apiScope], authority},
-{access_token, token_type: 'Bearer', scope: config.apiScope,
-expires_in: remainingLifetimeSeconds, client_info},
-{expiresOn: actualExpiryEpochSeconds, extendedExpiresOn: actualExpiryEpochSeconds})`.
-   MSAL requires nonzero `expires_in` even with `expiresOn`, and either response
-   scope or request scopes. Only cache scopes the real token actually grants;
-   verify tenant, API audience, delegated scope, expiry and Reader/Admin role
-   against the real token/backend. Backend restrictions on the token's client
-   (`azp`) still apply: caching does not turn a CLI-issued token into a SPA-issued one.
-4. Optionally `instance.setActiveAccount(account)`, then reload the production
-   portal without clearing sessionStorage. The portal takes `accounts[0]`,
-   requests `API_SCOPE` using `acquireTokenSilent`, reads roles from the real
-   access token, and sends that access token to the unchanged authenticated API.
-   Account cache ownership and credential indexes are maintained by MSAL; do
-   not handwrite storage keys. With no refresh token, expiration requires a new
-   valid token or interactive auth. Discovery calls may still contact the
-   tenant-specific authority. MFA is not performed by this harness.
-5. Disclose that verification used an existing approved delegated session, not
-   an interactive MFA sign-in. Disable screenshots/traces/network dumps that
-   could capture tokens or operator PII; destroy the browser context afterward.
-
-Prefer role/label selectors, not generated Fluent IDs or CSS class hashes.
-The workspace provides Fluent's focus-restoration target for its programmatically
-opened dialogs; closing an editor or deleting its opener row restores focus to
-the stable workspace instead of leaving navigation hidden from assistive technology.
-Wait for page DOM content and specific UI readiness rather than `networkidle`
-because background telemetry may keep network activity alive.
-Navigation: `getByRole('button', {name: 'Monthly budgets', exact: true})`.
-Admins can create budgets, organization units, explicit user assignments, and
-OpenAI price cards; Readers can only view API-scoped budget status, usage and
-chargeback. Budget editor fields include tenant, level, assigned user/team/
-department, model alias or `*`, and a monthly USD amount with up to six decimal
-places. The UI converts that amount exactly to integer micro-USD. Price rates
-remain decimal strings. Team assignments derive their department from the
-enabled team's parent department. Submit using
-`getByRole('button', {name: 'Save changes'})`.
-Existing row buttons use exact names `Edit <record-id>` / `Delete <record-id>`;
-deletion requires `Confirm delete` in `Delete this record?`.
-Chargeback month selection accepts `YYYY-MM`; JSON and CSV exports are served by
-the authorized API route. Failed reads and exports are retryable and never fall
-back to sample data. Do not infer a live backend write from an optimistic UI.
+Run the lint, type-check, Vitest and build commands in [setup](#overview).
+Live verification uses normal Entra sign-in with appropriately assigned
+Admin/Reader roles; unit tests do not establish interactive sign-in or deployed
+API access. Follow the
+[operational acceptance checklist](../docs/operations.md#acceptance-checklist)
+for end-to-end checks.
 
 Microsoft publishes the UI and identity libraries. Vite, React's community test
 tools, ESLint and the TypeScript ESLint integration are development tooling;
 there is no suitable Microsoft-maintained Fluent-compatible test runner or Vite
 replacement required by this project.
 
-Vitest uses the patched stable v4 line; it no longer depends on `tinypool`.
+Return to the [README](../README.md) for the documentation map and
+[code guide](../docs/code-guide.md#portal-code-map) for source navigation.
 A narrow `@typescript-eslint/typescript-estree` override selects patched
 `minimatch` v11 until upstream updates its v10 dependency range. Keep this
 override until `npm audit` is clean without it.

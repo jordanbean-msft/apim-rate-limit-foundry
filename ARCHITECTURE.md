@@ -1,4 +1,9 @@
-# Architecture
+---
+title: Architecture
+description: Runtime responsibilities, request flows, design decisions and accounting guarantees.
+---
+
+## Overview
 
 The sample enforces **monthly, calendar-UTC dollar budgets** for an authenticated
 user and their configured team and department. It supports Azure OpenAI Chat
@@ -6,16 +11,16 @@ Completions and Responses, with incremental streaming and non-streaming requests
 
 ## Responsibilities
 
-| Component | Owns | Code |
-| --- | --- | --- |
-| APIM | Entra/product-key validation, native RPM/TPM protection, model alias/backend routing, budget-check and usage-record callouts | [`apim/`](apim), [`infra/modules/apim`](infra/modules/apim) |
-| Budget Function | Cached membership/configuration, all-level budget decisions, price snapshots, Redis accounting, background history writes, scoped reports and dashboard query API | [`function_app.py`](function_app.py), [`api.py`](src/apim_rate_limit_foundry/api.py), [`engine/`](src/apim_rate_limit_foundry/engine) |
-| Streaming Function | Bounded incremental OpenAI SSE relay, in-process terminal Redis accounting and background Event Hub publication | [`stream/function_app.py`](stream/function_app.py), [`streaming/`](src/apim_rate_limit_foundry/streaming) |
-| Table Storage | Durable configuration/audit and best-effort eventual request/usage history for reports and chargeback; not admission authority | [`stores/table.py`](src/apim_rate_limit_foundry/stores/table.py) |
-| Redis | Shared configuration cache, admitted context, replay protection and live approximate monthly spend | [`stores/redis.py`](src/apim_rate_limit_foundry/stores/redis.py), [`stores/scripts.py`](src/apim_rate_limit_foundry/stores/scripts.py) |
-| React/Node portal | Authenticated administration, operational spend, persisted chargeback and shared Azure dashboard | [`web/`](web) |
-| Event Hubs | Best-effort downstream usage transport, published by the Functions; not budget enforcement | [`export/`](src/apim_rate_limit_foundry/export), [`infra/modules/event_hubs`](infra/modules/event_hubs) |
-| Application Insights/Log Analytics | Operational traces and the Azure dashboard, not canonical billing | [`telemetry/`](src/apim_rate_limit_foundry/telemetry), [`reports/dashboard.py`](src/apim_rate_limit_foundry/reports/dashboard.py) |
+| Component                          | Owns                                                                                                                                                              | Code                                                                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| APIM                               | Entra/product-key validation, native RPM/TPM protection, model alias/backend routing, budget-check and usage-record callouts                                      | [`apim/`](apim), [`infra/modules/apim`](infra/modules/apim)                                                                            |
+| Budget Function                    | Cached membership/configuration, all-level budget decisions, price snapshots, Redis accounting, background history writes, scoped reports and dashboard query API | [`function_app.py`](function_app.py), [`api.py`](src/apim_rate_limit_foundry/api.py), [`engine/`](src/apim_rate_limit_foundry/engine)  |
+| Streaming Function                 | Bounded incremental OpenAI SSE relay, in-process terminal Redis accounting and background Event Hub publication                                                   | [`stream/function_app.py`](stream/function_app.py), [`streaming/`](src/apim_rate_limit_foundry/streaming)                              |
+| Table Storage                      | Durable configuration/audit and best-effort eventual request/usage history for reports and chargeback; not admission authority                                    | [`stores/table.py`](src/apim_rate_limit_foundry/stores/table.py)                                                                       |
+| Redis                              | Shared configuration cache, admitted context, replay protection and live approximate monthly spend                                                                | [`stores/redis.py`](src/apim_rate_limit_foundry/stores/redis.py), [`stores/scripts.py`](src/apim_rate_limit_foundry/stores/scripts.py) |
+| React/Node portal                  | Authenticated administration, operational spend, persisted chargeback and shared Azure dashboard                                                                  | [`web/`](web)                                                                                                                          |
+| Event Hubs                         | Best-effort downstream usage transport, published by the Functions; not budget enforcement                                                                        | [`export/`](src/apim_rate_limit_foundry/export), [`infra/modules/event_hubs`](infra/modules/event_hubs)                                |
+| Application Insights/Log Analytics | Operational traces and the Azure dashboard, not canonical billing                                                                                                 | [`telemetry/`](src/apim_rate_limit_foundry/telemetry), [`reports/dashboard.py`](src/apim_rate_limit_foundry/reports/dashboard.py)      |
 
 ## System context
 
@@ -27,20 +32,22 @@ flowchart LR
     APIM -->|"stream=true"| Stream["Streaming Function"]
     APIM -->|"non-streaming"| Model["Azure OpenAI / Foundry"]
     Stream -->|"managed identity"| Model
-    Stream -->|"usage event"| Hub
+    Stream -.->|"background usage event"| Hub
     Budget --> Redis[("Redis: live spend, context, cache")]
     Stream --> Redis
     Budget -.->|"best-effort mirror"| Table[("Table Storage: config, audit, history")]
     Stream -.->|"best-effort mirror"| Table
     Budget -->|"cold config miss"| Table
-    Budget -->|"usage event"| Hub["Event Hubs"]
+    Budget -.->|"background usage event"| Hub["Event Hubs"]
     Budget --> Monitor["Application Insights / Log Analytics"]
     Stream --> Monitor
-    Portal -.->|"Admin dashboard"| Budget
 ```
 
-Solid arrows are on the request path; dashed arrows are best-effort or
-off-path. The editable [logical and physical diagrams](docs/diagrams/README.md)
+Arrows show runtime dependencies, not response callbacks from the model.
+Dashed arrows are process-local best-effort work. Admin dashboard requests use
+the same portal-to-APIM-to-Budget-Function path as other portal APIs; the Function
+queries Azure Resource Manager and Log Analytics.
+The editable [logical and physical diagrams](docs/diagrams/README.md)
 add the network, identity and portal detail. The [code guide](docs/code-guide.md)
 walks each flow through the code.
 
@@ -51,6 +58,8 @@ Vault. Readers do not gain workspace-wide Azure Monitor access.
 ## Request and accounting flow
 
 The call chain behind each step is in the [code guide walkthroughs](docs/code-guide.md#request-walkthroughs).
+The sequence below follows a nonstreaming request; the
+[streaming walkthrough](docs/code-guide.md#streaming) shows relay finalization.
 
 ```mermaid
 sequenceDiagram
@@ -77,15 +86,16 @@ sequenceDiagram
         F->>R: Store admitted context (24h)
         F-->>W: Schedule request mirror (no Table wait)
         F-->>A: Allowed, no reservation or predicted debit
-        A->>O: Execute request (relay for streaming)
+        A->>O: Execute nonstreaming request
         O-->>A: Response and cumulative token usage
         A->>F: Record trusted actual usage
         F->>R: Atomic six-counter increment + replay marker (24h)
         F-->>W: Schedule usage mirror (no Table wait)
-        F-->>E: Publish event in background (best effort)
+        F-->>W: Schedule Event Hub export on the same queue
         F-->>A: 200 with Redis-accepted event
         A-->>C: Provider response
         W-->>T: Best-effort background request / usage writes
+        W-->>E: Best-effort background usage export
     end
 ```
 
@@ -134,11 +144,13 @@ There is **no automatic ledger rebuild**; persisted history is not replayed into
 live budgets. The system prioritizes inference speed and accepts approximate
 budgets rather than ledger-authoritative admission.
 
-Request/usage Table writes use a bounded process-local `asyncio` queue/task with
-256 pending writes. APIM does not await them. Saturation drops and write failures
+Request/usage Table writes and Event Hub sends share one serial, bounded
+process-local `asyncio` queue/task with 256 pending jobs per runtime (plus the
+active job). APIM does not await these jobs. Slow storage or export can delay
+either kind of work. Saturation drops and job failures
 are logged; graceful close attempts a best-effort two-second drain. Restart,
-failure or saturation can lose writes. There is no durable queue, outbox, retry
-or exactly-once persistence guarantee. Redis/Table are not a distributed ACID
+failure or saturation can lose writes. There is no durable queue, outbox, application-level retry or exactly-once persistence guarantee.
+Redis/Table are not a distributed ACID
 transaction. Persisted usage/history/chargeback can lag live spend or differ
 permanently after loss; neither is a financially complete source.
 Missing or malformed terminal usage is **unknown**, never a zero-cost success.
@@ -147,7 +159,22 @@ Unknown usage limits financial completeness; see [token accounting](docs/token-a
 Event Hub failure must not change an inference response. An event means Redis
 accepted accounting, not that Table persisted it. Compare retained history,
 telemetry and exports to investigate gaps, but none guarantees recovery of lost
-writes or events. No application retry queue or outbox is introduced.
+writes or events. No application retry queue or outbox is introduced. The Event
+Hubs SDK retains its default transport retry behavior; that does not make queued
+jobs durable or cause a replayed usage record to be exported again.
+
+## Key design decisions
+
+| Decision                                             | Reason and consequence                                                                                                                                      | Implementation                                                                                                                           |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Check completed spend, without reserving funds       | Keeps admission small and fast, but concurrent work can overshoot a cap                                                                                     | [`AdmissionService`](src/apim_rate_limit_foundry/engine/admission_service.py)                                                            |
+| Keep live state in Redis, history in Table           | Warm checks avoid ledger scans; a Redis outage fails closed and lost counters are not rebuilt                                                               | [`RedisCounters`](src/apim_rate_limit_foundry/stores/redis.py), [`TableRepository`](src/apim_rate_limit_foundry/stores/table.py)         |
+| Pin membership, month, price and bounds at admission | In-flight charges retain their original attribution across reassignment, price changes and UTC month rollover                                               | [`AdmissionContext`](src/apim_rate_limit_foundry/models/admission_context.py)                                                            |
+| Update six projections with one replay marker        | Wildcard and model-specific caps see the same charge, even if a budget is added later; the `{limiter}` hash tag keeps script keys in one Redis cluster slot | [`UsageRecorder`](src/apim_rate_limit_foundry/engine/usage_recorder.py), [`RECORD_USAGE`](src/apim_rate_limit_foundry/stores/scripts.py) |
+| Price unknown usage at pinned maximum input/output   | Missing counters cannot become free usage; estimates remain distinguishable from provider totals                                                            | [Token accounting](docs/token-accounting.md)                                                                                             |
+| Share a bounded process-local history/export writer  | Inference does not wait for storage or broker delivery, at the cost of permanent gaps on failure or saturation                                              | [`BackgroundWriter`](src/apim_rate_limit_foundry/background_writer.py)                                                                   |
+| Use native model backends, with a narrow SSE relay   | APIM handles routing and optional nonstreaming pools; the relay observes cumulative streaming usage, calling only the primary endpoint                      | [Gateway contracts](apim/README.md), [model registry](docs/model-registry.md)                                                            |
+| Separate gateway identity from portal users          | Internal calls use APIM's managed identity; portal APIs retain delegated user roles and report scope                                                        | [`auth.py`](src/apim_rate_limit_foundry/auth.py), [portal](web/README.md)                                                                |
 
 ## Dashboard and deployment
 
@@ -159,8 +186,8 @@ not the live Redis balance.
 
 Azure Commercial and Government are explicit deployment configurations, not
 interchangeable DNS suffixes. The resource group/network are pre-created.
-Terraform does not manage policy-owned private DNS zone groups. A reviewed
-cutover is required before applying resource deletions from the old sample.
+Terraform does not manage policy-owned private DNS zone groups. Review resource
+deletions and replacements before applying infrastructure changes.
 
-See [topology](docs/azure-topology.md), [migration](docs/migration.md),
+See [topology](docs/azure-topology.md), [deployment](docs/deployment.md),
 [observability](docs/observability.md) and [implementation](docs/code-guide.md).

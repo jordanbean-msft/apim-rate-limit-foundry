@@ -1,4 +1,9 @@
-# Code guide
+---
+title: Code guide
+description: Entry points, service boundaries, storage layout and request walkthroughs.
+---
+
+## Overview
 
 The public inference surface is Azure OpenAI Chat Completions and Responses behind
 APIM. Python is responsible for organization membership, monthly dollar budgets,
@@ -9,21 +14,23 @@ maps those behaviors to code. Paths are relative to
 
 ## Repository map
 
-| Path | Contents |
-| --- | --- |
-| [`src/apim_rate_limit_foundry/`](../src/apim_rate_limit_foundry) | Python budget API, gateway services, stores, streaming relay and telemetry |
-| [`function_app.py`](../function_app.py), [`stream/`](../stream) | The two Azure Functions hosts (see [entry points](#entry-points)) |
-| [`apim/`](../apim) | APIM policy and fragment templates; see the [gateway contracts](../apim/README.md) |
-| [`web/`](../web) | React portal and its Node server; see the [portal guide](../web/README.md) |
-| [`infra/`](../infra) | Terraform modules, `azd` packaging scripts and `*.tftest.hcl` tests; see the [infra guide](../infra/README.md) |
-| [`scripts/`](../scripts) | Seeding, CI configuration and legacy-config archive tools |
-| [`tests/`](../tests) | Python tests mirroring the modules (see [tests](#tests)) |
-| [`examples/`](../examples) | Sample configuration records and `gateway.http` requests |
+| Path                                                             | Contents                                                                                                       |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| [`src/apim_rate_limit_foundry/`](../src/apim_rate_limit_foundry) | Python budget API, gateway services, stores, streaming relay and telemetry                                     |
+| [`function_app.py`](../function_app.py), [`stream/`](../stream)  | The two Azure Functions hosts (see [entry points](#entry-points))                                              |
+| [`apim/`](../apim)                                               | APIM policy and fragment templates; see the [gateway contracts](../apim/README.md)                             |
+| [`web/`](../web)                                                 | React portal and its Node server; see the [portal guide](../web/README.md)                                     |
+| [`infra/`](../infra)                                             | Terraform modules, `azd` packaging scripts and `*.tftest.hcl` tests; see the [infra guide](../infra/README.md) |
+| [`scripts/`](../scripts)                                         | CI configuration and legacy-config archive tools                                                               |
+| [`demo/`](../demo)                                               | Explicit fictional-data loader and seed inputs for isolated stores                                             |
+| [`tests/`](../tests)                                             | Python tests mirroring the modules (see [tests](#tests))                                                       |
+| [`examples/`](../examples)                                       | Sample configuration records and `gateway.http` requests                                                       |
 
 ## Layers
 
-Dependencies point downward. Only `runtime.py` chooses concrete stores, and only
-`engine/` implements policy; hosts and routes stay thin.
+Dependencies point downward. Only `runtime.py` chooses concrete stores. `engine/` implements budget and
+configuration rules; APIM owns public request admission, `auth.py` owns role
+checks, and `accounting.py` owns normalization/pricing. Hosts and routes stay thin.
 
 ```mermaid
 flowchart TD
@@ -80,31 +87,31 @@ flowchart TD
 
 ## Entry points
 
-| Entry point | Role |
-| --- | --- |
-| [`function_app.py`](../function_app.py) | Wraps [`create_app`](../src/apim_rate_limit_foundry/api.py) in `AsgiFunctionApp`. Function keys are anonymous because Easy Auth validates Entra tokens and `auth.py` enforces roles |
-| [`stream/function_app.py`](../stream/function_app.py) | Native Functions HTTP-streaming host exposing `POST /api/stream` (`stream_provider`); builds one cached `Runtime` and a `StreamRelay` per request |
-| [`main.py`](../src/apim_rate_limit_foundry/main.py) | `uv run apim-rate-limit-foundry`: local Uvicorn API on `127.0.0.1`, not the streaming host |
-| [`web/server/index.mjs`](../web/server/index.mjs) | Portal static host and optional same-origin API proxy |
+| Entry point                                           | Role                                                                                                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`function_app.py`](../function_app.py)               | Wraps [`create_app`](../src/apim_rate_limit_foundry/api.py) in `AsgiFunctionApp`. Function keys are anonymous because Easy Auth validates Entra tokens and `auth.py` enforces roles |
+| [`stream/function_app.py`](../stream/function_app.py) | Native Functions HTTP-streaming host exposing `POST /api/stream` (`stream_provider`); builds one cached `Runtime` and a `StreamRelay` per request                                   |
+| [`main.py`](../src/apim_rate_limit_foundry/main.py)   | `uv run apim-rate-limit-foundry`: local Uvicorn API on `127.0.0.1`, not the streaming host                                                                                          |
+| [`web/server/index.mjs`](../web/server/index.mjs)     | Portal static host and optional same-origin API proxy                                                                                                                               |
 
 The streaming host is separate because it needs the HTTP streaming extensions.
 The relay preserves the native OpenAI protocol.
 
 ## Components
 
-| Component | Responsibility |
-| --- | --- |
-| [`api.py`](../src/apim_rate_limit_foundry/api.py), [`api_services.py`](../src/apim_rate_limit_foundry/api_services.py), [`api_errors.py`](../src/apim_rate_limit_foundry/api_errors.py), [`auth.py`](../src/apim_rate_limit_foundry/auth.py) | FastAPI router (prefix `/api`) with `Depends` providers, lazily built shared clients (`ApiServices`), HTTP error mapping (`register_error_handlers`: `Conflict`→409, validation→400, dependency failure→503), and independent Gateway/Admin/Reader authorization (`Identity.require`) |
-| [`models/`](../src/apim_rate_limit_foundry/models) | Typed organization, assignment, budget, price and usage contracts; `models/responses/` holds the HTTP response models that FastAPI validates and publishes in OpenAPI (mirrored by the portal's [`contracts.ts`](../web/src/contracts.ts)) |
-| [`engine/`](../src/apim_rate_limit_foundry/engine), [`accounting.py`](../src/apim_rate_limit_foundry/accounting.py) | Redis-recorded-spend decisions without reservations and replay-protected actual-cost accounting; see the engine layout below. `accounting.py` holds `utc_month`, `digest`, `normalize_openai_usage`, `cost_micro_usd`, `estimate_upper_bound_cost` and `price_usage` |
-| [`stores/`](../src/apim_rate_limit_foundry/stores) | Durable configuration/history (`Repository`) and Redis operational configuration/context/replay/spend (`CounterStore`), each with a memory implementation for local mode |
-| [`background_writer.py`](../src/apim_rate_limit_foundry/background_writer.py) | `BackgroundWriter`: bounded (256) process-local best-effort request/usage Table writer |
-| [`streaming/`](../src/apim_rate_limit_foundry/streaming) | Incremental OpenAI SSE relay (`relay.py`), bounded SSE framing (`sse_parser.py`, `SseParser`) and usage semantics (`usage.py`, `StreamUsage`), the `UpstreamResponse` result of `StreamRelay.open` (`upstream_response.py`), per-request tracing (`request_telemetry.py`), in-process terminal Redis accounting and background Event Hub publication |
-| [`export/`](../src/apim_rate_limit_foundry/export) | `UsageEventPublisher` contract and `EventHubUsagePublisher`, which sends each finalized usage event with the `azure-eventhub` `EventHubProducerClient` and the Function's managed identity; best effort, no retries |
-| [`reports/dashboard.py`](../src/apim_rate_limit_foundry/reports/dashboard.py) | Admin-only `DashboardService` that replays the persisted Azure dashboard's KQL against Log Analytics. Scoped spend/chargeback reports live in `engine/report_service.py` |
-| [`runtime.py`](../src/apim_rate_limit_foundry/runtime.py), [`config.py`](../src/apim_rate_limit_foundry/config.py) | Dependency injection, lifecycle and centralized settings (`Runtime`, `Settings`); see the [configuration reference](configuration-reference.md) |
-| [`monitoring.py`](../src/apim_rate_limit_foundry/monitoring.py), [`observed_credential.py`](../src/apim_rate_limit_foundry/observed_credential.py) | One-time Azure Monitor distro setup and a credential wrapper that times token requests without exposing material |
-| [`telemetry/`](../src/apim_rate_limit_foundry/telemetry), [`rate_limit_metrics.py`](../src/apim_rate_limit_foundry/rate_limit_metrics.py), [`request_telemetry.py`](../src/apim_rate_limit_foundry/request_telemetry.py) | Allowlisted structured events, low-cardinality custom metrics and per-request spans without prompts or credentials. [`telemetry/allowlist.py`](../src/apim_rate_limit_foundry/telemetry/allowlist.py) lists every permitted event and field: new ones must be added there or they are silently rewritten or dropped. Other modules split by concern: `sanitizer`, `context`, `events`, `operation`, `dependency`, `log_config`. See [observability](observability.md) |
+| Component                                                                                                                                                                                                                                    | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`api.py`](../src/apim_rate_limit_foundry/api.py), [`api_services.py`](../src/apim_rate_limit_foundry/api_services.py), [`api_errors.py`](../src/apim_rate_limit_foundry/api_errors.py), [`auth.py`](../src/apim_rate_limit_foundry/auth.py) | FastAPI router (prefix `/api`) with `Depends` providers, lazily built shared clients (`ApiServices`), HTTP error mapping (`register_error_handlers`: `Conflict`→409, validation→400, dependency failure→503), and independent Gateway/Admin/Reader authorization (`Identity.require`)                                                                                                                                                                                 |
+| [`models/`](../src/apim_rate_limit_foundry/models)                                                                                                                                                                                           | Typed organization, assignment, budget, price and usage contracts; `models/responses/` holds the HTTP response models that FastAPI validates and publishes in OpenAPI (mirrored by the portal's [`contracts.ts`](../web/src/contracts.ts))                                                                                                                                                                                                                            |
+| [`engine/`](../src/apim_rate_limit_foundry/engine), [`accounting.py`](../src/apim_rate_limit_foundry/accounting.py)                                                                                                                          | Redis-recorded-spend decisions without reservations and replay-protected actual-cost accounting; see the engine layout below. `accounting.py` holds `utc_month`, `digest`, `normalize_openai_usage`, `cost_micro_usd`, `estimate_upper_bound_cost` and `price_usage`                                                                                                                                                                                                  |
+| [`stores/`](../src/apim_rate_limit_foundry/stores)                                                                                                                                                                                           | Durable configuration/history (`Repository`) and Redis operational configuration/context/replay/spend (`CounterStore`), each with a memory implementation for local mode                                                                                                                                                                                                                                                                                              |
+| [`background_writer.py`](../src/apim_rate_limit_foundry/background_writer.py)                                                                                                                                                                | `BackgroundWriter`: bounded (256) process-local best-effort request/usage Table writer                                                                                                                                                                                                                                                                                                                                                                                |
+| [`streaming/`](../src/apim_rate_limit_foundry/streaming)                                                                                                                                                                                     | Incremental OpenAI SSE relay (`relay.py`), bounded SSE framing (`sse_parser.py`, `SseParser`) and usage semantics (`usage.py`, `StreamUsage`), the `UpstreamResponse` result of `StreamRelay.open` (`upstream_response.py`), per-request tracing (`request_telemetry.py`), in-process terminal Redis accounting and background Event Hub publication                                                                                                                  |
+| [`export/`](../src/apim_rate_limit_foundry/export)                                                                                                                                                                                           | `UsageEventPublisher` contract and `EventHubUsagePublisher`, which sends each finalized usage event with the `azure-eventhub` `EventHubProducerClient` and the Function's managed identity; best effort, no application-level retry or outbox (SDK transport retries retain their defaults)                                                                                                                                                                           |
+| [`reports/dashboard.py`](../src/apim_rate_limit_foundry/reports/dashboard.py)                                                                                                                                                                | Admin-only `DashboardService` that replays the persisted Azure dashboard's KQL against Log Analytics. Scoped spend/chargeback reports live in `engine/report_service.py`                                                                                                                                                                                                                                                                                              |
+| [`runtime.py`](../src/apim_rate_limit_foundry/runtime.py), [`config.py`](../src/apim_rate_limit_foundry/config.py)                                                                                                                           | Dependency injection, lifecycle and centralized settings (`Runtime`, `Settings`); see the [configuration reference](configuration-reference.md)                                                                                                                                                                                                                                                                                                                       |
+| [`monitoring.py`](../src/apim_rate_limit_foundry/monitoring.py), [`observed_credential.py`](../src/apim_rate_limit_foundry/observed_credential.py)                                                                                           | One-time Azure Monitor distro setup and a credential wrapper that times token requests without exposing material                                                                                                                                                                                                                                                                                                                                                      |
+| [`telemetry/`](../src/apim_rate_limit_foundry/telemetry), [`rate_limit_metrics.py`](../src/apim_rate_limit_foundry/rate_limit_metrics.py), [`request_telemetry.py`](../src/apim_rate_limit_foundry/request_telemetry.py)                     | Allowlisted structured events, low-cardinality custom metrics and per-request spans without prompts or credentials. [`telemetry/allowlist.py`](../src/apim_rate_limit_foundry/telemetry/allowlist.py) lists every permitted event and field: new ones must be added there or they are silently rewritten or dropped. Other modules split by concern: `sanitizer`, `context`, `events`, `operation`, `dependency`, `log_config`. See [observability](observability.md) |
 
 ## Engine layout
 
@@ -114,18 +121,18 @@ the stores they share. `GatewayServices.create` builds them and `close` releases
 them; there is no delegating facade, so `api.py` and `streaming/relay.py` call
 the service they need, for example `gateway.admission.check`.
 
-| Module | Responsibility |
-| --- | --- |
-| [`configuration_reader.py`](../src/apim_rate_limit_foundry/engine/configuration_reader.py) | Validated configuration listing and the coalesced shared cache snapshot |
-| [`configuration_validator.py`](../src/apim_rate_limit_foundry/engine/configuration_validator.py) | Assignment, organization and budget hierarchy rules |
-| [`configuration_service.py`](../src/apim_rate_limit_foundry/engine/configuration_service.py) | Configuration save/delete with tenant checks, audit and cache invalidation |
-| [`admission_resolver.py`](../src/apim_rate_limit_foundry/engine/admission_resolver.py) | Assignment, organization, price, budget and model-bound lookups pinned at admission |
-| [`admission_service.py`](../src/apim_rate_limit_foundry/engine/admission_service.py), [`admission_telemetry.py`](../src/apim_rate_limit_foundry/engine/admission_telemetry.py) | Budget check and request-ID replay; `AdmissionTelemetry` emits the admission events and metrics |
-| [`budget_status_reporter.py`](../src/apim_rate_limit_foundry/engine/budget_status_reporter.py) | Budget caps pinned at admission and live `budget_status` telemetry after each accepted charge |
-| [`usage_recorder.py`](../src/apim_rate_limit_foundry/engine/usage_recorder.py), [`usage_telemetry.py`](../src/apim_rate_limit_foundry/engine/usage_telemetry.py) | Pricing against the pinned `AdmissionContext`, replay-safe Redis recording, the Table mirror and the background Event Hub publish; `UsageTelemetry` emits the usage events and metrics |
-| [`report_service.py`](../src/apim_rate_limit_foundry/engine/report_service.py), [`chargeback_aggregator.py`](../src/apim_rate_limit_foundry/engine/chargeback_aggregator.py) | Usage history, budget status and chargeback grouping |
-| [`assignments.py`](../src/apim_rate_limit_foundry/engine/assignments.py), [`spend.py`](../src/apim_rate_limit_foundry/engine/spend.py), [`budget_events.py`](../src/apim_rate_limit_foundry/engine/budget_events.py) | Shared helpers: enabled-assignment selection, live spend reads and remaining balance, and the single `budget_status` emitter |
-| [`catalog.py`](../src/apim_rate_limit_foundry/engine/catalog.py), [`events.py`](../src/apim_rate_limit_foundry/engine/events.py), [`keys.py`](../src/apim_rate_limit_foundry/engine/keys.py) | Collection/schema constants (`CONFIG_MODELS`, `USAGE_COLLECTION`), the durable event envelope and stable identifiers (`budget_counter_key`, `opaque`) |
+| Module                                                                                                                                                                                                               | Responsibility                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`configuration_reader.py`](../src/apim_rate_limit_foundry/engine/configuration_reader.py)                                                                                                                           | Validated configuration listing and the coalesced shared cache snapshot                                                                                                                |
+| [`configuration_validator.py`](../src/apim_rate_limit_foundry/engine/configuration_validator.py)                                                                                                                     | Assignment, organization and budget hierarchy rules                                                                                                                                    |
+| [`configuration_service.py`](../src/apim_rate_limit_foundry/engine/configuration_service.py)                                                                                                                         | Configuration save/delete with tenant checks, audit and cache invalidation                                                                                                             |
+| [`admission_resolver.py`](../src/apim_rate_limit_foundry/engine/admission_resolver.py)                                                                                                                               | Assignment, organization, price, budget and model-bound lookups pinned at admission                                                                                                    |
+| [`admission_service.py`](../src/apim_rate_limit_foundry/engine/admission_service.py), [`admission_telemetry.py`](../src/apim_rate_limit_foundry/engine/admission_telemetry.py)                                       | Budget check and request-ID replay; `AdmissionTelemetry` emits the admission events and metrics                                                                                        |
+| [`budget_status_reporter.py`](../src/apim_rate_limit_foundry/engine/budget_status_reporter.py)                                                                                                                       | Budget caps pinned at admission and live `budget_status` telemetry after each accepted charge                                                                                          |
+| [`usage_recorder.py`](../src/apim_rate_limit_foundry/engine/usage_recorder.py), [`usage_telemetry.py`](../src/apim_rate_limit_foundry/engine/usage_telemetry.py)                                                     | Pricing against the pinned `AdmissionContext`, replay-safe Redis recording, the Table mirror and the background Event Hub publish; `UsageTelemetry` emits the usage events and metrics |
+| [`report_service.py`](../src/apim_rate_limit_foundry/engine/report_service.py), [`chargeback_aggregator.py`](../src/apim_rate_limit_foundry/engine/chargeback_aggregator.py)                                         | Usage history, budget status and chargeback grouping                                                                                                                                   |
+| [`assignments.py`](../src/apim_rate_limit_foundry/engine/assignments.py), [`spend.py`](../src/apim_rate_limit_foundry/engine/spend.py), [`budget_events.py`](../src/apim_rate_limit_foundry/engine/budget_events.py) | Shared helpers: enabled-assignment selection, live spend reads and remaining balance, and the single `budget_status` emitter                                                           |
+| [`catalog.py`](../src/apim_rate_limit_foundry/engine/catalog.py), [`events.py`](../src/apim_rate_limit_foundry/engine/events.py), [`keys.py`](../src/apim_rate_limit_foundry/engine/keys.py)                         | Collection/schema constants (`CONFIG_MODELS`, `USAGE_COLLECTION`), the durable event envelope and stable identifiers (`budget_counter_key`, `opaque`)                                  |
 
 ## Request walkthroughs
 
@@ -193,9 +200,9 @@ nonstreaming responses (it only calls the Function and sets
    [`RECORD_USAGE`](../src/apim_rate_limit_foundry/stores/scripts.py): it
    increments the six `_counter_keys` (user, team, department × model and `*`)
    and writes the replay marker in one atomic step.
-5. Only the winner schedules the Table mirror (`_mirror`), emits telemetry and
-   reports `budget_status`, then schedules the best-effort Event Hub publish
-   (never for replays) for streaming and non-streaming requests alike.
+5. Only the winner schedules the Table mirror (`_mirror`) and Event Hub publish
+   (`_export`) on the same serial `BackgroundWriter`, emits telemetry and reads
+   Redis spend for `budget_status`. Replays do not repeat these side effects.
 
 ### Streaming
 
@@ -218,9 +225,9 @@ sequenceDiagram
         S->>S: StreamUsage.feed (bounded observer)
         S-->>A: yield original bytes
     end
-    S->>E: _finalize, shielded record_usage
-    E-->>W: Table mirror
-    S-->>U: background publish of compact v2 event (best effort)
+    S->>E: _finalize, shielded gateway.usage.record
+    E-->>W: Schedule Table mirror and v2 event export
+    W-->>U: Best-effort background publish
 ```
 
 `StreamRelay.open` revalidates the admitted tenant, streaming flag and alias, and
@@ -251,15 +258,15 @@ upper bound when none was seen, and skips provider throttles
 
 ## Data layout
 
-| Store | Key or partition | Content and lifetime |
-| --- | --- | --- |
-| Redis (`RedisCounters`, hash tag `{limiter}`) | `{limiter}:configuration:v3` | Shared configuration snapshot; `CONFIGURATION_CACHE_SECONDS` TTL, invalidated on admin writes |
-| | `{limiter}:request:v3:<request_id>` | Admitted context (`SET NX`); `REQUEST_CACHE_SECONDS` (24h) |
-| | `{limiter}:usage:v3:<request_id>` | Replay marker plus finalized event; same TTL |
-| | `{limiter}:spend:v3:<YYYY-MM>` | Hash of `budget_counter_key` digests to integer micro-USD; 62-day sliding TTL |
-| Table (`TableRepository`) | `ledger` partition | Configuration collections (`organizations`, `assignments`, `budgets`, `prices`) and `audit`, committed together by `mutate` |
-| | `ledger`, collection `requests` | Best-effort mirror of admitted contexts |
-| | `usage:<tenant>:<YYYY-MM>`, collection `usage_v2` | Best-effort mirror of finalized usage; source for reports and chargeback |
+| Store                                         | Key or partition                                  | Content and lifetime                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Redis (`RedisCounters`, hash tag `{limiter}`) | `{limiter}:configuration:v3`                      | Shared configuration snapshot; `CONFIGURATION_CACHE_SECONDS` TTL, invalidated on admin writes                               |
+|                                               | `{limiter}:request:v3:<request_id>`               | Admitted context (`SET NX`); `REQUEST_CACHE_SECONDS` (24h)                                                                  |
+|                                               | `{limiter}:usage:v3:<request_id>`                 | Replay marker plus finalized event; same TTL                                                                                |
+|                                               | `{limiter}:spend:v3:<YYYY-MM>`                    | Hash of `budget_counter_key` digests to integer micro-USD; 62-day sliding TTL                                               |
+| Table (`TableRepository`)                     | `ledger` partition                                | Configuration collections (`organizations`, `assignments`, `budgets`, `prices`) and `audit`, committed together by `mutate` |
+|                                               | `ledger`, collection `requests`                   | Best-effort mirror of admitted contexts                                                                                     |
+|                                               | `usage:<tenant>:<YYYY-MM>`, collection `usage_v2` | Best-effort mirror of finalized usage; source for reports and chargeback                                                    |
 
 Table rows use `RowKey = digest(collection, id)` and a JSON `payload`.
 
@@ -282,14 +289,14 @@ registry entry (with its Terraform-supplied `backend_id`) once into `model-entry
 
 ## Portal code map
 
-| Path | Role |
-| --- | --- |
-| [`web/src/main.tsx`](../web/src/main.tsx), [`CloudSession.tsx`](../web/src/CloudSession.tsx), [`auth.ts`](../web/src/auth.ts) | MSAL sign-in, token acquisition and role hints |
-| [`Portal.tsx`](../web/src/Portal.tsx), [`pages.ts`](../web/src/pages.ts) | Shell, navigation and page selection |
-| [`api.ts`](../web/src/api.ts), [`contracts.ts`](../web/src/contracts.ts) | Typed client for the `/api` routes and mirrored response models |
-| [`web/src/components/`](../web/src/components), [`web/src/insights/`](../web/src/insights) | Screens (overview, budgets, usage, chargeback, dashboard) and the derived recommendations |
-| [`web/server/`](../web/server) | Runtime config, fixed-upstream API proxy, logging and server telemetry |
-| [`web/tests/`](../web/tests) | Vitest suites |
+| Path                                                                                                                          | Role                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [`web/src/main.tsx`](../web/src/main.tsx), [`CloudSession.tsx`](../web/src/CloudSession.tsx), [`auth.ts`](../web/src/auth.ts) | MSAL sign-in, token acquisition and role hints                                            |
+| [`Portal.tsx`](../web/src/Portal.tsx), [`pages.ts`](../web/src/pages.ts)                                                      | Shell, navigation and page selection                                                      |
+| [`api.ts`](../web/src/api.ts), [`contracts.ts`](../web/src/contracts.ts)                                                      | Typed client for the `/api` routes and mirrored response models                           |
+| [`web/src/components/`](../web/src/components), [`web/src/insights/`](../web/src/insights)                                    | Screens (overview, budgets, usage, chargeback, dashboard) and the derived recommendations |
+| [`web/server/`](../web/server)                                                                                                | Runtime config, fixed-upstream API proxy, logging and server telemetry                    |
+| [`web/tests/`](../web/tests)                                                                                                  | Vitest suites                                                                             |
 
 Screens, server contracts and portal telemetry are documented in the
 [portal guide](../web/README.md).
@@ -300,8 +307,9 @@ Python tests in [`tests/`](../tests) mirror modules: for example `test_gateway_*
 and `test_configuration_service.py` cover `engine/`, `test_stream_relay.py` and `test_stream_usage.py` cover
 `streaming/`, `test_redis*.py` cover `RedisCounters`, and `test_api*.py` use
 `httpx.AsyncClient` against `create_app` with in-memory stores
-([`tests/fakes.py`](../tests/fakes.py)). Policy, seed and preflight checks are in
-`apim/tests/` and `scripts/tests/`; Terraform tests are `infra/tests/*.tftest.hcl`.
+([`tests/fakes.py`](../tests/fakes.py)). Policy and preflight checks are in [`apim/tests/`](../apim/tests), demo seed
+checks in [`demo/tests/`](../demo/tests), and automation tests in
+[`scripts/tests/`](../scripts/tests); Terraform tests are `infra/tests/*.tftest.hcl`.
 Run `uv run pytest -W error`; see [local development](local-development.md).
 
 ## Extending
@@ -310,24 +318,17 @@ Run `uv run pytest -W error`; see [local development](local-development.md).
 - New telemetry event or field: add it to `telemetry/allowlist.py` first.
 - New configuration collection: extend `CONFIG_MODELS` in `engine/catalog.py`
   and its schema marker, then the portal's `contracts.ts`.
-- New provider protocol or model: update the model registry; see the
-  [model registry](model-registry.md).
+- New model on an existing protocol: update the [model registry](model-registry.md).
+  A new protocol also requires typed contracts, APIM admission/routing, usage
+  normalization, SSE handling and tests; a registry entry alone cannot add it.
 
 ## Invariants
 
-Do not add independent price arithmetic to APIM, KQL or the browser. The immutable
-usage context pins its price version. Redis acceptance drives live approximate
-budgets; eventual Table history drives reports. Warm admission never reads Table;
-cold configuration misses may. Admin CRUD is durable-first and invalidates shared
-configuration. Actual usage increments all six hierarchy wildcard/model counters
-atomically with its replay marker. There is no global ledger lock or rebuild.
-Unknown usage is never free: the engine prices it at the upper bound pinned in the
-admission context (`accounting.price_usage`). Usage history is keyed by tenant and
-month so reports read one Table partition. Event Hub messages mean Redis accepted
-usage, not that Table persisted it. The
-background writer's bounded queue can drop/lose writes, so neither history nor
-events promise financial completeness. See [operations](operations.md) for TTLs
-and failure behavior.
+Keep price arithmetic in `accounting.py`, never APIM, KQL or the browser.
+Preserve the [design decisions and accounting guarantees](../ARCHITECTURE.md#key-design-decisions)
+when extending services. [Operations](operations.md) owns TTLs, failure handling
+and acceptance checks; [token accounting](token-accounting.md) owns normalization
+and unknown-usage pricing.
 
 See [architecture](../ARCHITECTURE.md), [API contracts](configuration-reference.md),
 and [local validation](local-development.md).

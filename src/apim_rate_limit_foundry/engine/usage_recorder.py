@@ -19,7 +19,7 @@ from apim_rate_limit_foundry.telemetry import operation_span
 
 
 class UsageRecorder:
-    """Price usage against admission snapshots and record it exactly once in Redis."""
+    """Price admission snapshots and deduplicate charges within Redis replay retention."""
 
     def __init__(
         self,

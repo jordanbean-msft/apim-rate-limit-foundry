@@ -50,7 +50,7 @@
                         <mxGeometry height="36" width="36" x="14" y="18" as="geometry"/>
                     </mxCell>
                 </object>
-                <object label="&lt;b&gt;Budget service&lt;/b&gt;&lt;br&gt;Azure Functions&lt;br&gt;&lt;br&gt;Check user, team and department&lt;br&gt;budgets; record actual usage" Source="src/apim_rate_limit_foundry/api.py; src/apim_rate_limit_foundry/engine/" id="budget">
+                <object label="&lt;b&gt;Budget service&lt;/b&gt;&lt;br&gt;Azure Functions&lt;br&gt;&lt;br&gt;Check user, team and department&lt;br&gt;budgets; actual/estimated charges" Source="src/apim_rate_limit_foundry/api.py; src/apim_rate_limit_foundry/engine/" id="budget">
                     <mxCell parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#107C10;strokeWidth=2;fontFamily=Segoe UI;fontSize=14;spacingLeft=64;spacingRight=12;spacingTop=12;spacingBottom=12;align=left;container=1;collapsible=0;recursiveResize=0;" vertex="1">
                         <mxGeometry height="160" width="300" x="550" y="720" as="geometry"/>
                     </mxCell>
@@ -117,7 +117,7 @@
                 <mxCell id="stored-data" edge="1" parent="1" source="budget" style="edgeStyle=none;html=1;startArrow=block;endArrow=block;strokeColor=#107C10;strokeWidth=2;fontColor=#107C10;fontFamily=Segoe UI;fontSize=15;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" target="ledger" value="Load settings / save history">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="relay-state" edge="1" parent="1" source="relay" style="edgeStyle=none;html=1;startArrow=block;endArrow=block;strokeColor=#107C10;strokeWidth=2;fontColor=#107C10;fontFamily=Segoe UI;fontSize=15;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" target="projection" value="Validate saved admission before dispatch / record actual usage at stream end">
+                <mxCell id="relay-state" edge="1" parent="1" source="relay" style="edgeStyle=none;html=1;startArrow=block;endArrow=block;strokeColor=#107C10;strokeWidth=2;fontColor=#107C10;fontFamily=Segoe UI;fontSize=15;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" target="projection" value="Validate saved admission before dispatch / actual or estimated charge at stream end">
                     <mxGeometry relative="1" x="0.5" as="geometry">
                         <Array as="points">
                             <mxPoint x="1020" y="145"/>

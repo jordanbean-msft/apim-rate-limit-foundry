@@ -101,3 +101,7 @@ uv run pytest -W error demo/tests
 uv run ruff check demo
 uv run mypy demo/seed.py
 ```
+
+See [local development](../docs/local-development.md) for application setup,
+[configuration](../docs/configuration-reference.md) for the deployed record
+schemas and [operations](../docs/operations.md) for the accounting-loss contract.

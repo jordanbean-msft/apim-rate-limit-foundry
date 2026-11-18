@@ -7,8 +7,9 @@ description: Resource topology, identity boundaries, and network responsibilitie
 
 The editable [logical and physical draw.io diagrams](diagrams/README.md)
 show runtime flows, Terraform resource placement, private endpoints and identity
-grants. The physical view includes public-development differences and does not
-claim to be a live Azure inventory.
+grants. The physical view illustrates private deployment; public-development
+differences remain in supporting documentation. Neither view is a live Azure
+inventory.
 
 Terraform composes APIM, a direct Azure OpenAI account/deployments, two Python
 Function hosts, Redis, Table Storage, a Node/React portal, Key Vault, Event Hubs,
@@ -66,8 +67,10 @@ suffixes. Verify regional support for APIM tier, Event Hub identity/private
 networking and OpenAI protocols before deployment. An available Commercial
 feature does not imply Government parity or GCCH certification.
 
-## Cutover
+## Deployment safety
 
-See [migration](migration.md) before applying deletions. The new deployment does
-not ingest historical monetary holds or relabel application spend as user spend.
-The deployment plan must be reviewed before resource destruction/replacement.
+Review the Terraform plan before resource destruction or replacement. Preserve
+stored accounting data and verify compatibility before changing deployed schemas.
+Continue with [deployment](deployment.md) for the execution sequence,
+[architecture](../ARCHITECTURE.md) for runtime decisions and
+[operations](operations.md) for failure handling.

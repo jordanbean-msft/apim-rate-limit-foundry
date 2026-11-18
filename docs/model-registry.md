@@ -1,4 +1,9 @@
-# Approved OpenAI model registry
+---
+title: Approved OpenAI model registry
+description: Bind public aliases to trusted deployments, versioned prices and optional APIM backend pools.
+---
+
+## Registry contract
 
 `MODEL_REGISTRY` is a JSON map keyed by `protocol:alias`, for example
 `openai-chat:sample-model` and `openai-responses:sample-model`. Both hosts use the
@@ -24,13 +29,13 @@ custom failover code exists in the Functions.
 Both `MANAGED_MODELS` aliases and `LLM_MODELS` references accept these optional
 fields (omit them for today's single-backend behavior):
 
-| Field | Default | Meaning |
-|---|---|---|
-| `additional_endpoints[].endpoint` | required | HTTPS origin of another account with the same deployment name/model |
-| `additional_endpoints[].priority` | `1` | 1 (highest) to 5; lower-priority members only serve when higher ones are unavailable |
-| `additional_endpoints[].weight` | `1` | 1 to 100; share among members of the same priority |
-| `additional_endpoints[].private_endpoint_verified` | `false` | Must be `true` unless public access is enabled |
-| `primary_priority`, `primary_weight` | `1`, `1` | Priority/weight of the primary endpoint (the first pool member) |
+| Field                                              | Default  | Meaning                                                                              |
+| -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------ |
+| `additional_endpoints[].endpoint`                  | required | HTTPS origin of another account with the same deployment name/model                  |
+| `additional_endpoints[].priority`                  | `1`      | 1 (highest) to 5; lower-priority members only serve when higher ones are unavailable |
+| `additional_endpoints[].weight`                    | `1`      | 1 to 100; share among members of the same priority                                   |
+| `additional_endpoints[].private_endpoint_verified` | `false`  | Must be `true` unless public access is enabled                                       |
+| `primary_priority`, `primary_weight`               | `1`, `1` | Priority/weight of the primary endpoint (the first pool member)                      |
 
 ```json
 {
@@ -58,7 +63,7 @@ How it behaves:
   `Retry-After` header is honored.
 - The pool is `ai-pool-<hash>`; the policy sets this ID for pooled aliases and the
   same `ai-model-<hash>` ID for single-endpoint aliases, which are unchanged. The
-  hash is `sha256("<protocol>:<alias>")`, as before.
+  suffix is derived from `sha256("<protocol>:<alias>")`.
 - For non-streaming requests the policy retries up to twice on 429/5xx so the pool
   can try another member. Admission, budget checks and usage recording run once
   outside that retry, so a retried request is charged once, from the final response.
@@ -81,7 +86,14 @@ When adding a model:
 4. Validate non-streaming and streaming usage, including cached-input details.
 5. Apply the reviewed Terraform/azd change and verify the shared dashboard.
 
-No separate provider implementation or model-specific APIM budget arithmetic is
-needed. Newly billed modalities or server tools are not automatically supported
+For models on the two supported protocols, no separate provider implementation
+or model-specific APIM budget arithmetic is needed. A new protocol requires
+implementation changes, not only a registry entry.
+Newly billed modalities or server tools are not automatically supported
 by a text-only price card. Government endpoints/audiences must be independently
 verified; do not silently fall back to Commercial.
+
+See [deployment](deployment.md) for managed versus referenced accounts,
+[configuration](configuration-reference.md) for price cards,
+[gateway contracts](../apim/README.md) for request constraints and
+[token accounting](token-accounting.md) for usage interpretation.

@@ -10,10 +10,10 @@ contains two named pages. Shapes, connectors, labels and boundaries are editable
 The logical view uses application-level components. Both views use official
 Microsoft service icons embedded as SVGs rather than external image links.
 
-| File | Pages | Purpose |
-| --- | --- | --- |
-| [Logical architecture](logical-architecture.drawio) | Inference and accounting; Portal and reporting | Application requests and responses through the gateway, streaming, budget checks, portal settings and reports |
-| [Physical architecture](physical-architecture.drawio) | Private deployment; Identity and access | Terraform resource placement, subnet integration, private endpoints, app registrations and managed-identity permissions |
+| File                                                  | Pages                                          | Purpose                                                                                                                 |
+| ----------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| [Logical architecture](logical-architecture.drawio)   | Inference and accounting; Portal and reporting | Application requests and responses through the gateway, streaming, budget checks, portal settings and reports           |
+| [Physical architecture](physical-architecture.drawio) | Private deployment; Identity and access        | Terraform resource placement, subnet integration, private endpoints, app registrations and managed-identity permissions |
 
 The physical view illustrates `public_network_access_enabled=false`.
 It describes the current configuration model, not a live deployment inventory.
@@ -65,12 +65,12 @@ These are suggestions, not deployed addresses or Terraform-managed network
 resources. Confirm availability in enterprise IPAM and avoid overlap with
 on-premises, peered and connected networks before provisioning.
 
-| Subnet input | Suggested CIDR | Available addresses after Azure's five reservations | Sizing rationale |
-| --- | --- | --- | --- |
-| `apim_subnet_id` | `10.42.0.0/25` | 123 | Growth room for classic Developer / Premium internal VNet injection, including the internal load-balancer address |
-| `functions_subnet_id` | `10.42.1.0/26` | 59 | Linux Elastic Premium / Dedicated integration baseline; budget and optional streaming hosts share the integration subnet |
-| `web_subnet_id` | `10.42.2.0/26` | 59 | Recommended App Service integration size with scaling and platform-upgrade headroom |
-| `private_endpoint_subnet_id` | `10.42.3.0/26` | 59 | Sample planning allowance for endpoint IP configurations and future additions, not an Azure-mandated prefix |
+| Subnet input                 | Suggested CIDR | Available addresses after Azure's five reservations | Sizing rationale                                                                                                         |
+| ---------------------------- | -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `apim_subnet_id`             | `10.42.0.0/25` | 123                                                 | Growth room for classic Developer / Premium internal VNet injection, including the internal load-balancer address        |
+| `functions_subnet_id`        | `10.42.1.0/26` | 59                                                  | Linux Elastic Premium / Dedicated integration baseline; budget and optional streaming hosts share the integration subnet |
+| `web_subnet_id`              | `10.42.2.0/26` | 59                                                  | Recommended App Service integration size with scaling and platform-upgrade headroom                                      |
+| `private_endpoint_subnet_id` | `10.42.3.0/26` | 59                                                  | Sample planning allowance for endpoint IP configurations and future additions, not an Azure-mandated prefix              |
 
 Microsoft's guidance covers
 [classic APIM subnet sizing](https://learn.microsoft.com/en-us/azure/api-management/virtual-network-injection-resources#subnet-size),
@@ -97,8 +97,9 @@ The Azure OpenAI icon represents the actual `kind=OpenAI` account, not a Foundry
 project or agent service. Both Azure Managed Redis and the Government Redis Cache
 variant use their corresponding icons. The physical view uses the current
 Microsoft Entra ID tenant icon and distinct icons for app registrations,
-enterprise applications and Entra managed identities. Terraform and Microsoft Graph
-use their respective logo assets. Generic notes and boundaries use ordinary
+enterprise applications and Entra managed identities. The deployment-tooling
+box embeds the Terraform logo; Graph access is described in identity captions.
+Generic notes and boundaries use ordinary
 draw.io shapes rather than unrelated service icons.
 
 ## Application registrations
@@ -124,7 +125,7 @@ The logical view follows an application through the gateway to a model and back,
 with streaming on a separate route and budget services below the main flow.
 Both routes pass the gateway's initial budget check. The streaming relay reads
 the saved Redis admission before calling the model, forwards chunks immediately,
-and records actual usage directly in Redis through the shared gateway services
+and records actual usage or an unknown-usage estimate in Redis through the shared gateway services
 at stream termination. It does not re-evaluate budgets per chunk or stop an active
 stream when a monthly budget is crossed. The native token-rate policy is optional.
 The portal page follows signed-in requests for settings and reports. Writer
@@ -146,29 +147,19 @@ The [architecture narrative](../../ARCHITECTURE.md),
 [observability guide](../observability.md) provide additional detail.
 Existing Mermaid diagrams remain useful inline sequence views.
 
-Monthly budgets are approximate operational caps against Redis-recorded spend,
-not reservations. Warm admission never reads Table; only cold configuration
-misses do. Durable-first Admin CRUD invalidates the shared configuration snapshot
-(default 60s TTL). Redis holds admitted context/replay markers for 24h and monthly
-user/team/department wildcard/model counters for about 62 days. Actual usage
-increments all six counters atomically with its replay marker.
-
-Redis unavailability fails closed `503`, with no Table fallback; exhausted budgets,
-including zero limits, deny `429`. Data loss may reset spend and lose context;
-there is no automatic ledger rebuild or global ledger lock. Request/usage Table
-mirrors run in a bounded in-process async writer (256 pending; logged
-drops/failures; best-effort 2s graceful-close drain), not awaited by APIM. Restart,
-failure or saturation can lose writes; no durable queue/outbox/retry/exactly-once
-guarantee exists. Live budgets and persisted history/chargeback may differ
-permanently.
-
-Streaming relays chunks incrementally, does Redis accounting in process at
-terminal usage and schedules the Event Hub publication in the background. Nonstream
-usage still waits briefly for Redis acceptance, not Table persistence. The
-Functions publish best-effort Event Hub events directly; APIM does not: an event
-means Redis accepted usage, not that Table persisted it. Preserve these
-distinctions when editing the diagrams.
+Keep accounting and network semantics distinct. The
+[architecture](../../ARCHITECTURE.md#key-design-decisions) owns design choices;
+[token accounting](../token-accounting.md) owns actual/estimated usage rules;
+[operations](../operations.md) owns retention and loss behavior. The Functions,
+not APIM, enqueue Event Hub exports after Redis acceptance on the shared
+history/export writer. An event does not prove Table persistence.
 
 On the identity page the Event Hub sender grant belongs to the shared Function
-identity, not the gateway identity, and the diagrams no longer show an APIM usage
-callback.
+identity, not the gateway identity. Event publication goes directly from the
+Functions to Event Hubs, without an APIM usage callback.
+
+Validate changed files by parsing every XML page, checking IDs, parents,
+terminals, source paths, embedded images and containment, then rendering each
+changed page locally with draw.io Desktop or an installed renderer. XML validity
+alone does not verify clipped labels or connector routing. Keep scratch renders
+out of source control.

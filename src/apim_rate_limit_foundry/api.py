@@ -171,7 +171,8 @@ async def record_usage(body: UsageRecordRequest, actor: Actor, gateway: Gateway)
     JSON supplies request_id, status and the original provider_usage object
     for actual usage. HTTP 200 returns ``event`` and ``replayed``; it confirms
     Redis accounting, not durable Table persistence or Event Hub delivery.
-    Unknown usage remains unpriced. Conflicting replay/context yields 409.
+    Unknown usage is charged the pinned upper-bound estimate with null token
+    counts. Conflicting replay/context yields 409.
     """
     actor.require(ROLE_GATEWAY)
     return await gateway.usage.record(body)

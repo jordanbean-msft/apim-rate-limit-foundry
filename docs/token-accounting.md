@@ -1,13 +1,18 @@
-# Actual tokens and streaming
+---
+title: Actual tokens and streaming
+description: Provider usage normalization, cache pricing, SSE observation and unknown-usage estimates.
+---
+
+## Provider totals
 
 **Use the provider's final totals once. Do not sum streaming chunks.**
 
-| API | Trusted usage location | Handling |
-| --- | --- | --- |
-| Chat, JSON | Response `usage` | Normalize `prompt_tokens`, `completion_tokens`, cached-input detail |
-| Chat, SSE | Usage-only chunk before `[DONE]`, requested with `stream_options.include_usage=true` | Ignore null intermediate usage; retain final object once |
-| Responses, JSON | Response `usage` | Normalize `input_tokens`, `output_tokens`, cached-input detail |
-| Responses, SSE | Terminal `response.completed` usage (or validated incomplete terminal response) | Read the cumulative object once, not text deltas |
+| API             | Trusted usage location                                                               | Handling                                                            |
+| --------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Chat, JSON      | Response `usage`                                                                     | Normalize `prompt_tokens`, `completion_tokens`, cached-input detail |
+| Chat, SSE       | Usage-only chunk before `[DONE]`, requested with `stream_options.include_usage=true` | Ignore null intermediate usage; retain final object once            |
+| Responses, JSON | Response `usage`                                                                     | Normalize `input_tokens`, `output_tokens`, cached-input detail      |
+| Responses, SSE  | Terminal `response.completed` usage (or validated incomplete terminal response)      | Read the cumulative object once, not text deltas                    |
 
 The relay observes bounded SSE events while forwarding bytes incrementally.
 HTTP chunk boundaries can split JSON, UTF-8 characters and SSE delimiters; they
@@ -120,31 +125,17 @@ accounting is attempted even if client delivery fails afterward; this does not
 guarantee that Table history or export survives. Valid usage seen before a
 disconnect is therefore never replaced by the estimate.
 
-## Redis acceptance versus history
+## Recording and export
 
-The admitted context pins month, membership and price in Redis for 24 hours.
-Actual usage increments the six relevant monthly user/team/department
-wildcard/model counters atomically with a 24-hour usage-idempotency marker.
-Unknown usage is charged the upper-bound fallback above, never treated as a
-zero-cost actual. Redis loss can reset spend or lose the context needed to record
-usage; there is no ledger rebuild.
+The [architecture](../ARCHITECTURE.md#request-and-accounting-flow) describes
+Redis acceptance and the shared best-effort history/export queue. The provider
+does not call accounting directly: APIM records nonstreaming usage, and the
+relay records streaming usage in process. Event Hub messages carry the finalized
+event, including `cost_basis`; they do not prove Table persistence.
 
-Nonstreaming APIM accounting waits briefly for Redis acceptance and receives the
-accepted result on `200`, not for Table persistence. Request/usage Table writes use a
-256-pending process-local async writer, with logged drops/failures and a
-best-effort two-second graceful-close drain. Lost writes are accepted; no durable
-queue, outbox, retry or exactly-once guarantee exists. Live budgets and persisted
-history/chargeback can differ permanently.
-
-## Event Hub export
-
-APIM policies are not an SSE token accumulator, and the response body is not
-buffered to produce an event. The retained OpenAI relay forwards chunks
-incrementally and does terminal Redis accounting in process. For streaming and
-nonstreaming requests alike, the Function then schedules a best-effort background
-publish of the finalized event with the `azure-eventhub` SDK, once Redis accepts the
-first usage record (never for replays). An event means Redis accepted the usage,
-not that Table persisted it, and scheduling does not guarantee publication.
+See [operations](operations.md) for retention and failure handling,
+[observability](observability.md) for event delivery and telemetry, and
+[chargeback](chargeback.md) for grouping actual and estimated charges.
 
 ## Research references
 

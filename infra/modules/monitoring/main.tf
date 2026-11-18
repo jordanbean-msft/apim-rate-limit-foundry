@@ -51,7 +51,7 @@ locals {
     { query = "applications", title = "Application subscription attribution", chart = "", x = "", y = "", split = "" },
     { query = "request-health", title = "Request errors and latency details", chart = "", x = "", y = "", split = "" },
     { query = "event-hub-health", title = "Event Hub ingress / throttling / delivery failures", chart = "", x = "", y = "", split = "" },
-    { query = "usage-unknown", title = "Unknown provider usage — unpriced, never zero", chart = "", x = "", y = "", split = "" },
+    { query = "usage-unknown", title = "Unknown provider usage: estimated upper-bound charges", chart = "", x = "", y = "", split = "" },
   ]
   dashboard_parts = merge(
     {
@@ -65,15 +65,15 @@ locals {
             subtitle       = "Actual usage and monthly soft budgets"
             markdownSource = 1
             content        = <<-MARKDOWN
-              **Monthly USD budgets are approximate soft caps.** Redis is the live source for cached budget configuration and monthly spend. Every configured user, team and department limit is checked before dispatch; concurrent in-flight calls can overshoot. Only finalized provider usage updates spend. Cached input is a subset of input, not additional tokens. Unknown usage is unpriced, never reported as zero.
+              **Monthly USD budgets are approximate soft caps.** Redis is the live source for cached budget configuration and monthly spend. Every configured user, team and department limit is checked before dispatch; concurrent in-flight calls can overshoot. Finalized actual and estimated-upper-bound accounting update spend. Cached and cache-write input are subsets of input, not additional tokens. Unknown usage retains null token counts and carries an estimated charge.
 
               APIM HTTP outcomes, Function budget decisions and finalized accounting are separate stages. A 2xx or admitted request is not proof of finalized usage. Blocks are requests, not measured tokens; no provider usage exists for a request rejected before inference. Cache charts show provider prompt-cache reads, not APIM response caching.
 
-              Token stacks contain disjoint uncached input, cached input and output. Cache percentage is cached input divided by all input tokens, not the percentage of requests with a cache hit. Lifecycle series overlap: admitted includes finalized and unknown outcomes. No terminal observed after five minutes is an investigation signal, not proof of lost billing.
+              Token stacks contain disjoint input excluding cache reads (including cache writes), cached input and output. The dashboard's input series does not split cache-write input out separately as the custom token metric does. Cache percentage is cached input divided by all input tokens, not the percentage of requests with a cache hit. Lifecycle series overlap: admitted includes finalized and unknown outcomes. No terminal observed after five minutes is an investigation signal, not proof of lost billing.
 
-              Month-to-date spend uses UTC month start; other activity views follow the dashboard time picker. Budget utilization is the latest observed monthly counter, not a live Redis read, and may exceed 100% because these are soft caps. User references are opaque; subscription IDs attribute applications, not people.
+              Month-to-date ActualUSD spend excludes unknown-usage estimates and uses UTC month start; other activity views follow the dashboard time picker. Budget utilization includes accepted estimated charges and is the latest observed monthly counter, not a live Redis read, and may exceed 100% because these are soft caps. User references are opaque; subscription IDs attribute applications, not people.
 
-              This dashboard and the portal share the exact persisted KQL below. Traces can be sampled or delayed. Usage records and request context are persisted to Table Storage by a bounded process-local background task, not awaited by inference. Host restarts, failures or queue saturation can permanently lose history. Redis loss may reset live spend; chargeback reports include only persisted usage and may differ from live counters. Event Hub delivery is best effort, unsampled by APIM, and never retried. An event proves Redis acceptance, not Table persistence. Namespace diagnostics and APIM logger failures show operational delivery health.
+              This dashboard and the portal share the exact persisted KQL below. Traces can be sampled or delayed. Table request/usage mirrors and Event Hub exports share one serial process-local writer with 256 pending jobs and a best-effort two-second shutdown drain, not awaited by inference. Host restarts, failures or queue saturation can permanently lose history or exports. Redis loss may reset live spend; chargeback reports include only persisted usage and may differ from live counters. Event Hub delivery has no application-level retry/outbox; SDK transport retries retain their defaults. An event proves Redis acceptance, not Table persistence. Namespace diagnostics and Function publish-failure events show operational delivery health.
             MARKDOWN
           } } }
         }

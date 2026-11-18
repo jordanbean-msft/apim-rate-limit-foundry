@@ -5,7 +5,7 @@ description: Enforce approximate monthly AI spending budgets through an APIM gat
 
 ## Overview
 
-An **Azure API Management + Azure OpenAI + Python Azure Functions** sample with
+An **Azure API Management + Microsoft Foundry + Python Azure Functions** sample with
 a Microsoft Fluent UI React administration portal. It accounts for actual tokens
 after each request and enforces monthly USD budgets for **users, teams and
 departments**. Cached input is priced separately from uncached input and output.
@@ -32,26 +32,11 @@ The Azure dashboard and the portal share the deployed dashboard's KQL definition
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    U[Entra user + application key] --> A[APIM authentication and burst controls]
-    A -->|Check all monthly budgets| F[Budget API]
-    F -->|Warm admission and actual usage| R[(Redis operational state)]
-    F -->|Cold configuration miss only| T[(Table configuration and eventual history)]
-    F -.->|Best-effort process-local writer| T
-    A --> O[Approved Azure OpenAI backend]
-    A --> S[Incremental streaming relay]
-    S --> O
-    O -->|Provider token totals| F
-    F -->|Redis-accepted usage event| E[Event Hub]
-    P[Authenticated Fluent portal] --> A
-    D[Azure dashboard + shared KQL] --> L[Log Analytics]
-```
-
-This is a simplified request flow. The editable
-[logical and physical diagrams](docs/diagrams/README.md) add the web app, Key
-Vault, Application Insights, the optional streaming host, identities and the
-private networking (VNet, subnets, private endpoints) around these components.
+Start with the [architecture and request sequence](ARCHITECTURE.md) for the
+runtime flow and design decisions. The editable
+[logical and physical diagrams](docs/diagrams/README.md) show deployment scopes,
+identities and private networking. Nonstreaming calls use native APIM model
+backends; streaming calls use a dedicated Function relay to observe final usage.
 
 Redis caches shared configuration for 60 seconds by default, request context and
 usage replay markers for 24 hours, and monthly user/team/department wildcard/model
@@ -81,10 +66,10 @@ monthly USD budgets. Everything else uses native Azure features:
 Each completed response reports final provider token counts. The engine prices
 them with the model's **versioned price card**, in USD per million tokens:
 
-* **Uncached input** (input minus cached tokens) at the input rate.
+* **Uncached input** (input minus cached and cache-write tokens) at the input rate.
 * **Cached input** at its discounted rate.
-* **Cache-write** tokens at their own rate where a price card defines one; a
-  counter with no price is treated as unknown usage, never as free.
+* **Cache-write** tokens at their own rate where a price card defines one,
+  otherwise at the uncached input rate.
 * **Output** at the output rate. Reasoning tokens are already part of output
   tokens and are never counted a second time.
 
@@ -97,20 +82,31 @@ and rounding.
 
 ## Documentation
 
-| Concern | Guide |
-| --- | --- |
-| Responsibilities, accounting and failure behavior | [Architecture](ARCHITECTURE.md) |
-| Monthly budgets, organization hierarchy and APIs | [Configuration](docs/configuration-reference.md) |
-| Streaming totals and unknown usage | [Token accounting](docs/token-accounting.md) |
-| Cost centers and monthly exports | [Chargeback](docs/chargeback.md) |
-| Dashboard, telemetry and Event Hub delivery limits | [Observability](docs/observability.md) |
-| Runtime identities and networking | [Azure topology](docs/azure-topology.md) |
-| Safe cutover from the previous ledger | [Migration](docs/migration.md) |
-| Local development, tests and debugging | [Development](docs/local-development.md) |
-| Cloud configuration and deployment | [Deployment](docs/deployment.md), [infrastructure](infra/README.md) |
-| Entry points and module boundaries | [Code guide](docs/code-guide.md) |
-| Approved model aliases | [Model registry](docs/model-registry.md) |
-| Gateway and portal details | [APIM](apim/README.md), [portal](web/README.md) |
+Choose a reading path:
+
+* Understand the implementation: [architecture](ARCHITECTURE.md), then
+  [code guide](docs/code-guide.md) and [gateway contracts](apim/README.md)
+* Run it locally: [development](docs/local-development.md), then
+  [portal](web/README.md) and optional [demo data](demo/README.md)
+* Deploy and operate: [deployment](docs/deployment.md),
+  [topology](docs/azure-topology.md), then [operations](docs/operations.md)
+
+| Concern                                            | Guide                                                               |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| Responsibilities, accounting and failure behavior  | [Architecture](ARCHITECTURE.md)                                     |
+| Monthly budgets, organization hierarchy and APIs   | [Configuration](docs/configuration-reference.md)                    |
+| Streaming totals and unknown usage                 | [Token accounting](docs/token-accounting.md)                        |
+| Cost centers and monthly exports                   | [Chargeback](docs/chargeback.md)                                    |
+| Dashboard, telemetry and Event Hub delivery limits | [Observability](docs/observability.md)                              |
+| Runtime identities and networking                  | [Azure topology](docs/azure-topology.md)                            |
+| Local development, tests and debugging             | [Development](docs/local-development.md)                            |
+| Cloud configuration and deployment                 | [Deployment](docs/deployment.md), [infrastructure](infra/README.md) |
+| Entry points and module boundaries                 | [Code guide](docs/code-guide.md)                                    |
+| Approved model aliases                             | [Model registry](docs/model-registry.md)                            |
+| Gateway and portal details                         | [APIM](apim/README.md), [portal](web/README.md)                     |
+| Failure handling, data loss and acceptance checks  | [Operations](docs/operations.md)                                    |
+| Editable diagram sources and maintenance           | [Diagrams](docs/diagrams/README.md)                                 |
+| Optional fictional data for isolated stores        | [Demo](demo/README.md)                                              |
 
 ## Deploy and verify
 
@@ -140,7 +136,7 @@ the network and private DNS pre-created, and a storage account for Terraform sta
 3. Configure organizations, assignments, prices and budgets through the portal
    or administration API. Application deployment never loads sample records.
    Optional fictional data has a separate, explicit
-   [demo deployment workflow](demo/README.md) for empty, isolated Table Storage
+   [demo loader](demo/README.md) for empty, isolated Table Storage
    and Redis stores. Do not seed shared or production stores.
 
 4. Call the gateway. Open [`examples/gateway.http`](examples/gateway.http) in
@@ -182,7 +178,3 @@ resource group and explicitly selected Azure Commercial or Government endpoints.
 Government service availability, private connectivity and GCCH authorization
 require independent approval; this sample is not a compliance certification or
 an Azure invoice.
-
-Historical plans under `.github/plans/` are execution records, not current
-operating instructions. The dollar-budget cutover removes the former monetary
-hold/settlement system rather than maintaining two enforcement mechanisms.

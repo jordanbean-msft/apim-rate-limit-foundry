@@ -1,15 +1,20 @@
-# OpenAI gateway contracts
+---
+title: OpenAI gateway contracts
+description: Public routes, APIM trust boundaries, admission constraints and accounting headers.
+---
+
+## Overview
 
 Terraform publishes explicit operations, not catch-all backend routes.
 Only OpenAI Chat Completions and Responses are supported.
 
-| Route | Contract |
-|---|---|
-| `POST /foundry/chat/completions` | Inline text/client functions; exactly one positive `max_tokens` or `max_completion_tokens` within the model's `max_output_tokens`, `n=1` |
-| `POST /foundry/responses` | Inline text/client functions; positive `max_output_tokens`; stateless foreground only |
-| `GET /portal/{collection}` | `health`, `dashboard`, `models`, `budgets`, `organizations`, `prices`, `assignments`, `usage`, `chargeback` |
-| `GET /portal/budgets/status` | Authorized month-to-date user/team/department budget balances |
-| `PUT`, `DELETE /portal/{collection}/{id}` | `budgets`, `organizations`, `prices`, `assignments`; Function independently enforces Admin |
+| Route                                     | Contract                                                                                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /foundry/chat/completions`          | Inline text/client functions; exactly one positive `max_tokens` or `max_completion_tokens` within the model's `max_output_tokens`, `n=1` |
+| `POST /foundry/responses`                 | Inline text/client functions; positive `max_output_tokens`; stateless foreground only                                                    |
+| `GET /portal/{collection}`                | `health`, `dashboard`, `models`, `budgets`, `organizations`, `prices`, `assignments`, `usage`, `chargeback`                              |
+| `GET /portal/budgets/status`              | Authorized month-to-date user/team/department budget balances                                                                            |
+| `PUT`, `DELETE /portal/{collection}/{id}` | `budgets`, `organizations`, `prices`, `assignments`; Function independently enforces Admin                                               |
 
 ## Trust boundaries
 
@@ -17,6 +22,13 @@ Inference and portal APIs require **both** a native product subscription key and
 an Entra bearer token. All-access/API-scoped subscriptions are rejected; the
 requested API must belong to the provisioned product. Never put keys in URLs.
 The portal's product key remains server-only in Key Vault.
+
+For a complete inference trace, send a valid W3C `traceparent` from an
+instrumented client. The gateway snapshots it before header mutation and reuses
+it for admission and accounting. Without a client parent, the generated gateway
+UUID still joins application logs, but APIM cannot expose its generated trace
+context to policy callouts. See the [instrumented client and native parent-link
+limits](../docs/observability.md#instrumented-inference-client).
 
 APIM validates inference token signature, audience and tenant before reading
 `tid`/`oid`. Inference requires a delegated person (`scp` present, `idtyp` not
@@ -44,7 +56,7 @@ leaves the rest to the provider, which validates its own schema:
 
 - allowed top-level fields; exactly one positive output-token cap within the
   model's `max_output_tokens` (Responses: required `max_output_tokens`); Chat
-  `n=1`; boolean `stream`; no `store` (or Responses `background`); Responses
+  `n=1`; boolean `stream`; no `store=true` (or Responses `background=true`); Responses
   `truncation` only `disabled`;
 - 1-128 inline messages/input items with text-only content (media and opaque item
   references are rejected) and at most 128 function-type tools;
@@ -88,7 +100,10 @@ Redis loss can reset that spend. These are not strict financial ceilings.
 The budget check snapshots the month, organization and price metadata required
 for trusted recording, with no monetary hold. Retained completed request IDs
 cannot dispatch another inference; request context and replay protection last
-24 hours, not forever. Unknown usage is unpriced, never zero.
+24 hours, not forever. Unknown usage has null token counts and is charged the
+pinned maximum input/output estimate, with `cost_basis: estimated_upper_bound`.
+See [token accounting](../docs/token-accounting.md) for the calculation and
+provider-rejection exceptions.
 
 Warm checks use Redis only. The shared configuration snapshot has a 60-second
 default TTL; cold misses may read Table. Admin configuration CRUD remains
@@ -96,15 +111,14 @@ synchronous durable-first and invalidates the snapshot. Monthly counters last
 about 62 days. No automatic ledger rebuild, global ledger lock or per-request
 full ledger read is used.
 
-Request/usage Table writes use a bounded in-process `asyncio` queue/task
-(256 pending), with logged drops/failures and a best-effort two-second drain on
-graceful close. APIM never awaits those writes; restart, failure or saturation can
-lose them permanently. No durable queue, outbox, retry or exactly-once guarantee
-exists. Events mean Redis accepted usage, not that Table persisted it; live spend
-and persisted history/chargeback can disagree permanently.
+Request/usage Table mirrors and Event Hub sends share a bounded process-local
+writer. APIM never awaits those jobs; live spend and persisted history/chargeback
+can disagree permanently. [Operations](../docs/operations.md) owns queue limits,
+retention and failure handling.
 
 Accounting callout/publish failures emit safe failure telemetry but preserve the
-provider response. Event Hub publication has no retries. If an admitted
+provider response. No application-level retry/outbox repairs failed exports;
+the Event Hubs SDK retains its default transport retries. If an admitted
 nonstreaming request has no captured provider response on error, APIM records
 unknown usage and the Function charges the pinned upper bound.
 The gateway strips client credentials/EasyAuth identity headers before upstream
@@ -141,18 +155,21 @@ internal usage-event API or Event Hub role. Function settings are
 `event_version:2`, `event_name:"usage_recorded"` flat events contain request/event
 IDs, UTC month/time, opaque tenant/user references, team/department, business
 unit/cost center, application subscription, model/protocol/stream flag, actual or
-unknown status, normalized token categories, pinned price version and actual
-micro-USD (null for unknown). No prompts, completions, human names, raw principal
+unknown status, normalized token categories, pinned price version, `cost_basis`
+and micro-USD cost. Unknown usage has null tokens and a non-null
+`estimated_upper_bound` charge; older history may contain unpriced unknowns.
+No prompts, completions, human names, raw principal
 IDs, bearer tokens or subscription keys are included.
 
 The partition key is `tenant_ref:user_ref`. The Function publishes with the
 `azure-eventhub` SDK (`EventHubProducerClient`) and its managed identity, which has
 **Azure Event Hubs Data Sender** scoped to the hub. Delivery is a best-effort
-background send with no retries, not a billing ledger or exactly-once export. Only
+background send with no application-level retry, not a billing ledger or
+exactly-once export. Only
 newly Redis-accepted usage attempts publication; this is not proof that either
 Table history or downstream finance processing completed.
 
-## Validation and cutover
+## Validation
 
 ```sh
 uv run python -m pytest apim/tests -W error
@@ -165,7 +182,8 @@ terraform -chdir=infra test
 Offline tests render the complete XML and check trust/routing/accounting
 contracts; they do not emulate APIM's C# policy runtime. Live policy compilation,
 stream delivery and forced Event Hub failure acceptance must
-be performed in an approved test environment. No live provisioning is part of
-this change. Review the destructive cutover and archive legacy configuration/
-usage before applying Terraform, because removed service resources/APIs may be
-destroyed rather than disabled.
+be performed in an approved test environment. Review destructive resource
+actions and back up accounting data before applying Terraform.
+Follow [deployment](../docs/deployment.md) for the deployment sequence,
+[architecture](../ARCHITECTURE.md) for design
+decisions and [code guide](../docs/code-guide.md#gateway-policies) for template wiring.

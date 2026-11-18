@@ -1,4 +1,9 @@
-# Infrastructure reference
+---
+title: Infrastructure reference
+description: Terraform inputs, resource choices, model backends and infrastructure validation.
+---
+
+## Overview
 
 Terraform defines the OpenAI-only gateway; azd orchestrates deployment.
 Validation and mocked tests do **not** provision Azure resources.
@@ -21,23 +26,26 @@ group/link. All private endpoints ignore DINE-managed `private_dns_zone_group`.
 an explicit development exception. A private runner must reach SCM, Storage/Table,
 Redis, Azure OpenAI and Event Hubs through operator-managed routing/DNS.
 
-| Configuration | Purpose |
-|---|---|
-| `AZURE_*`, `ARM_ENVIRONMENT` | Existing subscription/tenant/region/RG/deployer; explicit `AzureCloud/public` or `AzureUSGovernment/usgovernment` |
-| `*_SUBNET_ID` | Existing delegated service subnets, APIM subnet and private endpoint subnet |
-| `APIM_PUBLISHER_*`, `GATEWAY_CLIENT_AUDIENCE` | Publisher metadata and inference JWT audience; distinct from generated limiter API audience |
-| `ENABLE_FOUNDRY`, `CREATE_FOUNDRY`, `FOUNDRY_*` | Preserve direct OpenAI account/create-or-reference choice and legacy deployment |
-| `ENABLE_RESPONSES`, `RESPONSES_*` | Explicit optional referenced Responses endpoint/version, role and sovereign/private capability attestations |
-| `LLM_MODELS`, `MANAGED_MODELS` | Explicit additional references or real managed OpenAI deployments; use `{}` when empty |
-| `APPLICATION_SUBSCRIPTIONS_CONFIG` | Stable native inference subscription IDs and separate server-only portal subscription |
-| `REDIS_TOKEN_SCOPE`, `REDIS_INSPECTION_ENABLED` | Verified Redis scope and normally disabled read-only operator inspection |
-| `EVENT_HUB_CAPACITY`, `EVENT_HUB_PARTITIONS`, `EVENT_HUB_RETENTION_DAYS` | Required explicit Standard namespace sizing, partitioning and retention; example `1`, `2`, `7` |
+| Configuration                                                            | Purpose                                                                                                           |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `AZURE_*`, `ARM_ENVIRONMENT`                                             | Existing subscription/tenant/region/RG/deployer; explicit `AzureCloud/public` or `AzureUSGovernment/usgovernment` |
+| `*_SUBNET_ID`                                                            | Existing delegated service subnets, APIM subnet and private endpoint subnet                                       |
+| `APIM_PUBLISHER_*`, `GATEWAY_CLIENT_AUDIENCE`                            | Publisher metadata and inference JWT audience; distinct from generated limiter API audience                       |
+| `ENABLE_FOUNDRY`, `CREATE_FOUNDRY`, `FOUNDRY_*`                          | Preserve direct OpenAI account/create-or-reference choice and legacy deployment                                   |
+| `ENABLE_RESPONSES`, `RESPONSES_*`                                        | Explicit optional referenced Responses endpoint/version, role and sovereign/private capability attestations       |
+| `LLM_MODELS`, `MANAGED_MODELS`                                           | Explicit additional references or real managed OpenAI deployments; use `{}` when empty                            |
+| `APPLICATION_SUBSCRIPTIONS_CONFIG`                                       | Stable native inference subscription IDs and separate server-only portal subscription                             |
+| `REDIS_TOKEN_SCOPE`, `REDIS_INSPECTION_ENABLED`                          | Verified Redis scope and normally disabled read-only operator inspection                                          |
+| `EVENT_HUB_CAPACITY`, `EVENT_HUB_PARTITIONS`, `EVENT_HUB_RETENTION_DAYS` | Required explicit Standard namespace sizing, partitioning and retention; example `1`, `2`, `7`                    |
 
 Deployment SKUs, worker counts, TLS, sampling, retention, timeouts and limits are
 visible explicitly in tfvars, not hidden defaults. Configure every placeholder.
-Outputs use SCREAMING_SNAKE_CASE and flow back into azd/service settings.
+Terraform sets application settings directly. Root outputs use
+SCREAMING_SNAKE_CASE and flow back into azd for deployment targeting and operator use.
+Naming uses azurecaf 2.x with explicit legacy resource slugs where needed to
+preserve existing names; a provider update must not silently rename resources.
 
-## Preserved OpenAI and hosting baseline
+## OpenAI and hosting configuration
 
 `CREATE_FOUNDRY=true` manages a direct `OpenAI` / S0 account with a dedicated
 user-assigned identity, no Foundry project child resource, and disabled local
@@ -46,9 +54,9 @@ authentication. Created inference origins are the official custom-subdomain
 accounts remain supported. APIM and the retained stream relay use explicit
 least-privilege OpenAI User grants; the account's own identity is not the caller.
 
-The existing legacy `sample-model` deployment and APIM backend entities remain.
-`MANAGED_MODELS` adds real model deployments without overwriting the legacy
-deployment. Nonempty managed models hide legacy sample aliases/defaults from the
+The built-in `sample-model` deployment has its own APIM backend entities.
+`MANAGED_MODELS` adds model deployments without overwriting that deployment.
+Nonempty managed models hide built-in sample aliases/defaults from the
 active registry; additional references remain available.
 `managed-models.example.json` has three explicitly versioned deployment aliases
 and their Chat/Responses price/capability/cap metadata. Recheck regional catalog,
@@ -70,10 +78,10 @@ Grant the gateway identity RBAC on each additional account yourself.
 See [model registry](../docs/model-registry.md#optional-backend-pools-same-model-more-endpoints).
 
 The function/web plans keep the existing P1v2 specifications. The Dedicated
-budget Function now enables Always On (`hosting.function_always_on=true`) for
-low-latency hosting; the stream host was already Always On. The web's Always On
+budget Function enables Always On (`hosting.function_always_on=true`) for
+low-latency hosting; the stream host also enables Always On. The web's Always On
 setting remains disabled. The web uses Node 24 LTS, the Functions use Python 3.12.
-This change does not resize plans silently.
+These settings are explicit in `main.tfvars.json`.
 
 The inference product and portal product still require native subscription keys
 plus Entra JWT authentication. Product subscriptions have stable IDs; keys rotate
@@ -83,25 +91,16 @@ enabled user assignment. Monthly USD budgets apply to every configured user,
 team and department; they are **approximate operational caps** and concurrent
 requests can overshoot. Redis loss can reset spend.
 
-Redis stores the shared configuration snapshot (default
-`CONFIGURATION_CACHE_SECONDS=60`), admitted context and usage replay markers
-(`REQUEST_CACHE_SECONDS=86400`, 24h), and monthly user/team/department wildcard/model
-counters (about 62 days). Warm admission never reads Table; cold configuration
-misses may. Admin configuration writes remain synchronous durable-first with
-cache invalidation. Redis unavailable fails closed with `503`, without Table
-fallback. There is no automatic ledger rebuild or global distributed ledger lock.
-
 `main.tfvars.json` explicitly sets `hosting.configuration_cache_seconds=60` and
 `hosting.request_cache_seconds=86400`; root Terraform passes these as
 `CONFIGURATION_CACHE_SECONDS` and `REQUEST_CACHE_SECONDS` to **both** Function
 hosts so budget checks and streaming accounting use the same retention contract.
 
-Request/usage Table writes use a bounded process-local async writer (256 pending,
-logged drops/failures, best-effort two-second graceful-close drain); APIM does not
-await them. Storage queue resources/endpoints support Function hosting, not a
-durable accounting queue/outbox. There is no retry or exactly-once persistence
-guarantee. Restart, failure or saturation can lose history permanently, leaving
-live budgets and persisted usage/chargeback different.
+Storage queue resources/endpoints support Function hosting, not a durable
+accounting queue/outbox. See [operations](../docs/operations.md) for the canonical
+Redis retention, fail-closed behavior and process-local history/export loss
+contract; [configuration](../docs/configuration-reference.md#runtime-groups)
+lists the corresponding runtime settings.
 
 The portal key remains a credential exception stored in Key Vault/protected
 Terraform state. Only the web workload has Secrets User; the deployer has Secrets
@@ -137,7 +136,8 @@ to `openai-chat` and `openai-responses`. Example:
 }
 ```
 
-The alias may differ from the actual deployment. All fields are required;
+The alias may differ from the actual deployment. All fields shown above are
+required; the additional pooling fields described earlier are optional.
 endpoints must be same-cloud HTTPS origins without path/query/credentials.
 Responses uses `api_version:"v1"` or `"preview"` and separate Government
 availability verification. Capability/private/native-token-policy attestations
@@ -161,8 +161,11 @@ path must resolve/reach the hub's private namespace.
 The Function publishes only compact normalized v2 events with the `azure-eventhub`
 SDK after Redis accepts actual/unknown usage, and only for new usage within the
 replay window. Events do not establish Table persistence. Delivery is a
-best-effort background send: no retries and no failed inference due to Event Hub
-availability.
+best-effort background send through the same serial `BackgroundWriter` as Table
+jobs (256 pending jobs, drop-on-full, best-effort two-second shutdown drain).
+There is no application-level retry/outbox or replay repair; the Azure Event Hubs
+SDK retains its default transport retries. Event Hub availability does not turn
+an inference response into a failure.
 Redis is the live budget authority; Table is eventual long-term history.
 Absence from Event Hubs or Table is not evidence that the request was uncharged.
 
@@ -188,7 +191,7 @@ not live reads. Use authorized JSON/CSV chargeback exports and persisted Table
 history to investigate retained records, not dashboard totals or Event Hub
 delivery counts. Neither reports nor live budgets guarantee financial completeness.
 
-## Validation and destructive migration boundary
+## Validation and deployment safety
 
 ```sh
 terraform -chdir=infra init -backend=false
@@ -198,14 +201,16 @@ terraform -chdir=infra test
 uv run python -m pytest apim/tests -W error
 ```
 
-All Terraform tests use mocked providers; even test `command=apply` never contacts
-Azure. Require zero validation errors **and warnings**.
+Azure operations are mocked; selected naming tests execute the real local
+azurecaf provider. These tests do not provision Azure resources, including tests
+with `command=apply`. Require zero validation errors **and warnings**.
 
-**Do not run live provision/deploy as part of this refactor.** Removing old APIs,
-services and role bindings can destroy live resources. Before an approved cutover,
-export/archive previous configuration and historical usage, review a real plan
-for destructive changes, approve user/team/department mappings and price cards,
-then run explicit Chat/Responses nonstream/stream, budget exhaustion/overshoot,
-cold-cache/invalidation, Redis failure/data-loss,
-background-write loss, Event Hub failure-isolation and chargeback
-acceptance. Never silently reinterpret old application budgets as person budgets.
+Removing APIs, services or role bindings can affect live resources. Back up
+configuration, usage and Terraform state, review destructive plan actions, and
+verify schema compatibility before applying changes. APIM rejects deleting
+fragments or backends still referenced by policies: update/remove referencing
+policies first, then retire unused objects. Do not bypass these checks by
+removing resources from state.
+
+Run the [operational acceptance checklist](../docs/operations.md#acceptance-checklist)
+after deployment. Return to the [README](../README.md) for the documentation map.

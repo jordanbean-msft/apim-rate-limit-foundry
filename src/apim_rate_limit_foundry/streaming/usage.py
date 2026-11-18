@@ -1,4 +1,4 @@
-"""Read terminal provider usage from an SSE stream without storing generated content."""
+"""Read terminal provider usage with bounded SSE observation, not full-stream buffering."""
 
 import json
 import re
