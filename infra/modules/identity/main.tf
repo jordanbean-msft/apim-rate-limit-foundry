@@ -2,6 +2,8 @@ resource "azurecaf_name" "workload" {
   for_each      = toset(["function", "gateway", "web"])
   name          = var.resource_token
   resource_type = "azurerm_user_assigned_identity"
+  prefixes      = ["msi"]
+  use_slug      = false
   suffixes      = [each.key]
   random_length = 0
   clean_input   = true

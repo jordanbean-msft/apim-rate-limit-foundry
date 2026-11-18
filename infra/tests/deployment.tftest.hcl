@@ -63,6 +63,9 @@ mock_provider "azurecaf" {
   }
 }
 mock_provider "time" {}
+provider "azurecaf" {
+  alias = "actual"
+}
 override_module {
   target = module.identity
   outputs = {
@@ -180,6 +183,21 @@ variables {
 }
 run "government_private_openai_only" {
   command = plan
+  providers = {
+    azurerm  = azurerm
+    azuread  = azuread
+    azapi    = azapi
+    azurecaf = azurecaf.actual
+    time     = time
+  }
+  assert {
+    condition = (
+      local.names.function == "${var.naming.project_name}-fa-${local.resource_token}" &&
+      local.names.stream == "${var.naming.project_name}-fa-${local.resource_token}-stream" &&
+      local.names.plan == "${var.naming.project_name}-plan-${local.resource_token}"
+    )
+    error_message = "Provider upgrades must not rename deployed Function apps or their hosting plan."
+  }
   assert {
     condition = (
       module.apim.usage_telemetry_contract.application_insights.logger_name == "application-insights-identity" &&

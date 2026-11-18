@@ -1,6 +1,8 @@
 resource "azurecaf_name" "namespace" {
   name          = var.resource_token
   resource_type = "azurerm_eventhub_namespace"
+  prefixes      = ["ehn"]
+  use_slug      = false
   suffixes      = ["usage"]
   random_length = 0
   clean_input   = true

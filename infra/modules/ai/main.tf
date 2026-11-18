@@ -86,6 +86,8 @@ resource "azurecaf_name" "foundry_identity" {
   for_each      = local.created_foundry
   name          = var.resource_token
   resource_type = "azurerm_user_assigned_identity"
+  prefixes      = ["msi"]
+  use_slug      = false
   suffixes      = ["foundry"]
   random_length = 0
   clean_input   = true

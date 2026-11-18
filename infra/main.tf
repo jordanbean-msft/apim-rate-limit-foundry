@@ -22,11 +22,13 @@ locals {
     apim     = "azurerm_api_management"
     storage  = "azurerm_storage_account"
     redis    = "azurerm_redis_cache"
-    plan     = "azurerm_app_service_plan"
+    plan     = "azurerm_service_plan"
   }
-  names        = { for key, name in azurecaf_name.resource : key => name.result }
-  function_url = "https://${local.names.function}.${local.web_suffix}"
-  stream_url   = "https://${local.names.stream}.${local.web_suffix}"
+  # Preserve deployed names when azurecaf 2.x changes its default slugs.
+  legacy_name_slugs = { function = "fa", stream = "fa", plan = "plan" }
+  names             = { for key, name in azurecaf_name.resource : key => name.result }
+  function_url      = "https://${local.names.function}.${local.web_suffix}"
+  stream_url        = "https://${local.names.stream}.${local.web_suffix}"
   legacy_model_registry = {
     for key, backend in module.ai.backends : "${backend.api_protocol}:${backend.model}" => {
       api_protocol      = backend.api_protocol
@@ -153,7 +155,8 @@ resource "azurecaf_name" "resource" {
   for_each      = local.resource_types
   name          = local.resource_token
   resource_type = each.value
-  prefixes      = [var.naming.project_name]
+  prefixes      = concat([var.naming.project_name], try([local.legacy_name_slugs[each.key]], []))
+  use_slug      = !contains(keys(local.legacy_name_slugs), each.key)
   suffixes      = each.key == "stream" ? ["stream"] : []
   random_length = 0
   clean_input   = true
@@ -243,7 +246,7 @@ module "hosting" {
     STREAM_MAX_EVENT_BYTES      = tostring(var.streaming.max_event_bytes)
     STREAM_MAX_BODY_BYTES       = tostring(var.gateway.max_body_bytes)
     STREAM_TIMEOUT_SECONDS      = tostring(var.streaming.timeout_seconds)
-    OTEL_SERVICE_NAME           = "rate-limiter-stream"
+    OTEL_SERVICE_NAME           = local.names.stream
   }
   web_identity                           = module.identity.web
   storage_account_name                   = module.storage.name
@@ -282,7 +285,7 @@ module "hosting" {
     SCM_DO_BUILD_DURING_DEPLOYMENT        = "true"
     ENABLE_ORYX_BUILD                     = "true"
     APPLICATIONINSIGHTS_CONNECTION_STRING = module.monitoring.app_insights_connection_string
-    OTEL_SERVICE_NAME                     = "rate-limiter"
+    OTEL_SERVICE_NAME                     = local.names.function
     OTEL_TRACES_SAMPLER_ARG               = tostring(var.hosting.telemetry_sampling_ratio)
     TELEMETRY_ENABLED                     = "true"
   }

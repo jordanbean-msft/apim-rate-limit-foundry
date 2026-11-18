@@ -19,6 +19,9 @@ mock_provider "azurecaf" {
   }
 }
 mock_provider "time" {}
+provider "azurecaf" {
+  alias = "actual"
+}
 variables {
   resource_token                = "sample"
   resource_group_name           = "sample-rg"
@@ -36,7 +39,16 @@ variables {
 }
 run "private_secretless_hub_is_audited_and_sender_is_hub_scoped" {
   command = apply
+  providers = {
+    azurerm  = azurerm
+    azurecaf = azurecaf.actual
+    time     = time
+  }
   module { source = "./modules/event_hubs" }
+  assert {
+    condition     = azurerm_eventhub_namespace.this.name == "ehn-${var.resource_token}-usage"
+    error_message = "Provider upgrades must preserve the deployed usage namespace name."
+  }
   assert {
     condition = (
       azurerm_eventhub_namespace.this.local_authentication_enabled == false &&

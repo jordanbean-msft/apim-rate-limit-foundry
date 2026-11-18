@@ -28,6 +28,9 @@ mock_provider "azuread" {
 }
 mock_provider "azurecaf" {}
 mock_provider "time" {}
+provider "azurecaf" {
+  alias = "actual"
+}
 
 variables {
   resource_token      = "sample"
@@ -47,8 +50,18 @@ variables {
 
 run "commercial_portal_federation" {
   command = plan
+  providers = {
+    azurerm  = azurerm
+    azuread  = azuread
+    azurecaf = azurecaf.actual
+    time     = time
+  }
   module {
     source = "./modules/identity"
+  }
+  assert {
+    condition     = alltrue([for key, identity in azurerm_user_assigned_identity.workload : identity.name == "msi-${var.resource_token}-${key}"])
+    error_message = "Provider upgrades must preserve deployed workload identity names."
   }
   assert {
     condition = (
