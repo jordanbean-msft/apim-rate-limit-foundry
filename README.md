@@ -30,6 +30,39 @@ with the Microsoft `azure-eventhub` SDK and its managed identity; neither
 acceptance nor export proves Table persistence.
 The Azure dashboard and the portal share the deployed dashboard's KQL definitions.
 
+## Portal screenshots
+
+These captures show the running portal with fictional demonstration records and
+gateway test activity. Signed-in profiles and environment identifiers are hidden.
+Amounts illustrate the features, not an Azure invoice or current retail prices.
+
+### Budget monitoring
+
+The overview highlights exhausted and near-limit budgets, separates finalized
+requests from unknown usage, and shows department, team and user balances.
+
+![Portal overview with budget alerts, request summaries and monthly balances](docs/screenshots/portal-overview.png)
+
+### Monthly limits
+
+Compare month-to-date spend, remaining dollars and utilization across the
+organization, including model-specific user budgets.
+See [budget configuration](docs/configuration-reference.md#portal-budget-management).
+
+![Monthly budgets with populated department, team and user limits](docs/screenshots/portal-budgets.png)
+
+### Gateway observability
+
+Inspect gateway HTTP outcomes and model-level admissions versus budget blocks
+using the [shared operational dashboard](docs/observability.md#azure-dashboard).
+
+![Azure dashboard with gateway traffic and budget admission charts](docs/screenshots/portal-dashboard.png)
+
+Explore more populated views in the guides for
+[usage and chargeback](docs/chargeback.md#portal-reports),
+[versioned price cards](docs/configuration-reference.md#portal-price-cards) and
+[approved model inventory](docs/model-registry.md#portal-inventory).
+
 ## Architecture
 
 Start with the [architecture and request sequence](ARCHITECTURE.md) for the
