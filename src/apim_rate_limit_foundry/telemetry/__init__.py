@@ -26,7 +26,12 @@ from apim_rate_limit_foundry.telemetry.log_config import (
 )
 from apim_rate_limit_foundry.telemetry.operation import operation_span
 from apim_rate_limit_foundry.telemetry.sanitizer import safe_attributes, safe_event, safe_id
+from apim_rate_limit_foundry.telemetry.service_requests import (
+    record_service_response,
+    record_table_response,
+)
 from apim_rate_limit_foundry.telemetry.timing import elapsed_ms
+from apim_rate_limit_foundry.telemetry.tracing import get_tracer
 
 __all__ = [
     "LOGGER_NAME",
@@ -39,10 +44,13 @@ __all__ = [
     "dependency_span",
     "elapsed_ms",
     "emit",
+    "get_tracer",
     "http_dependency_span",
     "observe_dependency",
     "operation_span",
     "outgoing_trace_headers",
+    "record_service_response",
+    "record_table_response",
     "request_correlation",
     "request_trace_context",
     "safe_attributes",

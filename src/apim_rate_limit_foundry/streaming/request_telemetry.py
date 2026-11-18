@@ -13,9 +13,9 @@ from starlette.responses import Response, StreamingResponse
 
 from apim_rate_limit_foundry.request_telemetry import finish_request
 from apim_rate_limit_foundry.telemetry import (
-    LOGGER_NAME,
     correlation_id,
     emit,
+    get_tracer,
     request_correlation,
     request_trace_context,
 )
@@ -79,7 +79,7 @@ def trace_stream_request(
         request_id = request_correlation(req.headers.get("x-correlation-id"))
         token = correlation_id.set(request_id)
         started = perf_counter()
-        span = trace.get_tracer(LOGGER_NAME).start_span(
+        span = get_tracer().start_span(
             f"POST {ROUTE}",
             context=request_trace_context(req.headers.get("traceparent")),
             kind=SpanKind.SERVER,

@@ -32,6 +32,7 @@ from apim_rate_limit_foundry.telemetry import (
     emit,
     http_dependency_span,
     outgoing_trace_headers,
+    record_service_response,
 )
 
 
@@ -145,7 +146,9 @@ class StreamRelay:
         self, request_id: str, backend: ModelDeployment, body: bytes
     ) -> aiohttp.ClientResponse:
         """Send the admitted body to the registered deployment with its own identity token."""
-        with http_dependency_span("provider.stream_open", "model-provider") as span:
+        with http_dependency_span(
+            "provider.stream_open", "model-provider", server_address=backend.endpoint.host or ""
+        ) as span:
             token = await self.credential.get_token(f"{str(backend.audience).rstrip('/')}/.default")
             response = await self.session.post(
                 f"{str(backend.endpoint).rstrip('/')}{backend.path}",
@@ -166,6 +169,7 @@ class StreamRelay:
                 ),
             )
             dependency_http_status(span, response.status)
+            record_service_response("model-provider", response.status, response.headers)
             return response
 
     async def _read_error_body(self, response: aiohttp.ClientResponse, content_type: str) -> bytes:

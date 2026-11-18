@@ -1,6 +1,7 @@
 """Compose process-scoped clients while keeping cloud and local stores explicit."""
 
 import asyncio
+from urllib.parse import urlsplit
 
 import aiohttp
 from azure.data.tables.aio import TableClient
@@ -70,7 +71,9 @@ class Runtime:
                 else None
             )
             self.gateway = GatewayServices.create(
-                TableRepository(table),
+                TableRepository(
+                    table, dependency_address=urlsplit(settings.table_endpoint).hostname or ""
+                ),
                 RedisCounters(settings, self.credential),
                 settings,
                 publisher,

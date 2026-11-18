@@ -2,6 +2,14 @@
   <!-- Shared inference pipeline: authenticate, bound/validate JSON, resolve a trusted
        model, check Redis budgets, then dispatch ordinary or streaming requests. -->
   <inbound>
+    <!-- Preserve the client's parent before backend forwarding mutates traceparent.
+         APIM's generated W3C IDs are not exposed to policy expressions. -->
+    <set-variable name="inference-traceparent" value='@{
+      var parent = context.Request.Headers.GetValueOrDefault("traceparent", "");
+      if (!System.Text.RegularExpressions.Regex.IsMatch(parent, "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")) { return ""; }
+      if (parent.Substring(3, 32) == new String(&apos;0&apos;, 32) || parent.Substring(36, 16) == new String(&apos;0&apos;, 16)) { return ""; }
+      return parent;
+    }' />
     <base />
     <include-fragment fragment-id="limiter-identity" />
     <set-variable name="api-protocol" value="${api_protocol}" />

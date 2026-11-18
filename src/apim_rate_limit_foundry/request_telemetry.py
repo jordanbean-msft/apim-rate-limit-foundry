@@ -3,16 +3,15 @@
 import logging
 from time import perf_counter
 
-from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from apim_rate_limit_foundry.rate_limit_metrics import rate_metrics
 from apim_rate_limit_foundry.telemetry import (
-    LOGGER_NAME,
     correlation_id,
     elapsed_ms,
     emit,
+    get_tracer,
     request_correlation,
     request_trace_context,
 )
@@ -83,7 +82,7 @@ class RequestTelemetryMiddleware:
         status = 500
         failed = False
         try:
-            with trace.get_tracer(LOGGER_NAME).start_as_current_span(
+            with get_tracer().start_as_current_span(
                 "limiter.request",
                 context=parent,
                 kind=SpanKind.SERVER,

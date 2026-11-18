@@ -15,7 +15,7 @@ from azure.data.tables.aio import TableClient
 from apim_rate_limit_foundry.accounting import digest
 from apim_rate_limit_foundry.stores.contracts import LEDGER_PARTITION, Record
 from apim_rate_limit_foundry.stores.create_once import CreateOnceRepository
-from apim_rate_limit_foundry.telemetry import emit, observe_dependency
+from apim_rate_limit_foundry.telemetry import emit, observe_dependency, record_table_response
 
 
 class TableRepository(CreateOnceRepository):
@@ -26,9 +26,15 @@ class TableRepository(CreateOnceRepository):
     sits in the ledger partition and is not read or migrated (sample scope).
     """
 
-    def __init__(self, client: TableClient) -> None:
+    def __init__(self, client: TableClient, *, dependency_address: str = "") -> None:
         """Bind the Table client whose lifetime is closed with this repository."""
         self.client = client
+        self._dependency_address = dependency_address
+
+    @property
+    def dependency_address(self) -> str:
+        """Identify the configured Table resource without credentials or query strings."""
+        return self._dependency_address
 
     @staticmethod
     def entity(
@@ -48,7 +54,9 @@ class TableRepository(CreateOnceRepository):
     ) -> Record | None:
         """Return decoded payload or None for a missing entity; other errors propagate."""
         try:
-            entity = await self.client.get_entity(partition, digest(collection, record_id))
+            entity = await self.client.get_entity(
+                partition, digest(collection, record_id), raw_response_hook=record_table_response
+            )
         except ResourceNotFoundError:
             emit("durable_record_read", collection=collection, status="not_found")
             return None
@@ -60,6 +68,7 @@ class TableRepository(CreateOnceRepository):
         entities = self.client.query_entities(
             "PartitionKey eq @partition and collection eq @collection",
             parameters={"partition": partition, "collection": collection},
+            raw_response_hook=record_table_response,
         )
         return [json.loads(e["payload"]) async for e in entities]
 
@@ -73,7 +82,10 @@ class TableRepository(CreateOnceRepository):
         between conflict and read is an explicit error, not a successful create.
         """
         try:
-            await self.client.create_entity(self.entity(collection, record_id, record, partition))
+            await self.client.create_entity(
+                self.entity(collection, record_id, record, partition),
+                raw_response_hook=record_table_response,
+            )
             return record, True
         except ResourceExistsError:
             emit("durable_record_replayed", collection=collection, replayed=True)
@@ -101,7 +113,7 @@ class TableRepository(CreateOnceRepository):
         operations.append(
             ("upsert", self.entity(collection, record_id, record), {"mode": UpdateMode.REPLACE})
         )
-        await self.client.submit_transaction(operations)
+        await self.client.submit_transaction(operations, raw_response_hook=record_table_response)
 
     async def close(self) -> None:
         """Release the injected Table client's transport resources."""

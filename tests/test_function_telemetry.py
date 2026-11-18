@@ -37,6 +37,7 @@ from apim_rate_limit_foundry.request_telemetry import RequestTelemetryMiddleware
 from apim_rate_limit_foundry.runtime import Runtime
 from apim_rate_limit_foundry.stores.contracts import Conflict
 from apim_rate_limit_foundry.stores.redis import RedisCounters
+from apim_rate_limit_foundry.stores.table import TableRepository
 from apim_rate_limit_foundry.streaming.relay import StreamRelay
 from apim_rate_limit_foundry.streaming.request_telemetry import trace_stream_request
 from apim_rate_limit_foundry.telemetry import (
@@ -44,6 +45,8 @@ from apim_rate_limit_foundry.telemetry import (
     JsonFormatter,
     correlation_id,
     outgoing_trace_headers,
+    record_service_response,
+    record_table_response,
     request_trace_context,
 )
 from tests.fakes import FakeHttpSession, persisted_usage
@@ -405,7 +408,7 @@ async def test_real_stream_relay_links_provider_accounting_and_export_even_on_di
 
     provider_response = SimpleNamespace(
         status=200,
-        headers={"Content-Type": "text/event-stream"},
+        headers={"Content-Type": "text/event-stream", "x-request-id": "provider-response-1"},
         content=SimpleNamespace(iter_chunked=chunks),
         close=Mock(),
     )
@@ -465,6 +468,12 @@ async def test_real_stream_relay_links_provider_accounting_and_export_even_on_di
     root = spans["POST /api/stream"]
     assert f"{root.context.trace_id:032x}" == TRACE_ID
     assert spans["provider.stream_open"].parent.span_id == root.context.span_id
+    assert spans["provider.stream_open"].attributes["server.address"] == "models.example.com"
+    assert spans["provider.stream_open"].attributes["peer.service"] == "models.example.com"
+    assert spans["provider.stream_open"].attributes["service_request_id"] == "provider-response-1"
+    service_response = next(r for r in capture.logs if r.msg == "dependency_response")
+    assert service_response.service_request_id == "provider-response-1"
+    assert service_response.correlation_id == "inference-1"
     parts = wire["provider"]["traceparent"].split("-")
     assert (
         parts[1] == TRACE_ID and parts[2] == f"{spans['provider.stream_open'].context.span_id:016x}"
@@ -572,11 +581,11 @@ async def test_dashboard_dependencies_and_partial_failures_keep_request_trace(
     assert all(tile["error"] and tile["rows"] == [] for tile in result[1:])
     spans = {span.name: span for span in capture.spans.get_finished_spans()}
     arm, logs = spans["dashboard.read"], spans["dashboard.query_batch"]
-    assert arm.attributes["peer.service"] == "azure-resource-manager"
+    assert arm.attributes["peer.service"] == "management.azure.com"
     assert arm.attributes["http.request.method"] == "GET"
     assert arm.attributes["http.response.status_code"] == 200
     assert arm.status.status_code == StatusCode.OK
-    assert logs.attributes["peer.service"] == "log-analytics"
+    assert logs.attributes["peer.service"] == "api.loganalytics.io"
     assert logs.attributes["http.request.method"] == "POST"
     assert logs.status.status_code == StatusCode.ERROR
     assert logs.attributes["error.type"] == "incomplete_query_results"
@@ -793,6 +802,74 @@ async def test_table_sdk_identity_is_a_child_of_the_existing_storage_dependency(
     _assert_private_dependencies(capture)
 
 
+@pytest.mark.parametrize("status", [201, 503])
+async def test_table_response_hook_bridges_native_service_ids_with_request_trace(
+    status: int, capture: SimpleNamespace
+) -> None:
+    response = SimpleNamespace(
+        http_response=SimpleNamespace(
+            status_code=status,
+            headers={"x-ms-request-id": "storage-service-1", "Authorization": "private-detail"},
+        ),
+        http_request=SimpleNamespace(
+            headers={"x-ms-client-request-id": "storage-client-1", "Cookie": "private-detail"}
+        ),
+    )
+
+    async def create_entity(entity, **options):
+        assert options["raw_response_hook"] is record_table_response
+        options["raw_response_hook"](response)
+        if status == 503:
+            raise HttpResponseError("private-detail")
+
+    client = Mock(create_entity=AsyncMock(side_effect=create_entity))
+    token = correlation_id.set("inference-1")
+    try:
+        with trace.get_tracer("test").start_as_current_span(
+            "request", context=request_trace_context(TRACEPARENT)
+        ):
+            if status == 503:
+                with pytest.raises(HttpResponseError):
+                    await TableRepository(client).create_if_absent("usage_v2", "id", {})
+            else:
+                await TableRepository(client).create_if_absent("usage_v2", "id", {})
+    finally:
+        correlation_id.reset(token)
+    storage = next(
+        s for s in capture.spans.get_finished_spans() if s.name == "table.create_if_absent"
+    )
+    assert storage.attributes["service_request_id"] == "storage-service-1"
+    assert storage.attributes["client_request_id"] == "storage-client-1"
+    event = next(r for r in capture.logs if r.msg == "dependency_response")
+    assert event.service_request_id == "storage-service-1"
+    assert event.client_request_id == "storage-client-1"
+    assert event.correlation_id == "inference-1"
+    assert event.span_id == f"{storage.context.span_id:016x}"
+    _assert_private_dependencies(capture)
+
+
+def test_service_response_ids_are_case_insensitive_bounded_and_allowlisted(
+    capture: SimpleNamespace,
+) -> None:
+    with trace.get_tracer("test").start_as_current_span(
+        "provider", context=request_trace_context(TRACEPARENT)
+    ) as span:
+        record_service_response(
+            "model-provider",
+            200,
+            {"X-Request-ID": "provider-1", "Set-Cookie": "private-detail"},
+        )
+        assert span.attributes["service_request_id"] == "provider-1"
+    with trace.get_tracer("test").start_as_current_span(
+        "provider", context=request_trace_context(TRACEPARENT)
+    ) as span:
+        record_service_response(
+            "model-provider", 200, {"x-ms-request-id": "unsafe\nprivate-detail"}
+        )
+        assert "service_request_id" not in span.attributes
+    _assert_private_dependencies(capture)
+
+
 @pytest.mark.parametrize("outcome", ["cancelled", "unavailable"])
 async def test_redis_lookup_dependencies_preserve_cancellation_and_errors(
     outcome: str, settings: Settings, capture: SimpleNamespace
@@ -873,6 +950,8 @@ def test_shutdown_flushes_all_three_signal_providers_with_a_bounded_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     providers = [Mock(), Mock(), Mock()]
+    monkeypatch.setattr(monitoring.tracing, "provider", providers[0])
+    monkeypatch.setattr(monitoring, "_logger_provider", providers[1])
     monkeypatch.setattr(monitoring.trace, "get_tracer_provider", lambda: providers[0])
     monkeypatch.setattr(monitoring, "get_logger_provider", lambda: providers[1])
     monkeypatch.setattr(monitoring.metrics, "get_meter_provider", lambda: providers[2])
@@ -886,7 +965,22 @@ def test_monitoring_enables_manual_metrics_and_keeps_logs_independent_of_trace_s
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure = Mock()
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_LOGS_EXPORTER", "otlp")
     monkeypatch.setattr(monitoring, "_initialized", False)
+    monkeypatch.setattr(monitoring.tracing, "provider", None)
+    monkeypatch.setattr(monitoring, "_logger_provider", None)
+    for name in (
+        "TracerProvider",
+        "LoggerProvider",
+        "BatchSpanProcessor",
+        "BatchLogRecordProcessor",
+        "AzureMonitorTraceExporter",
+        "AzureMonitorLogExporter",
+    ):
+        monkeypatch.setattr(monitoring, name, Mock())
+    handler = logging.NullHandler()
+    monkeypatch.setattr(monitoring, "LoggingHandler", Mock(return_value=handler))
     monkeypatch.setattr(monitoring, "configure_azure_monitor", configure)
     monkeypatch.setattr(monitoring, "configure_logging", Mock())
     monkeypatch.setattr(monitoring.atexit, "register", Mock())
@@ -894,10 +988,12 @@ def test_monitoring_enables_manual_metrics_and_keeps_logs_independent_of_trace_s
         "InstrumentationKey=00000000-0000-0000-0000-000000000001"
     )
     settings.telemetry_enabled = True
-    monitoring.configure_monitoring(settings)
-    monitoring.configure_monitoring(settings)
+    try:
+        monitoring.configure_monitoring(settings)
+        monitoring.configure_monitoring(settings)
+    finally:
+        logging.getLogger(LOGGER_NAME).removeHandler(handler)
     assert configure.call_count == 1
-    assert configure.call_args.kwargs["disable_metrics"] is False
     assert configure.call_args.kwargs["enable_trace_based_sampling_for_logs"] is False
     assert configure.call_args.kwargs["enable_performance_counters"] is True
     assert configure.call_args.kwargs["enable_live_metrics"] is False

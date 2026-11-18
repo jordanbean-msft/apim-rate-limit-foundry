@@ -9,6 +9,7 @@
     "http": {"routePrefix": ""}
   },
   "logging": {
+    "logLevel": {"Host.Results": "None"},
     "applicationInsights": {"samplingSettings": {"isEnabled": false}}
   }
 }

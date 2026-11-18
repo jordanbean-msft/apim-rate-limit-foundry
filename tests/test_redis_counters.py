@@ -176,9 +176,9 @@ async def test_configuration_cache_writes_and_invalidations_are_dependency_spans
     operations: list[str] = []
     real = dependency_span
 
-    def spy(dependency: str, operation: str):
+    def spy(dependency: str, operation: str, *, server_address: str = ""):
         operations.append(f"{dependency}.{operation}")
-        return real(dependency, operation)
+        return real(dependency, operation, server_address=server_address)
 
     monkeypatch.setattr("apim_rate_limit_foundry.telemetry.dependency.dependency_span", spy)
 

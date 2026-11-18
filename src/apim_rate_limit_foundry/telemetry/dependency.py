@@ -5,9 +5,8 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from functools import wraps
 from time import perf_counter
-from typing import Any
+from typing import Any, Concatenate, Protocol
 
-from opentelemetry import trace
 from opentelemetry.metrics import get_meter
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
@@ -15,12 +14,20 @@ from apim_rate_limit_foundry.telemetry.context import LOGGER_NAME, correlation_i
 from apim_rate_limit_foundry.telemetry.events import emit
 from apim_rate_limit_foundry.telemetry.sanitizer import safe_attributes
 from apim_rate_limit_foundry.telemetry.timing import elapsed_ms
+from apim_rate_limit_foundry.telemetry.tracing import get_tracer
 
 # Kept here, not in rate_limit_metrics, because that module itself depends on emit().
 _DEPENDENCY_DURATION = get_meter(LOGGER_NAME).create_histogram(
     "limiter.dependency.duration", unit="ms"
 )
 _ERROR_STATUS_FLOOR = 300
+
+
+class DependencyTarget(Protocol):
+    """Expose the configured resource hostname, never a connection string or request URL."""
+
+    @property
+    def dependency_address(self) -> str: ...
 
 
 def _mark_error(span: Span, error_type: str) -> None:
@@ -48,12 +55,17 @@ def dependency_http_status(span: Span, status: int) -> None:
 
 
 @contextmanager
-def http_dependency_span(name: str, service: str, method: str = "POST") -> Iterator[Span]:
+def http_dependency_span(
+    name: str, service: str, method: str = "POST", *, server_address: str = ""
+) -> Iterator[Span]:
     """Observe outbound HTTP without URLs, headers, payloads or exception messages."""
-    with trace.get_tracer(LOGGER_NAME).start_as_current_span(
+    attributes = {"http.request.method": method, "peer.service": server_address or service}
+    if server_address:
+        attributes["server.address"] = server_address
+    with get_tracer().start_as_current_span(
         name,
         kind=SpanKind.CLIENT,
-        attributes={"http.request.method": method, "peer.service": service},
+        attributes=attributes,
         record_exception=False,
         set_status_on_exception=False,
     ) as span:
@@ -73,27 +85,50 @@ def _semantic_attributes(dependency: str, operation: str) -> dict[str, str]:
         }
     if dependency == "managed-identity":
         return {"rpc.system": "azure.identity", "rpc.method": operation}
+    if dependency == "event-hub":
+        return {
+            "az.namespace": "Microsoft.EventHub",
+            "messaging.system": "eventhubs",
+            "messaging.operation.name": operation,
+            "messaging.operation.type": "send",
+        }
     return {}
 
 
 @contextmanager
-def dependency_span(dependency: str, operation: str) -> Iterator[Span]:
+def dependency_span(
+    dependency: str,
+    operation: str,
+    *,
+    server_address: str = "",
+    server_port: int | None = None,
+    destination: str = "",
+) -> Iterator[Span]:
     """Time one datastore/identity call with safe database/RPC semantic attributes.
 
-    Only dependency and operation names are exported: query text, entity contents,
-    connection strings, scopes and tokens must never be supplied as attributes.
+    Resource hostnames and messaging destinations identify map nodes. Query text,
+    entity contents, connection strings, scopes and tokens must never be supplied.
     """
     start = perf_counter()
     attributes = safe_attributes(
         {"dependency": dependency, "operation": operation, "correlation_id": correlation_id.get()}
     )
-    with trace.get_tracer(LOGGER_NAME).start_as_current_span(
+    semantics: dict[str, str | int] = {
+        **_semantic_attributes(dependency, operation),
+        "peer.service": server_address or dependency,
+    }
+    if server_address:
+        semantics["server.address"] = server_address
+    if server_port is not None:
+        semantics["server.port"] = server_port
+    if destination:
+        semantics["messaging.destination.name"] = destination
+    with get_tracer().start_as_current_span(
         f"{dependency}.{operation}",
-        kind=SpanKind.CLIENT,
+        kind=SpanKind.PRODUCER if dependency == "event-hub" else SpanKind.CLIENT,
         attributes={
             **attributes,
-            **_semantic_attributes(dependency, operation),
-            "peer.service": dependency,
+            **semantics,
         },
         record_exception=False,
         set_status_on_exception=False,
@@ -133,17 +168,21 @@ def _completed(
     )
 
 
-def observe_dependency[**P, T](
+def observe_dependency[S: DependencyTarget, **P, T](
     dependency: str,
     operation: str,
-) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
+) -> Callable[
+    [Callable[Concatenate[S, P], Awaitable[T]]], Callable[Concatenate[S, P], Coroutine[Any, Any, T]]
+]:
     """Wrap an async dependency while preserving its arguments, result and failures."""
 
-    def decorate(function: Callable[P, Awaitable[T]]) -> Callable[P, Coroutine[Any, Any, T]]:
+    def decorate(
+        function: Callable[Concatenate[S, P], Awaitable[T]],
+    ) -> Callable[Concatenate[S, P], Coroutine[Any, Any, T]]:
         @wraps(function)
-        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
-            with dependency_span(dependency, operation):
-                return await function(*args, **kwargs)
+        async def wrapped(self: S, /, *args: P.args, **kwargs: P.kwargs) -> T:
+            with dependency_span(dependency, operation, server_address=self.dependency_address):
+                return await function(self, *args, **kwargs)
 
         return wrapped
 

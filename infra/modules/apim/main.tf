@@ -362,6 +362,6 @@ resource "azurerm_api_management_api_diagnostic" "this" {
   }
   backend_response {
     body_bytes     = 0
-    headers_to_log = ["X-Correlation-ID"]
+    headers_to_log = ["X-Correlation-ID", "apim-request-id", "x-request-id", "x-ms-request-id", "request-id"]
   }
 }

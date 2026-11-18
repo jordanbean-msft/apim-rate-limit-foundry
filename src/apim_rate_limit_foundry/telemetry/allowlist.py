@@ -16,6 +16,8 @@ _IDENTITY_FIELDS = {
     "event_name",
     "event_version",
     "event_id",
+    "service_request_id",
+    "client_request_id",
 }
 # Pseudonymous attribution; raw tenant/user identifiers are never allowlisted.
 _ATTRIBUTION_FIELDS = {
@@ -100,6 +102,7 @@ EVENTS = frozenset(
         "operation_completed",
         "operation_failed",
         "dependency_completed",
+        "dependency_response",
         "limiter_dependency_unavailable",
         "metric_record_failed",
         # Budget decisions and balances.

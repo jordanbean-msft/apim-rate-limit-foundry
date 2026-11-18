@@ -23,6 +23,8 @@ class EventHubUsagePublisher:
 
     def __init__(self, settings: Settings, credential: AsyncTokenCredential) -> None:
         """Create a producer for the configured namespace and hub."""
+        self.server_address = settings.event_hub_fqdn
+        self.destination = settings.event_hub_name
         self.producer = EventHubProducerClient(
             fully_qualified_namespace=settings.event_hub_fqdn,
             eventhub_name=settings.event_hub_name,
@@ -30,14 +32,19 @@ class EventHubUsagePublisher:
         )
 
     async def publish(self, usage_event: Record) -> None:
-        """Send one event; failures are logged and counted, never retried or raised."""
+        """Send with SDK transport retries; log/count handled failures without requeueing."""
         identifiers: Record = {
             "request_id": usage_event.get("request_id"),
             "event_id": usage_event.get("event_id"),
         }
         partition_key = f"{usage_event['tenant_ref']}:{usage_event['user_ref']}"
         try:
-            with dependency_span("event-hub", "send"):
+            with dependency_span(
+                "event-hub",
+                "send",
+                server_address=self.server_address,
+                destination=self.destination,
+            ):
                 batch = await self.producer.create_batch(partition_key=partition_key)
                 batch.add(EventData(json.dumps(usage_event, separators=(",", ":"))))
                 await self.producer.send_batch(batch)

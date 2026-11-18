@@ -6,13 +6,13 @@ from contextlib import contextmanager
 from time import perf_counter
 from typing import Any
 
-from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
-from apim_rate_limit_foundry.telemetry.context import LOGGER_NAME, operation_context
+from apim_rate_limit_foundry.telemetry.context import operation_context
 from apim_rate_limit_foundry.telemetry.events import emit
 from apim_rate_limit_foundry.telemetry.sanitizer import safe_attributes
 from apim_rate_limit_foundry.telemetry.timing import elapsed_ms
+from apim_rate_limit_foundry.telemetry.tracing import get_tracer
 
 
 @contextmanager
@@ -28,7 +28,7 @@ def operation_span(operation: str, **attributes: Any) -> Iterator[None]:
     token = operation_context.set(context)
     started = perf_counter()
     try:
-        with trace.get_tracer(LOGGER_NAME).start_as_current_span(
+        with get_tracer().start_as_current_span(
             operation,
             attributes=context,
             record_exception=False,

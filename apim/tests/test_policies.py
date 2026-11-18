@@ -128,7 +128,7 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(call.find("authentication-managed-identity"))
         self.assertIn(
-            'context.Request.Headers.GetValueOrDefault("traceparent", "")',
+            'context.Variables.GetValueOrDefault<string>("inference-traceparent", "")',
             call.findtext("set-header[@name='traceparent']/value"),
         )
         self.assertIn('["request_id"] !=', render("fragments/budget-check.xml.tftpl"))
@@ -214,7 +214,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn('usage == null ? "usage_unknown" : "actual"', body)
         self.assertIn('record["provider_usage"] = usage', body)
         self.assertIn(
-            'context.Request.Headers.GetValueOrDefault("traceparent", "")',
+            'context.Variables.GetValueOrDefault<string>("inference-traceparent", "")',
             call.findtext("set-header[@name='traceparent']/value"),
         )
         for forbidden in ("cost_micro_usd", "cached_input_tokens", "input_per_million"):
@@ -237,6 +237,22 @@ class GatewayPolicyTests(unittest.TestCase):
             inference().findtext("./outbound/set-header[@name='X-RateLimit-Persistence']/value"),
             "best-effort",
         )
+
+    def test_inference_preserves_parent_before_any_policy_can_mutate_request_headers(self) -> None:
+        inbound = list(inference().find("inbound"))
+        snapshot = inbound[0]
+        self.assertEqual(snapshot.get("name"), "inference-traceparent")
+        self.assertEqual(inbound[1].tag, "base")
+        expression = snapshot.get("value")
+        self.assertIn('context.Request.Headers.GetValueOrDefault("traceparent", "")', expression)
+        self.assertIn("Regex.IsMatch", expression)
+        self.assertIn("parent.Substring(3, 32)", expression)
+        self.assertIn("parent.Substring(36, 16)", expression)
+        for fragment in ("budget-check", "usage-record"):
+            call = ET.fromstring(render(f"fragments/{fragment}.xml.tftpl")).find("send-request")
+            value = call.findtext("set-header[@name='traceparent']/value")
+            self.assertIn('"inference-traceparent"', value)
+            self.assertNotIn("context.Request.Headers", value)
 
     def test_gateway_failure_after_admission_is_recorded_as_unknown_usage(self) -> None:
         root = inference()

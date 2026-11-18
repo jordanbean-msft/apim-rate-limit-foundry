@@ -46,6 +46,11 @@ class RedisCounters:
         self.retired: list[Redis] = []
         self.connection_lock = asyncio.Lock()
 
+    @property
+    def dependency_address(self) -> str:
+        """Identify the shared Redis resource without credentials or key names."""
+        return self.settings.redis_host
+
     @staticmethod
     def _request_key(request_id: str) -> str:
         return f"{{limiter}}:request:v3:{request_id}"
@@ -117,7 +122,12 @@ class RedisCounters:
                 return
             if self.credential is None:
                 raise ValueError("An Azure credential is required for cloud Redis")
-            with dependency_span("redis", "connection"):
+            with dependency_span(
+                "redis",
+                "connection",
+                server_address=self.settings.redis_host,
+                server_port=self.settings.redis_port,
+            ):
                 token = await self.credential.get_token(self.settings.redis_scope)
                 previous = self.client
                 self.client = Redis(

@@ -11,6 +11,7 @@ import logging
 import re
 from datetime import timedelta
 from typing import Literal
+from urllib.parse import urlsplit
 
 from azure.core import AsyncPipelineClient
 from azure.core.credentials_async import AsyncTokenCredential
@@ -163,7 +164,11 @@ class DashboardService:
                         server_timeout=self.settings.dashboard_query_timeout_seconds,
                     )
                 )
-        with http_dependency_span("dashboard.query_batch", "log-analytics") as span:
+        with http_dependency_span(
+            "dashboard.query_batch",
+            "log-analytics",
+            server_address=urlsplit(self.settings.logs_endpoint).hostname or "",
+        ) as span:
             batch_error: AzureError | None = None
             unavailable = UNAVAILABLE_MESSAGE
             try:
@@ -249,7 +254,12 @@ class DashboardService:
                 f"{self.settings.management_endpoint}{self.settings.azure_dashboard_id}",
                 params={"api-version": "2020-09-01-preview"},
             )
-            with http_dependency_span("dashboard.read", "azure-resource-manager", "GET") as span:
+            with http_dependency_span(
+                "dashboard.read",
+                "azure-resource-manager",
+                "GET",
+                server_address=urlsplit(self.settings.management_endpoint).hostname or "",
+            ) as span:
                 response = await self.arm.send_request(request)
                 dependency_http_status(span, response.status_code)
                 if response.status_code != 200:

@@ -7,6 +7,7 @@ from azure.data.tables import UpdateMode
 
 from apim_rate_limit_foundry.stores.memory import MemoryRepository
 from apim_rate_limit_foundry.stores.table import TableRepository
+from apim_rate_limit_foundry.telemetry.service_requests import record_table_response
 
 
 async def test_table_create_if_absent_is_durable_and_idempotent() -> None:
@@ -54,7 +55,9 @@ async def test_table_usage_history_is_written_and_queried_by_partition() -> None
 
     assert client.create_entity.await_args_list[0].args[0]["PartitionKey"] == partition
     client.get_entity.assert_awaited_once_with(
-        partition, TableRepository.entity("usage_v2", "request", record)["RowKey"]
+        partition,
+        TableRepository.entity("usage_v2", "request", record)["RowKey"],
+        raw_response_hook=record_table_response,
     )
     assert rows == [record]
     query = client.query_entities.call_args

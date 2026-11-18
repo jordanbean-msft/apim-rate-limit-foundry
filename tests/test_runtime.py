@@ -26,7 +26,8 @@ def test_runtime_uses_function_identity_for_outbound_credentials(
     monkeypatch.setattr(
         "apim_rate_limit_foundry.runtime.RedisCounters", Mock(return_value=object())
     )
-    monkeypatch.setattr("apim_rate_limit_foundry.runtime.GatewayServices", Mock())
+    gateway_factory = Mock()
+    monkeypatch.setattr("apim_rate_limit_foundry.runtime.GatewayServices", gateway_factory)
 
     Runtime(settings)
 
@@ -35,3 +36,5 @@ def test_runtime_uses_function_identity_for_outbound_credentials(
         managed_identity_client_id="function-client-id",
         exclude_interactive_browser_credential=True,
     )
+    repository = gateway_factory.create.call_args.args[0]
+    assert repository.dependency_address == "table.example.net"
