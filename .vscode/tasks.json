@@ -159,6 +159,22 @@
       "problemMatcher": []
     },
     {
+      "label": "inference:trace",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--env-file", ".azure/inference.env", "python", "-m", "scripts.trace_inference", "--protocol", "${input:inferenceProtocol}"],
+      "group": "none",
+      "problemMatcher": []
+    },
+    {
+      "label": "inference:trace-stream",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--env-file", ".azure/inference.env", "python", "-m", "scripts.trace_inference", "--protocol", "${input:inferenceProtocol}", "--stream"],
+      "group": "none",
+      "problemMatcher": []
+    },
+    {
       "label": "seed:preview",
       "type": "process",
       "command": "uv",
@@ -272,6 +288,7 @@
     }
   ],
   "inputs": [
+    {"id": "inferenceProtocol", "type": "pickString", "description": "Inference protocol (makes one real model request)", "options": ["openai-chat", "openai-responses"], "default": "openai-chat"},
     {"id": "legacyExport", "type": "promptString", "description": "Path to exported legacy JSON"},
     {"id": "legacyArchive", "type": "promptString", "description": "New archive path (must not exist)"}
   ]

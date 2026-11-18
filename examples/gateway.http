@@ -2,6 +2,9 @@
 @accessToken = <delegated-user-token-for-API_SCOPE>
 @subscriptionKey = <inference-product-subscription-key>
 
+### For exported client spans and W3C propagation, use scripts.trace_inference.
+### These plain HTTP examples retain UUID correlation but are not an instrumented client.
+
 ### Non-streaming Chat. Identity and budgets follow the validated user.
 POST {{gateway}}/foundry/chat/completions
 Authorization: Bearer {{accessToken}}
