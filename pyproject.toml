@@ -74,6 +74,10 @@ output = "coverage.xml"
 package = true
 prerelease = "if-necessary-or-explicit"
 
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
