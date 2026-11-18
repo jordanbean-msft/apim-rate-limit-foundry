@@ -41,6 +41,24 @@ erase previously recorded Redis spend. These are approximate operational budgets
 concurrent requests can overshoot and Redis loss can reset spend. No ledger
 rebuild restores lost counters.
 
+### Portal budget management
+
+Open **Monthly budgets** to compare spend and remaining balances, find budgets
+near or above their limits, and create or edit limits. The populated example
+below includes department, team, user and model-specific budgets. Demonstration
+records are fictional; environment and identity fields are hidden.
+
+![Monthly budget management with utilization meters and exhausted-budget warnings](screenshots/portal-budgets.png)
+
+### Portal price cards
+
+Open **OpenAI price cards** to manage versioned input, cached-input and output
+rates per million tokens. The model registry pins the price version used for
+accounting; the portal does not reprice historical usage. Rates shown here are
+demonstration configuration, not current retail quotes.
+
+![Versioned OpenAI price cards with separate input, cached-input and output rates](screenshots/portal-prices.png)
+
 ## Routes
 
 All routes below are relative to `/api` on the Function. The portal exposes

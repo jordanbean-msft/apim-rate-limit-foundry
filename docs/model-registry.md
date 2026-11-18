@@ -18,6 +18,16 @@ APIM creates native backend entities and routes using `backend-id`. Managed
 identity authenticates to the configured direct Azure OpenAI account.
 The portal's read-only inventory excludes endpoints and credentials.
 
+## Portal inventory
+
+Open **Model inventory** to review each alias's protocol, provider deployment,
+pinned price card and input/output token bounds. The populated example shows
+Chat Completions and Responses entries with configured price cards.
+Signed-in profile details are hidden, and the sample rates are illustrative,
+not current retail quotes.
+
+![Approved model inventory with protocols, pinned prices and token bounds](screenshots/portal-models.png)
+
 ## Optional backend pools (same model, more endpoints)
 
 An alias can list extra endpoints that serve the **same model** (for example the
